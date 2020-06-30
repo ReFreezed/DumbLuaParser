@@ -262,13 +262,13 @@ end
 
 
 
--- success, isLong|errorCode, ptr = parseStringlikeToken( s, ptr )
+-- success, equalSignCountIfLong|errorCode, ptr = parseStringlikeToken( s, ptr )
 function parseStringlikeToken(s, ptr)
-	local longEqualSigns = match(s, "^%[(=*)%[", ptr)
-	local isLong         = longEqualSigns ~= nil
+	local longEqualSigns       = match(s, "^%[(=*)%[", ptr)
+	local equalSignCountIfLong = longEqualSigns and #longEqualSigns
 
 	-- Single line (comment).
-	if not isLong then
+	if not equalSignCountIfLong then
 		local i1, i2 = find(s, "\n", ptr)
 		ptr          = i2 and i2 + 1 or #s + 1
 
@@ -284,7 +284,7 @@ function parseStringlikeToken(s, ptr)
 		ptr = i2 + 1
 	end
 
-	return true, isLong, ptr
+	return true, equalSignCountIfLong, ptr
 end
 
 -- tokens, error = tokenizeString( luaString, pathForError )
@@ -350,15 +350,19 @@ function tokenizeString(s, path)
 			ptr     = i2+1
 			tokType = "number"
 
+			if find(s, "^%.", ptr) then
+				return nil, reportErrorInFile(s, path, ptr, "Tokenizer", "Malformed number.")
+			end
+
 		-- Comment.
 		elseif find(s, "^%-%-", ptr) then
 			ptr = ptr + 2
 
-			local ok, isLong
-			ok, isLong, ptr = parseStringlikeToken(s, ptr)
+			local ok, equalSignCountIfLong
+			ok, equalSignCountIfLong, ptr = parseStringlikeToken(s, ptr)
 
 			if not ok then
-				local errCode = isLong
+				local errCode = equalSignCountIfLong
 				if errCode == ERROR_UNFINISHED_VALUE then
 					return nil, reportErrorInFile(s, path, ptrStart, "Tokenizer", "Unfinished long comment.")
 				else
@@ -366,11 +370,11 @@ function tokenizeString(s, path)
 				end
 			end
 
-			-- Check for nesting of [[...]], which is depricated in Lua.
-			if isLong then
-				local pos = find(s, "[[", ptrStart+4, true) -- @Robustness: Use a proper start index.
+			-- Check for nesting of [[...]] which is depricated in Lua.
+			if equalSignCountIfLong and equalSignCountIfLong == 0 then
+				local pos = find(s, "[[", ptrStart+4, true)
 				if pos and pos < ptr then
-					return nil, reportErrorInFile(s, path, ptrStart, "Tokenizer", "Malformed long comment.")
+					return nil, reportErrorInFile(s, path, pos, "Tokenizer", "Cannot have nested comments.")
 				end
 			end
 
@@ -412,11 +416,11 @@ function tokenizeString(s, path)
 
 		-- Long string.
 		elseif find(s, "^%[=*%[", ptr) then
-			local ok, isLong
-			ok, isLong, ptr = parseStringlikeToken(s, ptr)
+			local ok, equalSignCountIfLong
+			ok, equalSignCountIfLong, ptr = parseStringlikeToken(s, ptr)
 
 			if not ok then
-				local errCode = isLong
+				local errCode = equalSignCountIfLong
 				if errCode == ERROR_UNFINISHED_VALUE then
 					return nil, reportErrorInFile(s, path, ptrStart, "Tokenizer", "Unfinished long string.")
 				else
@@ -1655,8 +1659,11 @@ do
 		return node.type == "literal" and type(node.value) == "string" and node.value:find"^[%a_][%w_]*$" and not KEYWORDS[node.value]
 	end
 
-	local function ensureSpace(buffer, lastOutput, value)
-		if lastOutput == value then  table.insert(buffer, " ")  end
+	-- ensureSpace( buffer, lastOutput, value [, value2 ] )
+	local function ensureSpace(buffer, lastOutput, value, value2)
+		if lastOutput == value or lastOutput == value2 then
+			table.insert(buffer, " ")
+		end
 	end
 
 	local function writeLua(buffer, lua, lastOutput)
@@ -1665,9 +1672,14 @@ do
 	end
 
 	local function writeAlphanum(buffer, s, lastOutput)
-		ensureSpace(buffer, lastOutput, "alphanum")
+		ensureSpace(buffer, lastOutput, "alphanum","number")
 		lastOutput = writeLua(buffer, s, "alphanum")
 		return "alphanum"
+	end
+	local function writeNumber(buffer, n, lastOutput)
+		ensureSpace(buffer, lastOutput, "alphanum","number")
+		lastOutput = writeLua(buffer, tostring(n), "number")
+		return "number"
 	end
 
 	local function writeCommaSeparatedList(buffer, pretty, lastOutput, expressions)
@@ -1784,8 +1796,37 @@ do
 		end
 	end
 
+	local function writeBinaryOperatorChain(buffer, pretty, lastOutput, binary)
+		local l = binary.left
+		local r = binary.right
+
+		if l.type == "binary" and l.operator == binary.operator then
+			local ok;ok, lastOutput = writeBinaryOperatorChain(buffer, pretty, lastOutput, l)
+			if not ok then  return false, lastOutput  end
+		else
+			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, l)
+			if not ok then  return false, lastOutput  end
+		end
+
+		if binary.operator == ".." then  ensureSpace(buffer, lastOutput, "number")  end
+
+		local nextOutput = ((binary.operator == "-" and "-") or (binary.operator:find"%w" and "alphanum") or (""))
+		if nextOutput ~= "" then  ensureSpace(buffer, lastOutput, nextOutput)  end
+		lastOutput = writeLua(buffer, binary.operator, nextOutput)
+
+		if r.type == "binary" and r.operator == binary.operator then
+			local ok;ok, lastOutput = writeBinaryOperatorChain(buffer, pretty, lastOutput, r)
+			if not ok then  return false, lastOutput  end
+		else
+			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, r)
+			if not ok then  return false, lastOutput  end
+		end
+
+		return true, lastOutput
+	end
+
 	-- success, lastOutput = writeNode( buffer, pretty, lastOutput, node )
-	-- lastOutput          = "" | "alphanum" | "-"
+	-- lastOutput          = "" | "alphanum" | "number" | "-"
 	function writeNode(buffer, pretty, lastOutput, node)
 		local nodeType = node.type
 
@@ -1801,7 +1842,7 @@ do
 
 		elseif nodeType == "literal" then
 			if node.value == 0 then
-				lastOutput = writeAlphanum(buffer, "0", lastOutput) -- Avoid writing '-0'.
+				lastOutput = writeNumber(buffer, 0, lastOutput) -- Avoid writing '-0'.
 
 			elseif node.value == math.huge then
 				lastOutput = writeAlphanum(buffer, "math.huge", lastOutput)
@@ -1812,8 +1853,11 @@ do
 			elseif node.value ~= node.value then
 				lastOutput = writeLua(buffer, "(0/0)", "")
 
-			elseif node.value == nil or type(node.value) == "boolean" or type(node.value) == "number" then
+			elseif node.value == nil or type(node.value) == "boolean" then
 				lastOutput = writeAlphanum(buffer, tostring(node.value), lastOutput)
+
+			elseif type(node.value) == "number" then
+				lastOutput = writeNumber(buffer, node.value, lastOutput)
 
 			elseif type(node.value) == "string" then
 				local s = node.value
@@ -1890,18 +1934,23 @@ do
 			lastOutput = writeLua(buffer, ")", "")
 
 		elseif nodeType == "binary" then
-			-- @Incomplete: Optimize string concatinations.
-			lastOutput = writeLua(buffer, "(", "")
+			lastOutput = writeLua(buffer, "(", "") -- @UX: Only output parentheses around child binaries if associativity requires it.
 
-			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.left)
-			if not ok then  return false, lastOutput  end
+			if node.operator == ".." or node.operator == "and" or node.operator == "or" then
+				local ok;ok, lastOutput = writeBinaryOperatorChain(buffer, pretty, lastOutput, node)
+				if not ok then  return false, lastOutput  end
 
-			local nextOutput = ((node.operator == "-" and "-") or (node.operator:find"%w" and "alphanum") or (""))
-			if nextOutput ~= "" then  ensureSpace(buffer, lastOutput, nextOutput)  end
-			lastOutput = writeLua(buffer, node.operator, nextOutput)
+			else
+				local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.left)
+				if not ok then  return false, lastOutput  end
 
-			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.right)
-			if not ok then  return false, lastOutput  end
+				local nextOutput = ((node.operator == "-" and "-") or (node.operator:find"%w" and "alphanum") or (""))
+				if nextOutput ~= "" then  ensureSpace(buffer, lastOutput, nextOutput)  end
+				lastOutput = writeLua(buffer, node.operator, nextOutput)
+
+				local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.right)
+				if not ok then  return false, lastOutput  end
+			end
 
 			lastOutput = writeLua(buffer, ")", "")
 
@@ -2139,14 +2188,14 @@ do
 	local tokens = assert(tokenizeFile("./test.lua"))
 	local ast    = assert(parse(tokens))
 
-	printTree(ast)
+	-- printTree(ast)
 
 	local lua
 	lua = toLua(ast, true)
 	-- lua = lua:gsub(("."):rep(250), "%0\0")
 	-- lua = lua:gsub("([%w_]+)%z([%w_]+)", "%1%2\n")
 	-- lua = lua:gsub("%z", "\n")
-	-- print(lua)
+	print(lua)
 
 	assert(loadstring(toLua(ast, true), "@lua"))
 end

@@ -23,3 +23,9 @@ a[x] = function() return x end
 local a = 1 + 2 + 3
 local b = "1".."2".."3"
 local c = 1 + 2^3^4 * 5
+
+local s = a   .. b
+local s = 1.  .. x
+local s = 1.1 .. x
+
+local x = a and b and c or q and w or 5
