@@ -2137,18 +2137,24 @@ do
 				if #node.bodyFalse.statements == 1 and node.bodyFalse.statements[1].type == "if" then
 					node = node.bodyFalse.statements[1]
 
+					lastOutput = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
 					lastOutput = writeAlphanum(buffer, pretty, "elseif", lastOutput)
+					if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
 					local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, node.condition, true)
 					if not ok then  return false, lastOutput  end
 
+					if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 					lastOutput = writeAlphanum(buffer, pretty, "then", lastOutput)
+					if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
 
 					local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, node.bodyTrue.statements)
 					if not ok then  return false, lastOutput  end
 
 				else
+					lastOutput = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
 					lastOutput = writeAlphanum(buffer, pretty, "else", lastOutput)
+					if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
 
 					local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, node.bodyFalse.statements)
 					if not ok then  return false, lastOutput  end
@@ -2256,7 +2262,9 @@ do
 	io.stdout:setvbuf("no")
 	io.stderr:setvbuf("no")
 
-	local tokens = assert(tokenizeFile("./test.lua"))
+	local path   = "./test.lua"
+	local path   = "./dumbParser.lua"
+	local tokens = assert(tokenizeFile(path))
 	local ast    = assert(parse(tokens))
 
 	-- printTree(ast)
