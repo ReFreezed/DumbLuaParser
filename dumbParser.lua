@@ -22,6 +22,7 @@ local find    = string.find
 local getByte = string.byte
 local gsub    = string.gsub
 local match   = string.match
+local rep     = string.rep
 local sub     = string.sub
 
 local countString
@@ -246,12 +247,12 @@ function reportErrorInFile(contents, path, ptr, agent, s, ...)
 	if agent then
 		printerr(F(
 			"Error @ %s:%d: [%s] %s\n>\n> %s\n>%s^\n>\n",
-			path, ln, agent, s, lastLine, ("-"):rep(col)
+			path, ln, agent, s, lastLine, rep("-", col)
 		))
 	else
 		printerr(F(
 			"Error @ %s:%d: %s\n>\n> %s\n> %s^\n>\n",
-			path, ln,        s, lastLine, ("-"):rep(col-1)
+			path, ln,        s, lastLine, rep("-", col-1)
 		))
 	end
 
@@ -289,11 +290,12 @@ function parseStringlikeToken(s, ptr)
 	return true, equalSignCountIfLong, ptr
 end
 
--- tokens, error = tokenizeString( luaString, pathForError )
+-- tokens, error = tokenizeString( luaString [, pathForError="?" ] )
 function tokenizeString(s, path)
 	if find(s, "\r", 1, true) then
 		s = gsub(s, "\r\n?", "\n")
 	end
+	path = path or "?"
 
 	local tokTypes  = {}
 	local tokValues = {} -- @Incomplete: The resulting values.
@@ -549,13 +551,13 @@ end
 ]=]
 
 function isToken(tokens, tok, tokType, tokValue)
-	return tokens.type[tok] == tokType and tokens.representation[tok] == tokValue -- @Incomplete: Use token value.
+	return tokens.type[tok] == tokType and tokens.representation[tok] == tokValue -- @Incomplete: Use token value. :UseTokenValue
 end
 function isTokenType(tokens, tok, tokType)
 	return tokens.type[tok] == tokType
 end
 function isTokenAnyValue(tokens, tok, tokValueSet)
-	local tokValue = tokens.representation[tok] -- @Incomplete: Use token value.
+	local tokValue = tokens.representation[tok] -- :UseTokenValue
 	return tokValueSet[tokValue] == true
 end
 
@@ -566,7 +568,7 @@ function parseIdentifier(tokens, tok) --> ident, token
 	end
 
 	local ident = AstIdentifier(tok)
-	ident.name  = tokens.representation[tok] -- @Incomplete: Use token value.
+	ident.name  = tokens.representation[tok] -- :UseTokenValue
 	tok         = tok + 1
 
 	return ident, tok
@@ -635,7 +637,7 @@ function parseTable(tokens, tok) --> tableNode, token
 
 		elseif isTokenType(tokens, tok, "identifier") and isToken(tokens, tok+1, "punctuation", "=") then
 			local keyExpr = AstLiteral(tok)
-			keyExpr.value = tokens.representation[tok] -- @Incomplete: Use token value.
+			keyExpr.value = tokens.representation[tok] -- :UseTokenValue
 			tok           = tok + 1 -- identifier
 
 			if not isToken(tokens, tok, "punctuation", "=") then
@@ -710,7 +712,7 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 	-- literal
 	elseif isTokenType(tokens, tok, "string") or isTokenType(tokens, tok, "number") then
 		local literal = AstLiteral(tok)
-		literal.value = assert(loadstring("return "..tokens.representation[tok]))()
+		literal.value = assert(loadstring("return "..tokens.representation[tok], tokens.representation[tok]))() -- :UseTokenValue
 		tok           = tok + 1 -- literal
 		expr          = literal
 	elseif isToken(tokens, tok, "keyword", "true") then
@@ -735,7 +737,7 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 		and OPERATOR_PRECEDENCE.unary > lastPrecedence
 	then
 		local unary    = AstUnary(tok)
-		unary.operator = tokens.representation[tok] -- @Incomplete: Use token value.
+		unary.operator = tokens.representation[tok] -- :UseTokenValue
 		tok            = tok + 1 -- operator
 
 		local subExpr, tokNext = parseExpression(tokens, tok, OPERATOR_PRECEDENCE.unary)
@@ -800,12 +802,12 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 				or isToken(tokens, tok, "keyword", "and")
 				or isToken(tokens, tok, "keyword", "or")
 			)
-			and OPERATOR_PRECEDENCE[tokens.representation[tok]] > lastPrecedence -- @Incomplete: Use token value.
+			and OPERATOR_PRECEDENCE[tokens.representation[tok]] > lastPrecedence -- :UseTokenValue
 		then
 			local rightAssociative = isToken(tokens, tok, "punctuation", "..") or isToken(tokens, tok, "punctuation", "^")
 
 			local binary    = AstBinary(tok)
-			binary.operator = tokens.representation[tok] -- @Incomplete: Use token value.
+			binary.operator = tokens.representation[tok] -- :UseTokenValue
 			tok             = tok + 1 -- operator
 
 			local rhsExpr, tokNext = parseExpression(tokens, tok, OPERATOR_PRECEDENCE[binary.operator] + (rightAssociative and -1 or 0))
@@ -859,7 +861,7 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 			local call = AstCall(tok)
 
 			local literal     = AstLiteral(tok)
-			literal.value     = assert(loadstring("return "..tokens.representation[tok]))()
+			literal.value     = assert(loadstring("return "..tokens.representation[tok], tokens.representation[tok]))() -- :UseTokenValue
 			tok               = tok + 1 -- string
 			call.arguments[1] = literal
 
@@ -928,7 +930,7 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 
 				if isTokenType(tokens, tok, "string") then
 					local literal     = AstLiteral(tok)
-					literal.value     = assert(loadstring("return "..tokens.representation[tok]))()
+					literal.value     = assert(loadstring("return "..tokens.representation[tok], tokens.representation[tok]))() -- :UseTokenValue
 					tok               = tok + 1 -- string
 					call.arguments[1] = literal
 
@@ -1358,7 +1360,7 @@ function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> success, 
 		local returnNode = AstReturn(tok)
 		tok              = tok + 1 -- 'return'
 
-		if tok <= tokens.n and not (isTokenType(tokens, tok, "keyword") and isTokenAnyValue(tokens, tok, blockEndTokenTypes)) then
+		if tok <= tokens.n and not ((isTokenType(tokens, tok, "keyword") and isTokenAnyValue(tokens, tok, blockEndTokenTypes)) or isToken(tokens, tok, "punctuation", ";")) then
 			local ok, tokNext = parseExpressionList(tokens, tok, returnNode.values)
 			if not ok then  return false, tok  end
 			tok = tokNext
@@ -1443,6 +1445,10 @@ function parseBlock(tokens, tok, stopAtEndKeyword) --> block, token
 		end
 		tok = tokNext
 
+		if isToken(tokens, tok, "punctuation", ";") then
+			tok = tok + 1 -- ';'
+		end
+
 		local lastStatement = statements[#statements]
 
 		if lastStatement.type == "return" or lastStatement.type == "break" then
@@ -1451,10 +1457,6 @@ function parseBlock(tokens, tok, stopAtEndKeyword) --> block, token
 		elseif lastStatement.type == "call" and lastStatement.adjustToOne then
 			reportErrorAtToken(tokens, tok, "Parser", "Syntax error.")
 			return nil, tok
-		end
-
-		if isToken(tokens, tok, "punctuation", ";") then
-			tok = tok + 1 -- ';'
 		end
 	end
 
@@ -1586,7 +1588,7 @@ do
 
 		elseif nodeType == "binary" then
 			if node.left  then  _printTree(node.left,  indent, nil)  end
-			ioWrite(("    "):rep(indent), node.operator, "\n")
+			ioWrite(rep("    ", indent), node.operator, "\n")
 			if node.right then  _printTree(node.right, indent, nil)  end
 
 		elseif nodeType == "call" then
@@ -1665,9 +1667,9 @@ do
 		return node.type == "literal" and type(node.value) == "string" and node.value:find"^[%a_][%w_]*$" and not KEYWORDS[node.value]
 	end
 
-	-- ensureSpace( buffer, lastOutput, value [, value2 ] )
-	local function ensureSpace(buffer, lastOutput, value, value2)
-		if lastOutput == value or lastOutput == value2 then
+	-- ensureSpaceIfNotPretty( buffer, pretty, lastOutput, value [, value2 ] )
+	local function ensureSpaceIfNotPretty(buffer, pretty, lastOutput, value, value2)
+		if not pretty and (lastOutput == value or lastOutput == value2) then
 			table.insert(buffer, " ")
 		end
 	end
@@ -1677,22 +1679,25 @@ do
 		return lastOutput
 	end
 
-	local function writeAlphanum(buffer, s, lastOutput)
-		ensureSpace(buffer, lastOutput, "alphanum","number")
+	local function writeAlphanum(buffer, pretty, s, lastOutput)
+		ensureSpaceIfNotPretty(buffer, pretty, lastOutput, "alphanum","number")
 		lastOutput = writeLua(buffer, s, "alphanum")
 		return "alphanum"
 	end
-	local function writeNumber(buffer, n, lastOutput)
-		ensureSpace(buffer, lastOutput, "alphanum","number")
+	local function writeNumber(buffer, pretty, n, lastOutput)
+		ensureSpaceIfNotPretty(buffer, pretty, lastOutput, "alphanum","number")
 		lastOutput = writeLua(buffer, tostring(n), "number")
 		return "number"
 	end
 
-	local function writeCommaSeparatedList(buffer, pretty, lastOutput, expressions)
+	local function writeCommaSeparatedList(buffer, pretty, indent, lastOutput, expressions)
 		for i, expr in ipairs(expressions) do
-			if i > 1 then  lastOutput = writeLua(buffer, ",", "")  end
+			if i > 1 then
+				lastOutput = writeLua(buffer, ",", "")
+				if pretty then  lastOutput = writeLua(buffer, " ", "")  end
+			end
 
-			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, expr, true)
+			local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, expr, true)
 			if not ok then  return false, lastOutput  end
 		end
 
@@ -1708,66 +1713,77 @@ do
 			and statementNext.values [1].type == "function"
 	end
 
-	local function writeStatements(buffer, pretty, lastOutput, statements)
+	local function writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
+		if pretty and indent > 0 then
+			lastOutput = writeLua(buffer, rep("\t", indent), "")
+		end
+		return lastOutput
+	end
+
+	local function writeStatements(buffer, pretty, indent, lastOutput, statements)
 		local skipNext = false
 
 		for i, statement in ipairs(statements) do
-			local statementNext = statements[i+1]
-
 			if skipNext then
 				skipNext = false
 
-			elseif statementNext and isStatementFunctionDeclaration(statement, statementNext) then
-				local assignment = statementNext
-				local func       = assignment.values[1]
-
-				lastOutput = writeAlphanum(buffer, "local function", lastOutput)
-
-				local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, assignment.targets[1], true)
-				if not ok then  return false, lastOutput  end
-
-				lastOutput = writeLua(buffer, "(", "")
-
-				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, lastOutput, func.parameters)
-				if not ok then  return false, lastOutput  end
-
-				lastOutput = writeLua(buffer, ")", "")
-
-				local ok;ok, lastOutput = writeStatements(buffer, pretty, lastOutput, func.body.statements)
-				if not ok then  return false, lastOutput  end
-
-				lastOutput = writeAlphanum(buffer, "end", lastOutput)
-				skipNext   = true
-
 			else
-				local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, statement, true)
-				if not ok then  return false, lastOutput  end
+				local statementNext = statements[i+1]
+				lastOutput          = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
 
-				if statement.type == "call" then
-					lastOutput = writeLua(buffer, ";", "")
+				if statementNext and isStatementFunctionDeclaration(statement, statementNext) then
+					local assignment = statementNext
+					local func       = assignment.values[1]
+
+					lastOutput = writeAlphanum(buffer, pretty, "local function", lastOutput)
+					lastOutput = writeLua(buffer, " ", "")
+
+					local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, assignment.targets[1], true)
+					if not ok then  return false, lastOutput  end
+
+					lastOutput = writeLua(buffer, "(", "")
+
+					local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, func.parameters)
+					if not ok then  return false, lastOutput  end
+
+					lastOutput = writeLua(buffer, ")", "")
+					if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
+
+					local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, func.body.statements)
+					if not ok then  return false, lastOutput  end
+
+					lastOutput = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
+					lastOutput = writeAlphanum(buffer, pretty, "end", lastOutput)
+					skipNext   = true
+
+				else
+					local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, statement, true)
+					if not ok then  return false, lastOutput  end
+
+					if statement.type == "call" then
+						lastOutput = writeLua(buffer, ";", "") -- @Ugly way of handling call statements. (But what way would be better?)
+					end
 				end
 
-				if pretty then
-					lastOutput = writeLua(buffer, "\n", "") -- DEBUG
-				end
+				if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
 			end
 		end
 
 		return true, lastOutput
 	end
 
-	local function writeLookup(buffer, pretty, lastOutput, lookup, forMethodCall)
+	local function writeLookup(buffer, pretty, indent, lastOutput, lookup, forMethodCall)
 		local objIsLiteral = (lookup.object.type == "literal")
 		if objIsLiteral then  lastOutput = writeLua(buffer, "(", "")  end
 
-		local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, lookup.object, false)
+		local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, lookup.object, false)
 		if not ok then  return false, lastOutput  end
 
 		if objIsLiteral then  lastOutput = writeLua(buffer, ")", "")  end
 
 		if canNodeBeName(lookup.member) then
 			lastOutput = writeLua(buffer, (forMethodCall and ":" or "."), "")
-			lastOutput = writeAlphanum(buffer, lookup.member.value, lastOutput)
+			lastOutput = writeAlphanum(buffer, pretty, lookup.member.value, lastOutput)
 
 		elseif forMethodCall then
 			printerr(F("AST: Callee for method call is not a lookup."))
@@ -1776,7 +1792,7 @@ do
 		else
 			lastOutput = writeLua(buffer, "[", "")
 
-			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, lookup.member, true)
+			local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, lookup.member, true)
 			if not ok then  return false, lastOutput  end
 
 			lastOutput = writeLua(buffer, "]", "")
@@ -1801,44 +1817,48 @@ do
 		end
 	end
 
-	local function writeBinaryOperatorChain(buffer, pretty, lastOutput, binary)
+	local function writeBinaryOperatorChain(buffer, pretty, indent, lastOutput, binary)
 		local l = binary.left
 		local r = binary.right
 
 		if l.type == "binary" and l.operator == binary.operator then
-			local ok;ok, lastOutput = writeBinaryOperatorChain(buffer, pretty, lastOutput, l)
+			local ok;ok, lastOutput = writeBinaryOperatorChain(buffer, pretty, indent, lastOutput, l)
 			if not ok then  return false, lastOutput  end
 		else
-			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, l, false)
+			local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, l, false)
 			if not ok then  return false, lastOutput  end
 		end
 
-		if binary.operator == ".." then  ensureSpace(buffer, lastOutput, "number")  end
+		if pretty then  lastOutput = writeLua(buffer, " ", "")  end
+
+		if binary.operator == ".." then  ensureSpaceIfNotPretty(buffer, pretty, lastOutput, "number")  end
 
 		local nextOutput = ((binary.operator == "-" and "-") or (binary.operator:find"%w" and "alphanum") or (""))
-		if nextOutput ~= "" then  ensureSpace(buffer, lastOutput, nextOutput)  end
+		if nextOutput ~= "" then  ensureSpaceIfNotPretty(buffer, pretty, lastOutput, nextOutput)  end
 		lastOutput = writeLua(buffer, binary.operator, nextOutput)
 
+		if pretty then  lastOutput = writeLua(buffer, " ", "")  end
+
 		if r.type == "binary" and r.operator == binary.operator then
-			local ok;ok, lastOutput = writeBinaryOperatorChain(buffer, pretty, lastOutput, r)
+			local ok;ok, lastOutput = writeBinaryOperatorChain(buffer, pretty, indent, lastOutput, r)
 			if not ok then  return false, lastOutput  end
 		else
-			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, r, false)
+			local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, r, false)
 			if not ok then  return false, lastOutput  end
 		end
 
 		return true, lastOutput
 	end
 
-	-- success, lastOutput = writeNode( buffer, pretty, lastOutput, node, maySafelyOmitParens )
+	-- success, lastOutput = writeNode( buffer, pretty, indent, lastOutput, node, maySafelyOmitParens )
 	-- lastOutput          = "" | "alphanum" | "number" | "-"
-	function writeNode(buffer, pretty, lastOutput, node, maySafelyOmitParens)
+	function writeNode(buffer, pretty, indent, lastOutput, node, maySafelyOmitParens)
 		local nodeType = node.type
 
 		-- Expressions:
 
 		if nodeType == "identifier" then
-			lastOutput = writeAlphanum(buffer, node.name, lastOutput)
+			lastOutput = writeAlphanum(buffer, pretty, node.name, lastOutput)
 
 		elseif nodeType == "vararg" then
 			if node.adjustToOne then  lastOutput = writeLua(buffer, "(", "")  end
@@ -1847,10 +1867,10 @@ do
 
 		elseif nodeType == "literal" then
 			if node.value == 0 then
-				lastOutput = writeNumber(buffer, 0, lastOutput) -- Avoid writing '-0'.
+				lastOutput = writeNumber(buffer, pretty, 0, lastOutput) -- Avoid writing '-0'.
 
 			elseif node.value == math.huge then
-				lastOutput = writeAlphanum(buffer, "math.huge", lastOutput)
+				lastOutput = writeAlphanum(buffer, pretty, "math.huge", lastOutput)
 
 			elseif node.value == -math.huge then
 				lastOutput = writeLua(buffer, "(-math.huge)", "")
@@ -1859,10 +1879,10 @@ do
 				lastOutput = writeLua(buffer, "(0/0)", "")
 
 			elseif node.value == nil or type(node.value) == "boolean" then
-				lastOutput = writeAlphanum(buffer, tostring(node.value), lastOutput)
+				lastOutput = writeAlphanum(buffer, pretty, tostring(node.value), lastOutput)
 
 			elseif type(node.value) == "number" then
-				lastOutput = writeNumber(buffer, node.value, lastOutput)
+				lastOutput = writeNumber(buffer, pretty, node.value, lastOutput)
 
 			elseif type(node.value) == "string" then
 				local s = node.value
@@ -1898,7 +1918,10 @@ do
 			lastOutput = writeLua(buffer, "{", "")
 
 			for i, field in ipairs(node.fields) do
-				if i > 1 then  lastOutput = writeLua(buffer, ",", "")  end
+				if i > 1 then
+					lastOutput = writeLua(buffer, ",", "")
+					if pretty then  lastOutput = writeLua(buffer, " ", "")  end
+				end
 
 				if not field.generatedKey then
 					if canNodeBeName(field.key) then
@@ -1907,7 +1930,7 @@ do
 					else
 						lastOutput = writeLua(buffer, "[", "")
 
-						local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, field.key, false)
+						local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, field.key, true)
 						if not ok then  return false, lastOutput  end
 
 						lastOutput = writeLua(buffer, "]", "")
@@ -1916,44 +1939,53 @@ do
 					lastOutput = writeLua(buffer, "=", "")
 				end
 
-				local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, field.value, false)
+				local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, field.value, (not pretty))
 				if not ok then  return false, lastOutput  end
 			end
 
 			lastOutput = writeLua(buffer, "}", "")
 
 		elseif nodeType == "lookup" then
-			local ok;ok, lastOutput = writeLookup(buffer, pretty, lastOutput, node, false)
+			local ok;ok, lastOutput = writeLookup(buffer, pretty, indent, lastOutput, node, false)
 			if not ok then  return false, lastOutput  end
 
 		elseif nodeType == "unary" then
-			if not maySafelyOmitParens then  lastOutput = writeLua(buffer, "(", "")  end -- @Polish: Only output parentheses around child unaries/binaries if associativity requires it.
+			local operatorOutput    = ((node.operator == "-" and "-") or (node.operator:find"%w" and "alphanum") or (""))
+			local prettyAndAlphanum = pretty and operatorOutput == "alphanum"
 
-			local nextOutput = ((node.operator == "-" and "-") or (node.operator:find"%w" and "alphanum") or (""))
-			if nextOutput ~= "" then  ensureSpace(buffer, lastOutput, nextOutput)  end
-			lastOutput = writeLua(buffer, node.operator, nextOutput)
+			if prettyAndAlphanum and not maySafelyOmitParens then  lastOutput = writeLua(buffer, "(", "")  end -- @Polish: Only output parentheses around child unaries/binaries if associativity requires it.
 
-			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.expression, false)
+			if operatorOutput ~= "" then  ensureSpaceIfNotPretty(buffer, pretty, lastOutput, operatorOutput)  end
+			lastOutput = writeLua(buffer, node.operator, operatorOutput)
+
+			if prettyAndAlphanum then  lastOutput = writeLua(buffer, " ", "")  end
+
+			local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, node.expression, false)
 			if not ok then  return false, lastOutput  end
 
-			if not maySafelyOmitParens then  lastOutput = writeLua(buffer, ")", "")  end
+			if prettyAndAlphanum and not maySafelyOmitParens then  lastOutput = writeLua(buffer, ")", "")  end
 
 		elseif nodeType == "binary" then
 			if not maySafelyOmitParens then  lastOutput = writeLua(buffer, "(", "")  end -- @Polish: Only output parentheses around child unaries/binaries if associativity requires it.
 
 			if node.operator == ".." or node.operator == "and" or node.operator == "or" then
-				local ok;ok, lastOutput = writeBinaryOperatorChain(buffer, pretty, lastOutput, node)
+				local ok;ok, lastOutput = writeBinaryOperatorChain(buffer, pretty, indent, lastOutput, node)
 				if not ok then  return false, lastOutput  end
 
 			else
-				local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.left, false)
+				local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, node.left, false)
 				if not ok then  return false, lastOutput  end
 
-				local nextOutput = ((node.operator == "-" and "-") or (node.operator:find"%w" and "alphanum") or (""))
-				if nextOutput ~= "" then  ensureSpace(buffer, lastOutput, nextOutput)  end
-				lastOutput = writeLua(buffer, node.operator, nextOutput)
+				local operatorOutput = ((node.operator == "-" and "-") or (node.operator:find"%w" and "alphanum") or (""))
 
-				local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.right, false)
+				if pretty then  lastOutput = writeLua(buffer, " ", "")  end
+
+				if operatorOutput ~= "" then  ensureSpaceIfNotPretty(buffer, pretty, lastOutput, operatorOutput)  end
+				lastOutput = writeLua(buffer, node.operator, operatorOutput)
+
+				if pretty then  lastOutput = writeLua(buffer, " ", "")  end
+
+				local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, node.right, false)
 				if not ok then  return false, lastOutput  end
 			end
 
@@ -1970,68 +2002,79 @@ do
 					return false, lastOutput
 				end
 
-				local ok;ok, lastOutput = writeLookup(buffer, pretty, lastOutput, lookup, true)
+				local ok;ok, lastOutput = writeLookup(buffer, pretty, indent, lastOutput, lookup, true)
 				if not ok then  return false, lastOutput  end
 
 			else
-				local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.callee, false)
+				local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, node.callee, false)
 				if not ok then  return false, lastOutput  end
 			end
 
 			lastOutput = writeLua(buffer, "(", "")
 
-			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, lastOutput, node.arguments)
+			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.arguments)
 			if not ok then  return false, lastOutput  end
 
 			lastOutput = writeLua(buffer, ")", "")
 			if node.adjustToOne then  lastOutput = writeLua(buffer, ")", "")  end
 
 		elseif nodeType == "function" then
-			lastOutput = writeAlphanum(buffer, "function", lastOutput)
+			lastOutput = writeAlphanum(buffer, pretty, "function", lastOutput)
 			lastOutput = writeLua(buffer, "(", "")
 
-			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, lastOutput, node.parameters)
+			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.parameters)
 			if not ok then  return false, lastOutput  end
 
 			lastOutput = writeLua(buffer, ")", "")
+			if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
 
-			local ok;ok, lastOutput = writeStatements(buffer, pretty, lastOutput, node.body.statements)
+			local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, node.body.statements)
 			if not ok then  return false, lastOutput  end
 
-			lastOutput = writeAlphanum(buffer, "end", lastOutput)
+			lastOutput = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
+			lastOutput = writeAlphanum(buffer, pretty, "end", lastOutput)
 
 		-- Statements:
 
 		elseif nodeType == "break" then
-			lastOutput = writeAlphanum(buffer, "break", lastOutput)
+			lastOutput = writeAlphanum(buffer, pretty, "break", lastOutput)
 			lastOutput = writeLua(buffer, ";", "")
 
 		elseif nodeType == "return" then
-			lastOutput = writeAlphanum(buffer, "return", lastOutput)
+			lastOutput = writeAlphanum(buffer, pretty, "return", lastOutput)
 
-			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, lastOutput, node.values)
-			if not ok then  return false, lastOutput  end
+			if node.values[1] then
+				if pretty then  lastOutput = writeLua(buffer, " ", "")  end
+
+				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.values)
+				if not ok then  return false, lastOutput  end
+			end
 
 			lastOutput = writeLua(buffer, ";", "")
 
 		elseif nodeType == "block" then
-			lastOutput = writeAlphanum(buffer, "do", lastOutput)
+			lastOutput = writeAlphanum(buffer, pretty, "do", lastOutput)
+			if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
 
-			local ok;ok, lastOutput = writeStatements(buffer, pretty, lastOutput, node.statements)
+			local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, node.statements)
 			if not ok then  return false, lastOutput  end
 
-			lastOutput = writeAlphanum(buffer, "end", lastOutput)
+			lastOutput = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
+			lastOutput = writeAlphanum(buffer, pretty, "end", lastOutput)
 
 		elseif nodeType == "declaration" then
-			lastOutput = writeAlphanum(buffer, "local", lastOutput)
+			lastOutput = writeAlphanum(buffer, pretty, "local", lastOutput)
+			lastOutput = writeLua(buffer, " ", "")
 
-			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, lastOutput, node.names)
+			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.names)
 			if not ok then  return false, lastOutput  end
 
 			if node.values[1] then
+				if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 				lastOutput = writeLua(buffer, "=", "")
+				if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
-				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, lastOutput, node.values)
+				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.values)
 				if not ok then  return false, lastOutput  end
 			end
 
@@ -2041,44 +2084,52 @@ do
 			if isAssignmentFunctionAssignment(node) then
 				-- @Incomplete: Make implicit 'self' parameter actually implicit.
 				local func = node.values[1]
-				lastOutput = writeAlphanum(buffer, "function", lastOutput)
+				lastOutput = writeAlphanum(buffer, pretty, "function", lastOutput)
+				lastOutput = writeLua(buffer, " ", "")
 
-				local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.targets[1], false)
+				local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, node.targets[1], false)
 				if not ok then  return false, lastOutput  end
 
 				lastOutput = writeLua(buffer, "(", "")
 
-				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, lastOutput, func.parameters)
+				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, func.parameters)
 				if not ok then  return false, lastOutput  end
 
 				lastOutput = writeLua(buffer, ")", "")
+				if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
 
-				local ok;ok, lastOutput = writeStatements(buffer, pretty, lastOutput, func.body.statements)
+				local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, func.body.statements)
 				if not ok then  return false, lastOutput  end
 
-				lastOutput = writeAlphanum(buffer, "end", lastOutput)
+				lastOutput = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
+				lastOutput = writeAlphanum(buffer, pretty, "end", lastOutput)
 
 			else
-				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, lastOutput, node.targets)
+				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.targets)
 				if not ok then  return false, lastOutput  end
 
+				if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 				lastOutput = writeLua(buffer, "=", "")
+				if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
-				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, lastOutput, node.values)
+				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.values)
 				if not ok then  return false, lastOutput  end
 
 				lastOutput = writeLua(buffer, ";", "")
 			end
 
 		elseif nodeType == "if" then
-			lastOutput = writeAlphanum(buffer, "if", lastOutput)
+			lastOutput = writeAlphanum(buffer, pretty, "if", lastOutput)
+			if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
-			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.condition, true)
+			local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, node.condition, true)
 			if not ok then  return false, lastOutput  end
 
-			lastOutput = writeAlphanum(buffer, "then", lastOutput)
+			if pretty then  lastOutput = writeLua(buffer, " ", "")  end
+			lastOutput = writeAlphanum(buffer, pretty, "then", lastOutput)
+			if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
 
-			local ok;ok, lastOutput = writeStatements(buffer, pretty, lastOutput, node.bodyTrue.statements)
+			local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, node.bodyTrue.statements)
 			if not ok then  return false, lastOutput  end
 
 			while node.bodyFalse do
@@ -2086,78 +2137,94 @@ do
 				if #node.bodyFalse.statements == 1 and node.bodyFalse.statements[1].type == "if" then
 					node = node.bodyFalse.statements[1]
 
-					lastOutput = writeAlphanum(buffer, "elseif", lastOutput)
+					lastOutput = writeAlphanum(buffer, pretty, "elseif", lastOutput)
 
-					local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.condition, true)
+					local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, node.condition, true)
 					if not ok then  return false, lastOutput  end
 
-					lastOutput = writeAlphanum(buffer, "then", lastOutput)
+					lastOutput = writeAlphanum(buffer, pretty, "then", lastOutput)
 
-					local ok;ok, lastOutput = writeStatements(buffer, pretty, lastOutput, node.bodyTrue.statements)
+					local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, node.bodyTrue.statements)
 					if not ok then  return false, lastOutput  end
 
 				else
-					lastOutput = writeAlphanum(buffer, "else", lastOutput)
+					lastOutput = writeAlphanum(buffer, pretty, "else", lastOutput)
 
-					local ok;ok, lastOutput = writeStatements(buffer, pretty, lastOutput, node.bodyFalse.statements)
+					local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, node.bodyFalse.statements)
 					if not ok then  return false, lastOutput  end
 
 					break
 				end
 			end
 
-			lastOutput = writeAlphanum(buffer, "end", lastOutput)
+			lastOutput = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
+			lastOutput = writeAlphanum(buffer, pretty, "end", lastOutput)
 
 		elseif nodeType == "while" then
-			lastOutput = writeAlphanum(buffer, "while", lastOutput)
+			lastOutput = writeAlphanum(buffer, pretty, "while", lastOutput)
+			if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
-			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.condition, true)
+			local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, node.condition, true)
 			if not ok then  return false, lastOutput  end
 
-			lastOutput = writeAlphanum(buffer, "do", lastOutput)
+			if pretty then  lastOutput = writeLua(buffer, " ", "")  end
+			lastOutput = writeAlphanum(buffer, pretty, "do", lastOutput)
+			if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
 
-			local ok;ok, lastOutput = writeStatements(buffer, pretty, lastOutput, node.body.statements)
+			local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, node.body.statements)
 			if not ok then  return false, lastOutput  end
 
-			lastOutput = writeAlphanum(buffer, "end", lastOutput)
+			lastOutput = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
+			lastOutput = writeAlphanum(buffer, pretty, "end", lastOutput)
 
 		elseif nodeType == "repeat" then
-			lastOutput = writeAlphanum(buffer, "repeat", lastOutput)
+			lastOutput = writeAlphanum(buffer, pretty, "repeat", lastOutput)
+			if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
 
-			local ok;ok, lastOutput = writeStatements(buffer, pretty, lastOutput, node.body.statements)
+			local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, node.body.statements)
 			if not ok then  return false, lastOutput  end
 
-			lastOutput = writeAlphanum(buffer, "until", lastOutput)
+			lastOutput = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
+			lastOutput = writeAlphanum(buffer, pretty, "until", lastOutput)
+			if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
-			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.condition, true)
+			local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, node.condition, true)
 			if not ok then  return false, lastOutput  end
 
 		elseif nodeType == "for" then
-			lastOutput = writeAlphanum(buffer, "for", lastOutput)
+			lastOutput = writeAlphanum(buffer, pretty, "for", lastOutput)
+			lastOutput = writeLua(buffer, " ", "")
 
-			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, lastOutput, node.names)
+			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.names)
 			if not ok then  return false, lastOutput  end
+
+			if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
 			if node.kind == "numeric" then
 				lastOutput = writeLua(buffer, "=", "")
 
 			elseif node.kind == "generic" then
-				lastOutput = writeAlphanum(buffer, "in", lastOutput)
+				lastOutput = writeAlphanum(buffer, pretty, "in", lastOutput)
 
 			else
 				printerr(F("Unknown 'for' loop kind '%s'.", node.kind))
 				return false, lastOutput
 			end
 
-			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, lastOutput, node.values)
+			if pretty then  lastOutput = writeLua(buffer, " ", "")  end
+
+			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.values)
 			if not ok then  return false, lastOutput  end
 
-			lastOutput = writeAlphanum(buffer, "do", lastOutput)
+			if pretty then  lastOutput = writeLua(buffer, " ", "")  end
+			lastOutput = writeAlphanum(buffer, pretty, "do", lastOutput)
+			if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
 
-			local ok;ok, lastOutput = writeStatements(buffer, pretty, lastOutput, node.body.statements)
+			local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, node.body.statements)
 			if not ok then  return false, lastOutput  end
 
-			lastOutput = writeAlphanum(buffer, "end", lastOutput)
+			lastOutput = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
+			lastOutput = writeAlphanum(buffer, pretty, "end", lastOutput)
 
 		else
 			printerr(F("Unknown node type '%s'.", nodeType))
@@ -2169,14 +2236,13 @@ do
 	-- lua = toLua( ast [, prettyOuput=false ] )
 	-- Returns nil on error.
 	function toLua(node, pretty)
-		-- @Incomplete: Support 'pretty'.
 		local buffer = {}
 
 		local ok
 		if node.type == "block" then -- @Robustness: This exception isn't great. Should there be a file scope node?
-			ok = writeStatements(buffer, pretty, "", node.statements)
+			ok = writeStatements(buffer, pretty, 0, "", node.statements)
 		else
-			ok = writeNode(buffer, pretty, "", node, true)
+			ok = writeNode(buffer, pretty, 0, "", node, true)
 		end
 
 		return ok and table.concat(buffer) or nil
@@ -2185,7 +2251,7 @@ end
 
 
 
--- Test.
+--[[ Test.
 do
 	io.stdout:setvbuf("no")
 	io.stderr:setvbuf("no")
@@ -2195,15 +2261,26 @@ do
 
 	-- printTree(ast)
 
-	local lua
-	lua = toLua(ast, true)
-	-- lua = lua:gsub(("."):rep(250), "%0\0")
-	-- lua = lua:gsub("([%w_]+)%z([%w_]+)", "%1%2\n")
-	-- lua = lua:gsub("%z", "\n")
-	print(lua)
+	local pretty = 1==1
+	local lua    = toLua(ast, pretty)
 
-	assert(loadstring(toLua(ast, true), "@lua"))
+	do
+		local luaEdit = lua
+		-- luaEdit = luaEdit:gsub(("."):rep(250), "%0\0")
+		-- luaEdit = luaEdit:gsub("([%w_]+)%z([%w_]+)", "%1%2\n")
+		-- luaEdit = luaEdit:gsub("%z", "\n")
+		print(luaEdit)
+	end
+
+	assert(loadstring(lua, "@lua"))
+
+	-- Round-trip.
+	local tripTokens = assert(tokenizeString(lua))
+	local tripAst    = assert(parse(tripTokens))
+	local tripLua    = toLua(tripAst, pretty)
+	assert(tripLua == lua, tripLua)
 end
+--]]
 
 return {
 	tokenizeString = tokenizeString,
