@@ -6,12 +6,14 @@
 --=  Supported versions: 5.1
 --=
 --=  @Incomplete: Support Lua 5.2+.
---=  @Incomplete: Handle \r.
 --=
 --==============================================================
 
-	Reference:
-	@Incomplete!!!
+	-- Functions:
+	parse
+	printNode, printTree
+	tokenizeFile, tokenizeString
+	toLua
 
 --============================================================]]
 
@@ -78,7 +80,7 @@ local OPERATOR_PRECEDENCE = {
 	[".."]  = 4,
 	["+"]   = 5, ["-"] = 5,
 	["*"]   = 6, ["/"] = 6, ["//"] = 6, ["%"] = 6,
-	["not"] = 7, ["#"] = 7, unary  = 7,
+	unary   = 7, -- "-", "#", "not"
 	["^"]   = 8,
 }
 
@@ -224,7 +226,7 @@ function countString(haystack, needle, plain)
 end
 
 function printerr(s)
-	io.stdout:write(s, "\n")
+	io.stderr:write(s, "\n")
 end
 
 function reportErrorInFile(contents, path, ptr, agent, s, ...)
@@ -289,6 +291,10 @@ end
 
 -- tokens, error = tokenizeString( luaString, pathForError )
 function tokenizeString(s, path)
+	if find(s, "\r", 1, true) then
+		s = gsub(s, "\r\n?", "\n")
+	end
+
 	local tokTypes  = {}
 	local tokValues = {} -- @Incomplete: The resulting values.
 	local tokReprs  = {}
@@ -779,7 +785,7 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 		expr = _expr
 
 	else
-		reportErrorAtToken(tokens, tok, "Parser", "Cannot parse expression.")
+		reportErrorAtToken(tokens, tok, "Parser", "Failed parsing expression.")
 		return false, tok
 	end
 
@@ -1020,6 +1026,8 @@ function parseFunctionParametersAndBody(tokens, tok)
 
 	return func, tok
 end
+
+local blockEndTokenTypes = {["end"]=true, ["else"]=true, ["elseif"]=true, ["until"]=true}
 
 function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> success, token
 	--[[
@@ -1350,7 +1358,7 @@ function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> success, 
 		local returnNode = AstReturn(tok)
 		tok              = tok + 1 -- 'return'
 
-		if tok <= tokens.n and not isToken(tokens, tok, "keyword", "end") then
+		if tok <= tokens.n and not (isTokenType(tokens, tok, "keyword") and isTokenAnyValue(tokens, tok, blockEndTokenTypes)) then
 			local ok, tokNext = parseExpressionList(tokens, tok, returnNode.values)
 			if not ok then  return false, tok  end
 			tok = tokNext
@@ -1416,8 +1424,6 @@ function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> success, 
 	assert(false)
 end
 
-local blockEndTokenTypes = {["end"]=true, ["else"]=true, ["elseif"]=true, ["until"]=true}
-
 function parseBlock(tokens, tok, stopAtEndKeyword) --> block, token
 	local block      = AstBlock(tok)
 	local statements = block.statements
@@ -1431,7 +1437,7 @@ function parseBlock(tokens, tok, stopAtEndKeyword) --> block, token
 		if not ok then
 			if not tokens.statementErrorReported then
 				tokens.statementErrorReported = true
-				reportErrorAtToken(tokens, tok, "Parser", "Could not parse statement.")
+				reportErrorAtToken(tokens, tok, "Parser", "Failed parsing statement.")
 			end
 			return nil, tok
 		end
@@ -1712,7 +1718,6 @@ do
 				skipNext = false
 
 			elseif statementNext and isStatementFunctionDeclaration(statement, statementNext) then
-				-- @Cleanup: Put the assignment on the declaration when parsing.
 				local assignment = statementNext
 				local func       = assignment.values[1]
 
@@ -1885,7 +1890,7 @@ do
 				lastOutput = writeLua(buffer, F('"%s"', s), "")
 
 			else
-				printerr(F("Could not output value '%s'.", node.value))
+				printerr(F("Failed outputting value '%s'.", node.value))
 				return false, lastOutput
 			end
 
