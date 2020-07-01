@@ -10,7 +10,7 @@ local s = "\0\1\2\3\4\5\6\7\8\9\10\11\12\13\\\01499\15\16\17\18\19\"\20\21\22\23
 
 do foo() ; o:m() end
 
-while true do  foo()  end
+while false or true do  foo()  end
 repeat foo() until x - -7 == 8
 
 for i = 1, 9 do  foo(i)  end
@@ -29,3 +29,7 @@ local s = 1.  .. x
 local s = 1.1 .. x
 
 local x = a and b and c or q and w or 5
+
+;(f1 or f2).k, (f1 or f2).k = x, y
+
+if x or y then foo() end

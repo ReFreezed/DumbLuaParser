@@ -1692,7 +1692,7 @@ do
 		for i, expr in ipairs(expressions) do
 			if i > 1 then  lastOutput = writeLua(buffer, ",", "")  end
 
-			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, expr)
+			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, expr, true)
 			if not ok then  return false, lastOutput  end
 		end
 
@@ -1723,7 +1723,7 @@ do
 
 				lastOutput = writeAlphanum(buffer, "local function", lastOutput)
 
-				local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, assignment.targets[1])
+				local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, assignment.targets[1], true)
 				if not ok then  return false, lastOutput  end
 
 				lastOutput = writeLua(buffer, "(", "")
@@ -1740,7 +1740,7 @@ do
 				skipNext   = true
 
 			else
-				local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, statement)
+				local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, statement, true)
 				if not ok then  return false, lastOutput  end
 
 				if statement.type == "call" then
@@ -1760,7 +1760,7 @@ do
 		local objIsLiteral = (lookup.object.type == "literal")
 		if objIsLiteral then  lastOutput = writeLua(buffer, "(", "")  end
 
-		local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, lookup.object)
+		local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, lookup.object, false)
 		if not ok then  return false, lastOutput  end
 
 		if objIsLiteral then  lastOutput = writeLua(buffer, ")", "")  end
@@ -1776,7 +1776,7 @@ do
 		else
 			lastOutput = writeLua(buffer, "[", "")
 
-			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, lookup.member)
+			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, lookup.member, true)
 			if not ok then  return false, lastOutput  end
 
 			lastOutput = writeLua(buffer, "]", "")
@@ -1809,7 +1809,7 @@ do
 			local ok;ok, lastOutput = writeBinaryOperatorChain(buffer, pretty, lastOutput, l)
 			if not ok then  return false, lastOutput  end
 		else
-			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, l)
+			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, l, false)
 			if not ok then  return false, lastOutput  end
 		end
 
@@ -1823,16 +1823,16 @@ do
 			local ok;ok, lastOutput = writeBinaryOperatorChain(buffer, pretty, lastOutput, r)
 			if not ok then  return false, lastOutput  end
 		else
-			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, r)
+			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, r, false)
 			if not ok then  return false, lastOutput  end
 		end
 
 		return true, lastOutput
 	end
 
-	-- success, lastOutput = writeNode( buffer, pretty, lastOutput, node )
+	-- success, lastOutput = writeNode( buffer, pretty, lastOutput, node, maySafelyOmitParens )
 	-- lastOutput          = "" | "alphanum" | "number" | "-"
-	function writeNode(buffer, pretty, lastOutput, node)
+	function writeNode(buffer, pretty, lastOutput, node, maySafelyOmitParens)
 		local nodeType = node.type
 
 		-- Expressions:
@@ -1907,7 +1907,7 @@ do
 					else
 						lastOutput = writeLua(buffer, "[", "")
 
-						local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, field.key)
+						local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, field.key, false)
 						if not ok then  return false, lastOutput  end
 
 						lastOutput = writeLua(buffer, "]", "")
@@ -1916,7 +1916,7 @@ do
 					lastOutput = writeLua(buffer, "=", "")
 				end
 
-				local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, field.value)
+				local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, field.value, false)
 				if not ok then  return false, lastOutput  end
 			end
 
@@ -1927,37 +1927,37 @@ do
 			if not ok then  return false, lastOutput  end
 
 		elseif nodeType == "unary" then
-			lastOutput = writeLua(buffer, "(", "")
+			if not maySafelyOmitParens then  lastOutput = writeLua(buffer, "(", "")  end -- @Polish: Only output parentheses around child unaries/binaries if associativity requires it.
 
 			local nextOutput = ((node.operator == "-" and "-") or (node.operator:find"%w" and "alphanum") or (""))
 			if nextOutput ~= "" then  ensureSpace(buffer, lastOutput, nextOutput)  end
 			lastOutput = writeLua(buffer, node.operator, nextOutput)
 
-			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.expression)
+			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.expression, false)
 			if not ok then  return false, lastOutput  end
 
-			lastOutput = writeLua(buffer, ")", "")
+			if not maySafelyOmitParens then  lastOutput = writeLua(buffer, ")", "")  end
 
 		elseif nodeType == "binary" then
-			lastOutput = writeLua(buffer, "(", "") -- @UX: Only output parentheses around child binaries if associativity requires it.
+			if not maySafelyOmitParens then  lastOutput = writeLua(buffer, "(", "")  end -- @Polish: Only output parentheses around child unaries/binaries if associativity requires it.
 
 			if node.operator == ".." or node.operator == "and" or node.operator == "or" then
 				local ok;ok, lastOutput = writeBinaryOperatorChain(buffer, pretty, lastOutput, node)
 				if not ok then  return false, lastOutput  end
 
 			else
-				local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.left)
+				local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.left, false)
 				if not ok then  return false, lastOutput  end
 
 				local nextOutput = ((node.operator == "-" and "-") or (node.operator:find"%w" and "alphanum") or (""))
 				if nextOutput ~= "" then  ensureSpace(buffer, lastOutput, nextOutput)  end
 				lastOutput = writeLua(buffer, node.operator, nextOutput)
 
-				local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.right)
+				local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.right, false)
 				if not ok then  return false, lastOutput  end
 			end
 
-			lastOutput = writeLua(buffer, ")", "")
+			if not maySafelyOmitParens then  lastOutput = writeLua(buffer, ")", "")  end
 
 		elseif nodeType == "call" then
 			if node.adjustToOne then  lastOutput = writeLua(buffer, "(", "")  end
@@ -1974,7 +1974,7 @@ do
 				if not ok then  return false, lastOutput  end
 
 			else
-				local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.callee)
+				local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.callee, false)
 				if not ok then  return false, lastOutput  end
 			end
 
@@ -2043,7 +2043,7 @@ do
 				local func = node.values[1]
 				lastOutput = writeAlphanum(buffer, "function", lastOutput)
 
-				local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.targets[1])
+				local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.targets[1], false)
 				if not ok then  return false, lastOutput  end
 
 				lastOutput = writeLua(buffer, "(", "")
@@ -2073,7 +2073,7 @@ do
 		elseif nodeType == "if" then
 			lastOutput = writeAlphanum(buffer, "if", lastOutput)
 
-			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.condition)
+			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.condition, true)
 			if not ok then  return false, lastOutput  end
 
 			lastOutput = writeAlphanum(buffer, "then", lastOutput)
@@ -2088,7 +2088,7 @@ do
 
 					lastOutput = writeAlphanum(buffer, "elseif", lastOutput)
 
-					local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.condition)
+					local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.condition, true)
 					if not ok then  return false, lastOutput  end
 
 					lastOutput = writeAlphanum(buffer, "then", lastOutput)
@@ -2111,7 +2111,7 @@ do
 		elseif nodeType == "while" then
 			lastOutput = writeAlphanum(buffer, "while", lastOutput)
 
-			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.condition)
+			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.condition, true)
 			if not ok then  return false, lastOutput  end
 
 			lastOutput = writeAlphanum(buffer, "do", lastOutput)
@@ -2129,7 +2129,7 @@ do
 
 			lastOutput = writeAlphanum(buffer, "until", lastOutput)
 
-			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.condition)
+			local ok;ok, lastOutput = writeNode(buffer, pretty, lastOutput, node.condition, true)
 			if not ok then  return false, lastOutput  end
 
 		elseif nodeType == "for" then
@@ -2176,7 +2176,7 @@ do
 		if node.type == "block" then -- @Robustness: This exception isn't great. Should there be a file scope node?
 			ok = writeStatements(buffer, pretty, "", node.statements)
 		else
-			ok = writeNode(buffer, pretty, "", node)
+			ok = writeNode(buffer, pretty, "", node, true)
 		end
 
 		return ok and table.concat(buffer) or nil
