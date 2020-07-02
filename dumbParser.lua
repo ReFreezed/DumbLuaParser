@@ -297,7 +297,7 @@ function tokenizeString(s, path)
 	path = path or "?"
 
 	local tokTypes  = {}
-	local tokValues = {} -- @Incomplete: The resulting values.
+	local tokValues = {}
 	local tokReprs  = {}
 	local tokLine1  = {}
 	local tokLine2  = {}
@@ -333,33 +333,15 @@ function tokenizeString(s, path)
 
 		local ptrStart = ptr
 		local lnStart  = ln
-		local tokType
+		local tokType, tokRepr, tokValue
 
 		-- Identifier/keyword.
 		if find(s, "^[%a_]", ptr) then
 			local i1, i2, word = find(s, "^([%a_][%w_]*)", ptr)
-			ptr                = i2+1
-			tokType            = KEYWORDS[word] and "keyword" or "identifier"
-
-		-- Number.
-		elseif find(s, "^%.?%d", ptr) then
-			local               lua52Hex, i1, i2, numStr = true,  find(s, NUM_HEX_FRAC_EXP, ptr)
-			if not i1     then  lua52Hex, i1, i2, numStr = true,  find(s, NUM_HEX_FRAC,     ptr)
-			if not i1     then  lua52Hex, i1, i2, numStr = true,  find(s, NUM_HEX_EXP,      ptr)
-			if not i1     then  lua52Hex, i1, i2, numStr = false, find(s, NUM_HEX,          ptr)
-			if not i1     then  lua52Hex, i1, i2, numStr = false, find(s, NUM_DEC_FRAC_EXP, ptr)
-			if not i1     then  lua52Hex, i1, i2, numStr = false, find(s, NUM_DEC_FRAC,     ptr)
-			if not i1     then  lua52Hex, i1, i2, numStr = false, find(s, NUM_DEC_EXP,      ptr)
-			if not i1     then  lua52Hex, i1, i2, numStr = false, find(s, NUM_DEC,          ptr)
-			if not numStr then  return nil, reportErrorInFile(s, path, ptr, "Tokenizer", "Malformed number.")
-			end end end end end end end end
-
-			ptr     = i2+1
-			tokType = "number"
-
-			if find(s, "^%.", ptr) then
-				return nil, reportErrorInFile(s, path, ptr, "Tokenizer", "Malformed number.")
-			end
+			ptr      = i2+1
+			tokType  = KEYWORDS[word] and "keyword" or "identifier"
+			tokRepr  = sub(s, ptrStart, ptr-1)
+			tokValue = tokRepr
 
 		-- Comment.
 		elseif find(s, "^%-%-", ptr) then
@@ -385,7 +367,57 @@ function tokenizeString(s, path)
 				end
 			end
 
-			tokType = "comment"
+			tokType  = "comment"
+			tokRepr  = sub(s, ptrStart, ptr-1)
+			tokValue = equalSignCountIfLong and sub(tokRepr, 5+equalSignCountIfLong, -3-equalSignCountIfLong) or sub(tokRepr, 3)
+			tokValue = gsub(gsub(tokValue, "^%s+", ""), "%s+$", "")
+
+		-- Number.
+		elseif find(s, "^%.?%d", ptr) then
+			local               lua52Hex, i1, i2, numStr = true,  find(s, NUM_HEX_FRAC_EXP, ptr)
+			if not i1     then  lua52Hex, i1, i2, numStr = true,  find(s, NUM_HEX_FRAC,     ptr)
+			if not i1     then  lua52Hex, i1, i2, numStr = true,  find(s, NUM_HEX_EXP,      ptr)
+			if not i1     then  lua52Hex, i1, i2, numStr = false, find(s, NUM_HEX,          ptr)
+			if not i1     then  lua52Hex, i1, i2, numStr = false, find(s, NUM_DEC_FRAC_EXP, ptr)
+			if not i1     then  lua52Hex, i1, i2, numStr = false, find(s, NUM_DEC_FRAC,     ptr)
+			if not i1     then  lua52Hex, i1, i2, numStr = false, find(s, NUM_DEC_EXP,      ptr)
+			if not i1     then  lua52Hex, i1, i2, numStr = false, find(s, NUM_DEC,          ptr)
+			if not numStr then  return nil, reportErrorInFile(s, path, ptrStart, "Tokenizer", "Malformed number.")
+			end end end end end end end end
+
+			local n = tonumber(numStr)
+
+			-- Support hexadecimal floats in Lua 5.1.
+			if not n and lua52Hex then
+				local               _, intStr, fracStr, expStr = match(numStr, NUM_HEX_FRAC_EXP)
+				if not intStr then  _, intStr, fracStr         = match(numStr, NUM_HEX_FRAC) ; expStr  = "0"
+				if not intStr then  _, intStr,          expStr = match(numStr, NUM_HEX_EXP)  ; fracStr = ""
+				if not intStr then  return nil, reportErrorInFile(s, path, ptrStart, "Tokenizer", "Internal error parsing the number '%s'.", numStr)
+				end end end
+
+				n = tonumber(intStr, 16) or 0 -- intStr may be "".
+
+				local fracValue = 1
+				for i = 1, #fracStr do
+					fracValue = fracValue / 16
+					n         = n + tonumber(sub(fracStr, i, i), 16) * fracValue
+				end
+
+				n = n * 2 ^ gsub(expStr, "^+", "")
+			end
+
+			if not n then
+				return nil, reportErrorInFile(s, path, ptrStart, "Tokenizer", "Invalid number.")
+			end
+
+			ptr      = i2+1
+			tokType  = "number"
+			tokRepr  = numStr
+			tokValue = n
+
+			if find(s, "^%.", ptr) then
+				return nil, reportErrorInFile(s, path, ptrStart, "Tokenizer", "Malformed number.")
+			end
 
 		-- String (short).
 		elseif find(s, "^[\"']", ptr) then
@@ -420,6 +452,15 @@ function tokenizeString(s, path)
 			end
 
 			tokType = "string"
+			tokRepr = sub(s, ptrStart, ptr-1)
+
+			local chunk, err = loadstring("return "..tokRepr, "@")
+			if not chunk then
+				err = gsub(err, "^:%d+: ", "")
+				return nil, reportErrorInFile(s, path, ptrStart, "Tokenizer", "Could not convert string token to value. (%s)", err)
+			end
+			tokValue = assert(chunk)()
+			assert(type(tokValue) == "string")
 
 		-- Long string.
 		elseif find(s, "^%[=*%[", ptr) then
@@ -436,36 +477,51 @@ function tokenizeString(s, path)
 			end
 
 			tokType = "string"
+			tokRepr = sub(s, ptrStart, ptr-1)
+
+			local chunk, err = loadstring("return "..tokRepr, "@")
+			if not chunk then
+				err = gsub(err, "^:%d+: ", "")
+				return nil, reportErrorInFile(s, path, ptrStart, "Tokenizer", "Could not convert long string token to value. (%s)", err)
+			end
+			tokValue = assert(chunk)()
+			assert(type(tokValue) == "string")
 
 		-- Punctuation.
 		elseif find(s, "^%.%.%.", ptr) then
-			ptr     = ptr + 3
-			tokType = "punctuation"
+			ptr      = ptr + 3
+			tokType  = "punctuation"
+			tokRepr  = sub(s, ptrStart, ptr-1)
+			tokValue = tokRepr
 		elseif find(s, "^%.%.", ptr) or find(s, "^[=~<>]=", ptr) or find(s, "^::", ptr) or find(s, "^//", ptr) or find(s, "^<<", ptr) or find(s, "^>>", ptr) then
-			ptr     = ptr + 2
-			tokType = "punctuation"
+			ptr      = ptr + 2
+			tokType  = "punctuation"
+			tokRepr  = sub(s, ptrStart, ptr-1)
+			tokValue = tokRepr
 		elseif find(s, "^[+%-*/%%^#<>=(){}[%];:,.]", ptr) then
-			ptr     = ptr + 1
-			tokType = "punctuation"
+			ptr      = ptr + 1
+			tokType  = "punctuation"
+			tokRepr  = sub(s, ptrStart, ptr-1)
+			tokValue = tokRepr
 
 		else
-			return nil, reportErrorInFile(s, path, ptr, "Tokenizer", "Unknown character.")
+			return nil, reportErrorInFile(s, path, ptrStart, "Tokenizer", "Unknown character.")
 		end
 
 		if not tokType then
 			return nil, reportErrorInFile(s, path, ptrStart, "Tokenizer", "Internal error: Got no token type.")
 		end
 
-		local tokRepr = sub(s, ptrStart, ptr-1)
-		ln            = ln + countString(tokRepr, "\n", true)
+		ln = ln + countString(tokRepr, "\n", true)
 
-		count           = count + 1
-		tokTypes[count] = tokType
-		tokReprs[count] = tokRepr
-		tokLine1[count] = lnStart
-		tokLine2[count] = ln
-		tokPos1 [count] = ptrStart
-		tokPos2 [count] = ptr - 1
+		count            = count + 1
+		tokTypes[count]  = tokType
+		tokValues[count] = tokValue
+		tokReprs[count]  = tokRepr
+		tokLine1[count]  = lnStart
+		tokLine2[count]  = ln
+		tokPos1 [count]  = ptrStart
+		tokPos2 [count]  = ptr - 1
 
 		-- print(F("%4d %-11s '%s'", count, tokType, (gsub(tokRepr, "\n", "\\n"))))
 	end
@@ -506,8 +562,6 @@ end
 	         local namelist ['=' explist]
 
 	laststat ::= return [explist] | break
-
-
 
 	funcname ::= Name {'.' Name} [':' Name]
 
@@ -550,14 +604,13 @@ end
 ]=]
 
 function isToken(tokens, tok, tokType, tokValue)
-	return tokens.type[tok] == tokType and tokens.representation[tok] == tokValue -- @Incomplete: Use token value. :UseTokenValue
+	return tokens.type[tok] == tokType and tokens.value[tok] == tokValue
 end
 function isTokenType(tokens, tok, tokType)
 	return tokens.type[tok] == tokType
 end
 function isTokenAnyValue(tokens, tok, tokValueSet)
-	local tokValue = tokens.representation[tok] -- :UseTokenValue
-	return tokValueSet[tokValue] == true
+	return tokValueSet[tokens.value[tok]] == true
 end
 
 function parseIdentifier(tokens, tok) --> ident, token
@@ -567,7 +620,7 @@ function parseIdentifier(tokens, tok) --> ident, token
 	end
 
 	local ident = AstIdentifier(tok)
-	ident.name  = tokens.representation[tok] -- :UseTokenValue
+	ident.name  = tokens.value[tok]
 	tok         = tok + 1
 
 	return ident, tok
@@ -635,7 +688,7 @@ function parseTable(tokens, tok) --> tableNode, token
 
 		elseif isTokenType(tokens, tok, "identifier") and isToken(tokens, tok+1, "punctuation", "=") then
 			local keyExpr = AstLiteral(tok)
-			keyExpr.value = tokens.representation[tok] -- :UseTokenValue
+			keyExpr.value = tokens.value[tok]
 			tok           = tok + 1 -- identifier
 
 			if not isToken(tokens, tok, "punctuation", "=") then
@@ -710,7 +763,7 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 	-- literal
 	elseif isTokenType(tokens, tok, "string") or isTokenType(tokens, tok, "number") then
 		local literal = AstLiteral(tok)
-		literal.value = assert(loadstring("return "..tokens.representation[tok], tokens.representation[tok]))() -- :UseTokenValue
+		literal.value = tokens.value[tok]
 		tok           = tok + 1 -- literal
 		expr          = literal
 	elseif isToken(tokens, tok, "keyword", "true") then
@@ -735,7 +788,7 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 		and OPERATOR_PRECEDENCE.unary > lastPrecedence
 	then
 		local unary    = AstUnary(tok)
-		unary.operator = tokens.representation[tok] -- :UseTokenValue
+		unary.operator = tokens.value[tok]
 		tok            = tok + 1 -- operator
 
 		local subExpr, tokNext = parseExpression(tokens, tok, OPERATOR_PRECEDENCE.unary)
@@ -800,12 +853,12 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 				or isToken(tokens, tok, "keyword", "and")
 				or isToken(tokens, tok, "keyword", "or")
 			)
-			and OPERATOR_PRECEDENCE[tokens.representation[tok]] > lastPrecedence -- :UseTokenValue
+			and OPERATOR_PRECEDENCE[tokens.value[tok]] > lastPrecedence
 		then
 			local rightAssociative = isToken(tokens, tok, "punctuation", "..") or isToken(tokens, tok, "punctuation", "^")
 
 			local binary    = AstBinary(tok)
-			binary.operator = tokens.representation[tok] -- :UseTokenValue
+			binary.operator = tokens.value[tok]
 			tok             = tok + 1 -- operator
 
 			local rhsExpr, tokNext = parseExpression(tokens, tok, OPERATOR_PRECEDENCE[binary.operator] + (rightAssociative and -1 or 0))
@@ -859,7 +912,7 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 			local call = AstCall(tok)
 
 			local literal     = AstLiteral(tok)
-			literal.value     = assert(loadstring("return "..tokens.representation[tok], tokens.representation[tok]))() -- :UseTokenValue
+			literal.value     = tokens.value[tok]
 			tok               = tok + 1 -- string
 			call.arguments[1] = literal
 
@@ -928,7 +981,7 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 
 				if isTokenType(tokens, tok, "string") then
 					local literal     = AstLiteral(tok)
-					literal.value     = assert(loadstring("return "..tokens.representation[tok], tokens.representation[tok]))() -- :UseTokenValue
+					literal.value     = tokens.value[tok]
 					tok               = tok + 1 -- string
 					call.arguments[1] = literal
 
