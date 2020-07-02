@@ -1,19 +1,117 @@
 --[[============================================================
 --=
---=  Dumb Lua parsing library v0.1
+--=  Lua parsing library v1.0 (2020-07-02)
 --=  by Marcus 'ReFreezed' Thunström
 --=
---=  Supported versions: 5.1
+--=  License: MIT (see the bottom of this file)
+--=
+--=  Supported Lua versions: 5.1
 --=
 --=  @Incomplete: Support Lua 5.2+.
 --=
 --==============================================================
 
-	-- Functions:
-	parse
-	printNode, printTree
-	tokenizeFile, tokenizeString
-	toLua
+
+	Usage
+	--------------------------------
+
+	local parser = require("dumbParser")
+
+	local tokens = parser.tokenizeFile("cool.lua")
+	local ast    = parser.parse(tokens)
+
+	parser.printTree(ast)
+
+	local lua = parser.toLua(ast, true)
+	print(lua)
+
+
+	API
+	--------------------------------
+
+	tokenizeString()
+		tokens, error = tokenizeString( luaString [, pathForErrors="?" ] )
+		Convert a Lua string into tokens.
+		Returns nil and an error message on error.
+
+	tokenizeFile()
+		tokens, error = tokenizeFile( path )
+		Convert the contents of a file into tokens. Uses io.open().
+		Returns nil and an error message on error.
+
+	parse()
+		astNode, error = parse( tokens )
+		astNode, error = parse( luaString, pathForErrors )
+		astNode, error = parse( path )
+		Convert tokens or Lua code into an abstract syntax tree.
+		Returns nil and an error message on error.
+
+	printNode()
+		printNode( astNode )
+		Print information about an AST node to stdout.
+
+	printTree()
+		printTree( astNode )
+		Print the structure of a whole AST to stdout.
+
+	toLua()
+		lua = toLua( astNode [, prettyOuput=false ] )
+		Convert an AST to Lua. Returns nil on error.
+
+
+	Tokens
+	--------------------------------
+
+	Token table fields:
+
+		n              -- Token count.
+		sourceString   -- The original source string.
+		sourcePath     -- Path to the source file.
+
+		type           -- Array of token types.
+		value          -- Array of token values. All token types have string values except "number" tokens.
+		representation -- Array of token representations (i.e. strings have their quotes etc.).
+		lineStart      -- Array of token start line numbers.
+		lineEnd        -- Array of token end line numbers.
+		positionStart  -- Array of token start indices.
+		positionEnd    -- Array of token end indices.
+
+	Token types:
+
+		"comment"     -- Comment.
+		"identifier"  -- Word that is not a keyword.
+		"keyword"     -- Lua keyword.
+		"number"      -- Number literal.
+		"punctuation" -- Any punctuation, like "." or "(".
+		"string"      -- String value.
+
+
+	AST (abstract syntax tree)
+	--------------------------------
+
+	Node types:
+
+		"assignment"  -- Assignment of one or more values to one or more variables.
+		"binary"      -- Binary expression (operation with two operands, e.g. "+" or "and").
+		"block"       -- List of statements. Blocks inside blocks are 'do...end' statements. Can be a chuck.
+		"break"       -- Loop break statement.
+		"call"        -- Function call.
+		"declaration" -- Declaration of one or more local variables, possibly with initial values.
+		"for"         -- A 'for' loop.
+		"function"    -- Anonymous function header and body.
+		"identifier"  -- An identifier.
+		"if"          -- If statement with a condition, a body if the condition is true, and possibly another body if the condition is false.
+		"literal"     -- Number, string, boolean or nil literal.
+		"lookup"      -- Field lookup on an object.
+		"repeat"      -- A 'repeat' loop.
+		"return"      -- Function/chunk return statement, possibly with values.
+		"table"       -- Table constructor.
+		"unary"       -- Unary expression (operation with one operand, e.g. "-" or "not").
+		"vararg"      -- Vararg expression ("...").
+		"while"       -- A 'while' loop.
+
+	Node fields: (search for 'NodeFields')
+
 
 --============================================================]]
 
@@ -98,6 +196,8 @@ local ERROR_UNFINISHED_VALUE = {}
 
 
 
+-- :NodeFields
+
 -- AST expressions.
 local function AstIdentifier(tok) return {
 	type  = "identifier",
@@ -141,8 +241,8 @@ local function AstBinary(tok) return {
 local function AstCall(tok) return {
 	type        = "call",
 	token       = tok,
-	callee      = nil, -- Expression.
-	arguments   = {},  -- Array of expressions.
+	callee      = nil,   -- Expression.
+	arguments   = {},    -- Array of expressions.
 	method      = false,
 	adjustToOne = false, -- True if parentheses surround the call.
 } end
@@ -150,7 +250,7 @@ local function AstFunction(tok) return {
 	type       = "function",
 	token      = tok,
 	parameters = {},  -- Array of AstIdentifier.
-	vararg     = nil, -- AstVararg
+	vararg     = nil, -- AstVararg or nil.
 	body       = nil, -- AstBlock.
 } end
 
@@ -289,7 +389,7 @@ function parseStringlikeToken(s, ptr)
 	return true, equalSignCountIfLong, ptr
 end
 
--- tokens, error = tokenizeString( luaString [, pathForError="?" ] )
+-- tokens, error = tokenizeString( luaString [, pathForErrors="?" ] )
 function tokenizeString(s, path)
 	if find(s, "\r", 1, true) then
 		s = gsub(s, "\r\n?", "\n")
@@ -515,13 +615,13 @@ function tokenizeString(s, path)
 		ln = ln + countString(tokRepr, "\n", true)
 
 		count            = count + 1
-		tokTypes[count]  = tokType
+		tokTypes [count] = tokType
 		tokValues[count] = tokValue
-		tokReprs[count]  = tokRepr
-		tokLine1[count]  = lnStart
-		tokLine2[count]  = ln
-		tokPos1 [count]  = ptrStart
-		tokPos2 [count]  = ptr - 1
+		tokReprs [count] = tokRepr
+		tokLine1 [count] = lnStart
+		tokLine2 [count] = ln
+		tokPos1  [count] = ptrStart
+		tokPos2  [count] = ptr - 1
 
 		-- print(F("%4d %-11s '%s'", count, tokType, (gsub(tokRepr, "\n", "\\n"))))
 	end
@@ -1515,7 +1615,7 @@ function parseBlock(tokens, tok, stopAtEndKeyword) --> block, token
 end
 
 -- ast, error = parse( tokens )
--- ast, error = parse( luaString, pathForError )
+-- ast, error = parse( luaString, pathForErrors )
 -- ast, error = parse( path )
 function parse(tokens, path)
 	if type(tokens) == "string" then
@@ -2298,7 +2398,7 @@ do
 		return true, lastOutput
 	end
 
-	-- lua = toLua( ast [, prettyOuput=false ] )
+	-- lua = toLua( astNode [, prettyOuput=false ] )
 	-- Returns nil on error.
 	function toLua(node, pretty)
 		local buffer = {}
@@ -2351,6 +2451,8 @@ do
 end
 --]]
 
+
+
 return {
 	tokenizeString = tokenizeString,
 	tokenizeFile   = tokenizeFile,
@@ -2359,3 +2461,29 @@ return {
 	printTree      = printTree,
 	toLua          = toLua,
 }
+
+
+
+--[[!===========================================================
+
+Copyright © 2020 Marcus 'ReFreezed' Thunström
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+==============================================================]]
