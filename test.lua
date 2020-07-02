@@ -17,8 +17,8 @@ do
 	for i = 1, 9 do  foo(i)  end
 	for i, v in ipairs(t) do  bar(i, v)  end
 
-	local function foo() end
-	function a:b(x) return end
+	local function foo(...) end
+	function a:b(x, ...) return end
 	a[x] = function() return x end
 
 	local a = 1 + 2 + 3
@@ -35,7 +35,7 @@ do
 
 	if x or y then foo() end
 
-	local t = {x=5, y=(a or b), f=function()return"bark"end}
+	local t = {x=5, y=(a or b), f=function(...)return"bark"end}
 
 	local m = -8
 	local n = not false or false

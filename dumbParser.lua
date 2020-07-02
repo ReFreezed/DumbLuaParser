@@ -150,9 +150,8 @@ local function AstFunction(tok) return {
 	type       = "function",
 	token      = tok,
 	parameters = {},  -- Array of AstIdentifier.
+	vararg     = nil, -- AstVararg
 	body       = nil, -- AstBlock.
-	vararg     = false,
-	method     = false,
 } end
 
 -- AST statements.
@@ -574,13 +573,12 @@ function parseIdentifier(tokens, tok) --> ident, token
 	return ident, tok
 end
 
-function parseNameList(tokens, tok, names, allowVararg) --> success, token
+function parseNameList(tokens, tok, names, allowVararg) --> success, token, vararg|nil
 	while true do
 		if allowVararg and isToken(tokens, tok, "punctuation", "...") then
 			local vararg = AstVararg(tok)
 			tok          = tok + 1 -- '...'
-			table.insert(names, vararg)
-			break
+			return true, tok, vararg
 		end
 
 		local ident, tokNext = parseIdentifier(tokens, tok)
@@ -590,7 +588,7 @@ function parseNameList(tokens, tok, names, allowVararg) --> success, token
 		table.insert(names, ident)
 
 		if not isToken(tokens, tok, "punctuation", ",") then
-			break
+			return true, tok, nil
 		end
 		tok = tok + 1 -- ','
 	end
@@ -1004,9 +1002,11 @@ function parseFunctionParametersAndBody(tokens, tok)
 	tok = tok + 1 -- '('
 
 	if not isToken(tokens, tok, "punctuation", ")") then
-		local ok, tokNext = parseNameList(tokens, tok, func.parameters, true)
+		local ok, tokNext, vararg = parseNameList(tokens, tok, func.parameters, true)
 		if not ok then  return nil, tok  end
 		tok = tokNext
+
+		func.vararg = vararg
 	end
 
 	if not isToken(tokens, tok, "punctuation", ")") then
@@ -1299,8 +1299,6 @@ function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> success, 
 		tok = tokNext
 
 		if isMethod then
-			func.method = true
-
 			local ident = AstIdentifier(func.token)
 			ident.name  = "self"
 			table.insert(func.parameters, 1, ident)
@@ -1549,7 +1547,6 @@ do
 			if node.adjustToOne then  ioWrite(" (adjustToOne)")  end
 
 		elseif nodeType == "function" then
-			if node.method then  ioWrite(" (method)")  end
 			if node.vararg then  ioWrite(" (vararg)")  end
 
 		elseif nodeType == "for" then
@@ -1662,6 +1659,7 @@ end
 
 do
 	local writeNode
+	local writeStatements
 
 	local function canNodeBeName(node)
 		return node.type == "literal" and type(node.value) == "string" and node.value:find"^[%a_][%w_]*$" and not KEYWORDS[node.value]
@@ -1720,7 +1718,33 @@ do
 		return lastOutput
 	end
 
-	local function writeStatements(buffer, pretty, indent, lastOutput, statements)
+	local function writeFunctionParametersAndBody(buffer, pretty, indent, lastOutput, func, explicitParams)
+		lastOutput = writeLua(buffer, "(", "")
+
+		local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, explicitParams)
+		if not ok then  return false, lastOutput  end
+
+		if func.vararg then
+			if explicitParams[1] then
+				lastOutput = writeLua(buffer, ",",   "")
+				if pretty then  lastOutput = writeLua(buffer, " ", "")  end
+			end
+			lastOutput = writeLua(buffer, "...", "")
+		end
+
+		lastOutput = writeLua(buffer, ")", "")
+		if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
+
+		local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, func.body.statements)
+		if not ok then  return false, lastOutput  end
+
+		lastOutput = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
+		lastOutput = writeAlphanum(buffer, pretty, "end", lastOutput)
+
+		return true, lastOutput
+	end
+
+	function writeStatements(buffer, pretty, indent, lastOutput, statements)
 		local skipNext = false
 
 		for i, statement in ipairs(statements) do
@@ -1741,20 +1765,10 @@ do
 					local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, assignment.targets[1], true)
 					if not ok then  return false, lastOutput  end
 
-					lastOutput = writeLua(buffer, "(", "")
-
-					local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, func.parameters)
+					local ok;ok, lastOutput = writeFunctionParametersAndBody(buffer, pretty, indent, lastOutput, func, func.parameters)
 					if not ok then  return false, lastOutput  end
 
-					lastOutput = writeLua(buffer, ")", "")
-					if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
-
-					local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, func.body.statements)
-					if not ok then  return false, lastOutput  end
-
-					lastOutput = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
-					lastOutput = writeAlphanum(buffer, pretty, "end", lastOutput)
-					skipNext   = true
+					skipNext = true
 
 				else
 					local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, statement, true)
@@ -2020,19 +2034,9 @@ do
 
 		elseif nodeType == "function" then
 			lastOutput = writeAlphanum(buffer, pretty, "function", lastOutput)
-			lastOutput = writeLua(buffer, "(", "")
 
-			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.parameters)
+			local ok;ok, lastOutput = writeFunctionParametersAndBody(buffer, pretty, indent, lastOutput, node, node.parameters)
 			if not ok then  return false, lastOutput  end
-
-			lastOutput = writeLua(buffer, ")", "")
-			if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
-
-			local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, node.body.statements)
-			if not ok then  return false, lastOutput  end
-
-			lastOutput = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
-			lastOutput = writeAlphanum(buffer, pretty, "end", lastOutput)
 
 		-- Statements:
 
@@ -2082,27 +2086,29 @@ do
 
 		elseif nodeType == "assignment" then
 			if isAssignmentFunctionAssignment(node) then
-				-- @Incomplete: Make implicit 'self' parameter actually implicit.
 				local func = node.values[1]
 				lastOutput = writeAlphanum(buffer, pretty, "function", lastOutput)
 				lastOutput = writeLua(buffer, " ", "")
 
-				local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, node.targets[1], false)
+				local implicitSelfParam
+					=   #func.parameters >= 1
+					and func.parameters[1].name == "self"
+					and node.targets[1].type == "lookup"
+					and canNodeBeName(node.targets[1].member)
+
+				if implicitSelfParam then
+					local ok;ok, lastOutput = writeLookup(buffer, pretty, indent, lastOutput, node.targets[1], true)
+					if not ok then  return false, lastOutput  end
+				else
+					local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, node.targets[1], false)
+					if not ok then  return false, lastOutput  end
+				end
+
+				local explicitParams = func.parameters
+				if implicitSelfParam then  explicitParams = {unpack(explicitParams, 2)}  end
+
+				local ok;ok, lastOutput = writeFunctionParametersAndBody(buffer, pretty, indent, lastOutput, func, explicitParams)
 				if not ok then  return false, lastOutput  end
-
-				lastOutput = writeLua(buffer, "(", "")
-
-				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, func.parameters)
-				if not ok then  return false, lastOutput  end
-
-				lastOutput = writeLua(buffer, ")", "")
-				if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
-
-				local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, func.body.statements)
-				if not ok then  return false, lastOutput  end
-
-				lastOutput = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
-				lastOutput = writeAlphanum(buffer, pretty, "end", lastOutput)
 
 			else
 				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.targets)
@@ -2257,13 +2263,13 @@ end
 
 
 
---[[ Test.
+--[[ Tests.
 do
 	io.stdout:setvbuf("no")
 	io.stderr:setvbuf("no")
 
 	local path   = "./test.lua"
-	local path   = "./dumbParser.lua"
+	-- local path   = "./dumbParser.lua"
 	local tokens = assert(tokenizeFile(path))
 	local ast    = assert(parse(tokens))
 
@@ -2287,6 +2293,8 @@ do
 	local tripAst    = assert(parse(tripTokens))
 	local tripLua    = toLua(tripAst, pretty)
 	assert(tripLua == lua, tripLua)
+
+	print("Tests passed!")
 end
 --]]
 
