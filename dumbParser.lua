@@ -39,6 +39,18 @@
 		Convert the contents of a file into tokens. Uses io.open().
 		Returns nil and an error message on error.
 
+	newTokenStream()
+		tokens = newTokenStream( )
+		Create a new token stream table.
+
+	insertToken()
+		insertToken( tokens, [ index=tokens.n+1, ] tokenType, tokenValue )
+		Insert a new token.
+
+	removeToken()
+		removeToken( tokens [, index=1 ] )
+		Remove a token.
+
 	parse()
 		astNode, error = parse( tokens )
 		astNode, error = parse( luaString, pathForErrors )
@@ -62,7 +74,7 @@
 	Tokens
 	--------------------------------
 
-	Token table fields:
+	Token stream table fields:
 
 		n              -- Token count.
 		sourceString   -- The original source string.
@@ -70,7 +82,7 @@
 
 		type           -- Array of token types.
 		value          -- Array of token values. All token types have string values except "number" tokens.
-		representation -- Array of token representations (i.e. strings have their quotes etc.).
+		representation -- Array of token representations (i.e. strings have surrounding quotes etc.).
 		lineStart      -- Array of token start line numbers.
 		lineEnd        -- Array of token end line numbers.
 		positionStart  -- Array of token start indices.
@@ -78,7 +90,7 @@
 
 	Token types:
 
-		"comment"     -- Comment.
+		"comment"     -- A comment.
 		"identifier"  -- Word that is not a keyword.
 		"keyword"     -- Lua keyword.
 		"number"      -- Number literal.
@@ -124,9 +136,11 @@ local rep     = string.rep
 local sub     = string.sub
 
 local countString
+local insertToken
 local isToken
 local isTokenAnyValue
 local isTokenType
+local newTokenStream
 local parse
 local parseBlock
 local parseExpression
@@ -140,6 +154,7 @@ local parseTable
 local printerr
 local printNode
 local printTree
+local removeToken
 local reportErrorAtToken
 local reportErrorInFile
 local tokenizeFile
@@ -171,6 +186,13 @@ local KEYWORDS = {
 	["true"]     = true,
 	["until"]    = true,
 	["while"]    = true,
+}
+local PUNCTUATION = {
+	["+"]=true,  ["-"]=true,  ["*"]=true,  ["/"]=true,  ["%"]=true,  ["^"]=true,   ["#"]=true,
+	["&"]=true,  ["~"]=true,  ["|"]=true,  ["<<"]=true, [">>"]=true, ["//"]=true,
+	["=="]=true, ["~="]=true, ["<="]=true, [">="]=true, ["<"]=true,  [">"]=true,   ["="]=true,
+	["("]=true,  [")"]=true,  ["{"]=true,  ["}"]=true,  ["["]=true,  ["]"]=true,   ["::"]=true,
+	[";"]=true,  [":"]=true,  [","]=true,  ["."]=true,  [".."]=true, ["..."]=true,
 }
 local OPERATOR_PRECEDENCE = {
 	["or"]  = 1,
@@ -332,6 +354,11 @@ end
 function reportErrorInFile(contents, path, ptr, agent, s, ...)
 	s = F(s, ...)
 
+	if contents == "" then
+		printerr(F("Error @ %s: [%s] %s\n", path, agent, s))
+		return s
+	end
+
 	local pre       = contents:sub(1, ptr-1)
 
 	local lastLine1 = pre:reverse():match"^[^\n]*":reverse():gsub("\t", "    ")
@@ -343,17 +370,10 @@ function reportErrorInFile(contents, path, ptr, agent, s, ...)
 
 	-- print(debug.traceback("", 2)) -- DEBUG
 
-	if agent then
-		printerr(F(
-			"Error @ %s:%d: [%s] %s\n>\n> %s\n>%s^\n>\n",
-			path, ln, agent, s, lastLine, rep("-", col)
-		))
-	else
-		printerr(F(
-			"Error @ %s:%d: %s\n>\n> %s\n> %s^\n>\n",
-			path, ln,        s, lastLine, rep("-", col-1)
-		))
-	end
+	printerr(F(
+		"Error @ %s:%d: [%s] %s\n>\n> %s\n>%s^\n>\n",
+		path, ln, agent, s, lastLine, rep("-", col)
+	))
 
 	return s
 end
@@ -396,27 +416,17 @@ function tokenizeString(s, path)
 	end
 	path = path or "?"
 
-	local tokTypes  = {}
-	local tokValues = {}
-	local tokReprs  = {}
-	local tokLine1  = {}
-	local tokLine2  = {}
-	local tokPos1   = {}
-	local tokPos2   = {}
+	local tokens        = newTokenStream()
+	tokens.sourceString = s
+	tokens.path         = path
 
-	local tokens = {
-		n            = 0, -- Token count.
-		sourceString = s,
-		sourcePath   = path,
-
-		type           = tokTypes,
-		value          = tokValues,
-		representation = tokReprs,
-		lineStart      = tokLine1,
-		lineEnd        = tokLine2,
-		positionStart  = tokPos1,
-		positionEnd    = tokPos2,
-	}
+	local tokTypes  = tokens.type
+	local tokValues = tokens.value
+	local tokReprs  = tokens.representation
+	local tokLine1  = tokens.lineStart
+	local tokLine2  = tokens.lineEnd
+	local tokPos1   = tokens.positionStart
+	local tokPos2   = tokens.positionEnd
 
 	local count = 0
 	local ptr   = 1
@@ -640,6 +650,136 @@ function tokenizeFile(path)
 
 	local tokens, err = tokenizeString(s, path)
 	return tokens, err
+end
+
+
+
+function newTokenStream()
+	return {
+		n            = 0, -- Token count.
+		sourceString = "",
+		sourcePath   = "?",
+
+		type           = {},
+		value          = {},
+		representation = {},
+		lineStart      = {},
+		lineEnd        = {},
+		positionStart  = {},
+		positionEnd    = {},
+	}
+end
+
+-- insertToken( tokens, [ index=tokens.n+1, ] tokenType, tokenValue )
+function insertToken(tokens, i, tokType, tokValue)
+	if type(i) == "string" then
+		i, tokType, tokValue = math.huge, i, tokType
+	end
+	i = math.min(math.max(i, 1), tokens.n+1)
+
+	local tokRepr
+
+	if tokType == "keyword" then
+		if type(tokValue) ~= "string" then  error(F("Expected string value for 'keyword' token. (Got %s)", type(tokValue)))  end
+		if not KEYWORDS[tokValue]     then  error(F("Invalid keyword '%s'.", tokValue))  end
+		tokRepr = tokValue
+
+	elseif tokType == "identifier" then
+		if type(tokValue) ~= "string"          then  error(F("Expected string value for 'identifier' token. (Got %s)", type(tokValue)))  end
+		if not find(tokValue, "^[%a_][%w_]*$") then  error(F("Invalid identifier '%s'.", tokValue))  end
+		if KEYWORDS[tokValue]                  then  error(F("Invalid identifier '%s'.", tokValue))  end
+		tokRepr = tokValue
+
+	elseif tokType == "number" then
+		if type(tokValue) ~= "number"   then  error(F("Expected number value for 'number' token. (Got %s)", type(tokValue)))  end
+		if tokValue       ==  math.huge then  error(F("Number value cannot be huge."))  end
+		if tokValue       == -math.huge then  error(F("Number value cannot be huge."))  end
+		if tokValue       ~= tokValue   then  error(F("Number value cannot be NaN."))  end
+		if tokValue       <  0          then  error(F("Number value cannot be negative."))  end
+		tokRepr = (tokValue == 0 and "0" or tostring(tokValue))
+
+	elseif tokType == "string" then
+		if type(tokValue) ~= "string" then  error(F("Expected string value for 'string' token. (Got %s)", type(tokValue)))  end
+		tokRepr = gsub(F("%q", tokRepr), "\n", "n")
+
+	elseif tokType == "punctuation" then
+		if type(tokValue) ~= "string" then  error(F("Expected string value for 'punctuation' token. (Got %s)", type(tokValue)))  end
+		if not PUNCTUATION[tokValue]  then  error(F("Invalid punctuation '%s'.", tokValue))  end
+		tokRepr = tokValue
+
+	elseif tokType == "comment" then
+		if type(tokValue) ~= "string" then  error(F("Expected string value for 'comment' token. (Got %s)", type(tokValue)))  end
+
+		if find(tokValue, "\n") then
+			local equalSigns = find(tokValue, "[[", 1, true) and "=" or ""
+
+			while find(tokValue, "]"..equalSigns.."]", 1, true) do
+				equalSigns = equalSigns.."="
+			end
+
+			tokRepr = F("--[%s[%s]%s]", equalSigns, tokValue, equalSigns)
+
+		else
+			tokRepr = F("--%s\n", tokValue)
+		end
+
+	else
+		error(F("Invalid token type '%s'.", tostring(tokType)))
+	end
+
+	local tokTypes  = tokens.type
+	local tokValues = tokens.value
+	local tokReprs  = tokens.representation
+	local tokLine1  = tokens.lineStart
+	local tokLine2  = tokens.lineEnd
+	local tokPos1   = tokens.positionStart
+	local tokPos2   = tokens.positionEnd
+
+	for tok = tokens.n, i, -1 do
+		tokTypes [tok+1] = tokTypes [tok]
+		tokValues[tok+1] = tokValues[tok]
+		tokReprs [tok+1] = tokReprs [tok]
+		tokLine1 [tok+1] = tokLine1 [tok]
+		tokLine2 [tok+1] = tokLine2 [tok]
+		tokPos1  [tok+1] = tokPos1  [tok]
+		tokPos2  [tok+1] = tokPos2  [tok]
+	end
+
+	tokTypes [i] = tokType
+	tokValues[i] = tokValue
+	tokReprs [i] = tokRepr
+	tokLine1 [i] = 0
+	tokLine2 [i] = 0
+	tokPos1  [i] = 0
+	tokPos2  [i] = 0
+
+	tokens.n = tokens.n + 1
+end
+
+function removeToken(tokens, i)
+	i = i or tokens.n
+
+	if i < 1 or i > tokens.n then  return  end
+
+	local tokTypes  = tokens.type
+	local tokValues = tokens.value
+	local tokReprs  = tokens.representation
+	local tokLine1  = tokens.lineStart
+	local tokLine2  = tokens.lineEnd
+	local tokPos1   = tokens.positionStart
+	local tokPos2   = tokens.positionEnd
+
+	for tok = i, tokens.n do
+		tokTypes [tok] = tokTypes [tok+1]
+		tokValues[tok] = tokValues[tok+1]
+		tokReprs [tok] = tokReprs [tok+1]
+		tokLine1 [tok] = tokLine1 [tok+1]
+		tokLine2 [tok] = tokLine2 [tok+1]
+		tokPos1  [tok] = tokPos1  [tok+1]
+		tokPos2  [tok] = tokPos2  [tok+1]
+	end
+
+	tokens.n = tokens.n - 1
 end
 
 
@@ -2416,55 +2556,25 @@ end
 
 
 
---[[ Tests.
-do
-	io.stdout:setvbuf("no")
-	io.stderr:setvbuf("no")
-
-	local path   = "./test.lua"
-	-- local path   = "./dumbParser.lua"
-	local tokens = assert(tokenizeFile(path))
-	local ast    = assert(parse(tokens))
-
-	-- printTree(ast)
-
-	local pretty = 1==1
-	local lua    = toLua(ast, pretty)
-
-	do
-		local luaEdit = lua
-		-- luaEdit = luaEdit:gsub(("."):rep(250), "%0\0")
-		-- luaEdit = luaEdit:gsub("([%w_]+)%z([%w_]+)", "%1%2\n")
-		-- luaEdit = luaEdit:gsub("%z", "\n")
-		print(luaEdit)
-	end
-
-	assert(loadstring(lua, "@lua"))
-
-	-- Round-trip.
-	local tripTokens = assert(tokenizeString(lua))
-	local tripAst    = assert(parse(tripTokens))
-	local tripLua    = toLua(tripAst, pretty)
-	assert(tripLua == lua, tripLua)
-
-	print("Tests passed!")
-end
---]]
-
-
-
 return {
 	tokenizeString = tokenizeString,
 	tokenizeFile   = tokenizeFile,
+
+	newTokenStream = newTokenStream,
+	insertToken    = insertToken,
+	removeToken    = removeToken,
+
 	parse          = parse,
+
 	printNode      = printNode,
 	printTree      = printTree,
+
 	toLua          = toLua,
 }
 
 
 
---[[!===========================================================
+--[[============================================================
 
 Copyright © 2020 Marcus 'ReFreezed' Thunström
 
