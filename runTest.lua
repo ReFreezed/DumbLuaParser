@@ -32,7 +32,7 @@ do
 	assert(tripLua == lua, tripLua)
 end
 
--- Token stream manipulation.
+-- Token stream manipulations.
 do
 	local tokens = parser.newTokenStream()
 
@@ -52,8 +52,54 @@ do
 	parser.removeToken(tokens, 4)
 
 	local ast = assert(parser.parse(tokens))
-	local lua = parser.toLua(ast, pretty)
+	local lua = parser.toLua(ast, true)
 	print(lua)
+
+	assert(loadstring(lua, "@lua"))
+end
+
+-- AST manipulations.
+do
+	local identifier   = parser.newNode("identifier", "foo")
+	local vararg       = parser.newNode("vararg")
+	local literal      = parser.newNode("literal", 8.125)
+	local tableNode    = parser.newNode("table")
+	local lookup       = parser.newNode("lookup")
+	local unary        = parser.newNode("unary",  "not")
+	local binary       = parser.newNode("binary", "/")
+	local call         = parser.newNode("call")
+	local functionNode = parser.newNode("function")
+	local breakNode    = parser.newNode("break")
+	local returnNode   = parser.newNode("return")
+	local block        = parser.newNode("block")
+	local declaration  = parser.newNode("declaration")
+	local assignment   = parser.newNode("assignment")
+	local ifNode       = parser.newNode("if")
+	local whileLoop    = parser.newNode("while")
+	local repeatLoop   = parser.newNode("repeat")
+	local forLoop      = parser.newNode("for", "numeric")
+
+	local block = assert(parser.parse([[
+		local x = 49
+	]], "<inline lua>"))
+
+	assert(block.type == "block")
+	assert(block.statements[1])
+	assert(block.statements[1].type == "declaration")
+	assert(block.statements[1].names[1])
+	assert(block.statements[1].names[1].type == "identifier")
+	assert(block.statements[1].names[1].name == "x")
+	assert(block.statements[1].values[1])
+	assert(block.statements[1].values[1].type  == "literal")
+	assert(block.statements[1].values[1].value == 49)
+
+	block.statements[1].names[1]  = identifier
+	block.statements[1].values[1] = literal
+
+	local lua = parser.toLua(block, true)
+	print(lua)
+
+	assert(loadstring(lua, "@lua"))
 end
 
 print("Tests passed!")

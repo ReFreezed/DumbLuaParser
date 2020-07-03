@@ -1,6 +1,6 @@
 --[[============================================================
 --=
---=  Lua parsing library v1.0 (2020-07-02)
+--=  Lua parsing library v1.0 (2020-07-03)
 --=  by Marcus 'ReFreezed' Thunström
 --=
 --=  License: MIT (see the bottom of this file)
@@ -57,6 +57,10 @@
 		astNode, error = parse( path )
 		Convert tokens or Lua code into an abstract syntax tree.
 		Returns nil and an error message on error.
+
+	newNode()
+		node = newNode( nodeType, arguments... )
+		Create a new AST node. (Search for 'NodeCreation' for more info.)
 
 	printNode()
 		printNode( astNode )
@@ -122,7 +126,7 @@
 		"vararg"      -- Vararg expression ("...").
 		"while"       -- A 'while' loop.
 
-	Node fields: (search for 'NodeFields')
+	Node fields: (Search for 'NodeFields'.)
 
 
 --============================================================]]
@@ -140,6 +144,7 @@ local insertToken
 local isToken
 local isTokenAnyValue
 local isTokenType
+local newNode
 local newTokenStream
 local parse
 local parseBlock
@@ -194,15 +199,28 @@ local PUNCTUATION = {
 	["("]=true,  [")"]=true,  ["{"]=true,  ["}"]=true,  ["["]=true,  ["]"]=true,   ["::"]=true,
 	[";"]=true,  [":"]=true,  [","]=true,  ["."]=true,  [".."]=true, ["..."]=true,
 }
+local OPERATORS_UNARY = {
+	["-"]=true, ["not"]=true, ["#"]=true, ["~"]=true,
+}
+local OPERATORS_BINARY = {
+	["+"]=true,   ["-"]=true,  ["*"]=true, ["/"]=true,  ["//"]=true, ["^"]=true,  ["%"]=true,
+	["&"]=true,   ["~"]=true,  ["|"]=true, [">>"]=true, ["<<"]=true, [".."]=true,
+	["<"]=true,   ["<="]=true, [">"]=true, [">="]=true, ["=="]=true, ["~="]=true,
+	["and"]=true, ["or"]=true,
+}
 local OPERATOR_PRECEDENCE = {
 	["or"]  = 1,
 	["and"] = 2,
-	["<"]   = 3, [">"] = 3, ["<="] = 3, [">="] = 3, ["~="] = 3, ["=="] = 3,
-	[".."]  = 4,
-	["+"]   = 5, ["-"] = 5,
-	["*"]   = 6, ["/"] = 6, ["//"] = 6, ["%"] = 6,
-	unary   = 7, -- "-", "#", "not"
-	["^"]   = 8,
+	["<"]   = 3,  [">"] = 3, ["<="] = 3, [">="] = 3, ["~="] = 3, ["=="] = 3,
+	["|"]   = 4,
+	["~"]   = 5,
+	["&"]   = 6,
+	["<<"]  = 7,  [">>"]  = 7,
+	[".."]  = 8,
+	["+"]   = 9,  ["-"] = 9,
+	["*"]   = 10, ["/"] = 10, ["//"] = 10, ["%"] = 10,
+	unary   = 11, -- "-", "#", "not"
+	["^"]   = 12,
 }
 
 local NUM_HEX_FRAC_EXP = gsub("^( 0[Xx] ([%dA-Fa-f]*) %.([%dA-Fa-f]+) [Pp]([-+]?[%dA-Fa-f]+) )", " +", "")
@@ -418,7 +436,7 @@ function tokenizeString(s, path)
 
 	local tokens        = newTokenStream()
 	tokens.sourceString = s
-	tokens.path         = path
+	tokens.sourcePath   = path
 
 	local tokTypes  = tokens.type
 	local tokValues = tokens.value
@@ -1762,10 +1780,10 @@ function parse(tokens, path)
 		local err
 
 		if path then
-			tokens, err = tokenizeString(tokens, path)
+			local lua   = tokens
+			tokens, err = tokenizeString(lua, path)
 		else
-			path = tokens
-			local err
+			path        = tokens
 			tokens, err = tokenizeFile(path)
 		end
 
@@ -1803,6 +1821,124 @@ function parse(tokens, path)
 	if not block then  return nil, "Failed parsing."  end
 
 	return block
+end
+
+
+
+--
+-- :NodeCreation
+--
+-- identifier   = newNode( "identifier", name )
+-- vararg       = newNode( "vararg" )
+-- literal      = newNode( "literal", value )
+-- tableNode    = newNode( "table" )
+-- lookup       = newNode( "lookup" )
+-- unary        = newNode( "unary",  unaryOperator  )
+-- binary       = newNode( "binary", binaryOperator )
+-- call         = newNode( "call" )
+-- functionNode = newNode( "function" )
+-- breakNode    = newNode( "break" )
+-- returnNode   = newNode( "return" )
+-- block        = newNode( "block" )
+-- declaration  = newNode( "declaration" )
+-- assignment   = newNode( "assignment" )
+-- ifNode       = newNode( "if" )
+-- whileLoop    = newNode( "while" )
+-- repeatLoop   = newNode( "repeat" )
+-- forLoop      = newNode( "for", forLoopKind )  -- forLoopKind can be "numeric" or "generic".
+--
+-- Search for 'NodeFields' for each node's fields.
+--
+function newNode(nodeType, ...)
+	local node
+
+	if     nodeType == "vararg"      then  node = AstVararg(0)
+	elseif nodeType == "table"       then  node = AstTable(0)
+	elseif nodeType == "lookup"      then  node = AstLookup(0)
+	elseif nodeType == "call"        then  node = AstCall(0)
+	elseif nodeType == "function"    then  node = AstFunction(0)
+	elseif nodeType == "break"       then  node = AstBreak(0)
+	elseif nodeType == "return"      then  node = AstReturn(0)
+	elseif nodeType == "block"       then  node = AstBlock(0)
+	elseif nodeType == "declaration" then  node = AstDeclaration(0)
+	elseif nodeType == "assignment"  then  node = AstAssignment(0)
+	elseif nodeType == "if"          then  node = AstIf(0)
+	elseif nodeType == "while"       then  node = AstWhile(0)
+	elseif nodeType == "repeat"      then  node = AstRepeat(0)
+
+	elseif nodeType == "identifier" then
+		if select("#", ...) == 0 then
+			error(F("Missing name argument for identifier."))
+		end
+
+		local name = ...
+		if type(name) ~= "string" then
+			error(F("Invalid name argument value type '%s'. (Expected string)", type(name)))
+		elseif not find(name, "^[%a_][%w_]*$") then
+			error(F("Invalid identifier name '%s'.", name))
+		elseif KEYWORDS[name] then
+			error(F("Invalid identifier name '%s'.", name))
+		end
+
+		node       = AstIdentifier(0)
+		node.name = name
+
+	elseif nodeType == "literal" then
+		if select("#", ...) == 0 then
+			error(F("Missing value argument for literal."))
+		end
+
+		local value = ...
+		if not (type(value) == "number" or type(value) == "string" or type(value) == "boolean" or type(value) == "nil") then
+			error(F("Invalid literal value type '%s'. (Expected number, string, boolean or nil)", type(value)))
+		end
+
+		node       = AstLiteral(0)
+		node.value = value
+
+	elseif nodeType == "unary" then
+		if select("#", ...) == 0 then
+			error(F("Missing operator argument for unary expression."))
+		end
+
+		local op = ...
+		if not OPERATORS_UNARY[op] then
+			error(F("Invalid unary operator '%s'.", tostring(op)))
+		end
+
+		node          = AstUnary(0)
+		node.operator = op
+
+	elseif nodeType == "binary" then
+		if select("#", ...) == 0 then
+			error(F("Missing operator argument for binary expression."))
+		end
+
+		local op = ...
+		if not OPERATORS_BINARY[op] then
+			error(F("Invalid binary operator '%s'.", tostring(op)))
+		end
+
+		node          = AstBinary(0)
+		node.operator = op
+
+	elseif nodeType == "for" then
+		if select("#", ...) == 0 then
+			error(F("Missing kind argument for 'for' loop."))
+		end
+
+		local kind = ...
+		if not (kind == "numeric" or kind == "generic") then
+			error(F("Invalid for loop kind '%s'. (Must be 'numeric' or 'generic')", tostring(kind)))
+		end
+
+		node      = AstFor(0)
+		node.kind = kind
+
+	else
+		error(F("Invalid node type '%s'.", tostring(nodeType)))
+	end
+	return node
 end
 
 
@@ -2565,6 +2701,8 @@ return {
 	removeToken    = removeToken,
 
 	parse          = parse,
+
+	newNode        = newNode,
 
 	printNode      = printNode,
 	printTree      = printTree,
