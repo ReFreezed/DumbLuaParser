@@ -50,5 +50,15 @@ do
 	--[[ Lua 5.2+
 	goto label
 	::label::
+
+	local a = x & y
+	local b = x ~ y
+	local c = x | y
+	local d = x << y
+	local e = x >> y
+	local f = x // y
+	local g = ~x
+
+	local foo = ((y & 0x7) << 4) | 0xFF00
 	--]]
 end

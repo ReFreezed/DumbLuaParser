@@ -39,11 +39,11 @@
 
 	newTokenStream()
 		tokens = newTokenStream( )
-		Create a new token stream table.
+		Create a new token stream table. (See more info below.)
 
 	insertToken()
 		insertToken( tokens, [ index=tokens.n+1, ] tokenType, tokenValue )
-		Insert a new token.
+		Insert a new token. (Search for 'TokenInsertion' for more info.)
 
 	removeToken()
 		removeToken( tokens [, index=1 ] )
@@ -57,8 +57,16 @@
 		Returns nil and an error message on error.
 
 	newNode()
-		node = newNode( nodeType, arguments... )
+		astNode = newNode( nodeType, arguments... )
 		Create a new AST node. (Search for 'NodeCreation' for more info.)
+
+	toLua()
+		lua = toLua( astNode [, prettyOuput=false ] )
+		Convert an AST to Lua. Returns nil on error.
+
+	printTokens()
+		printTokens( tokens )
+		Print the contents of a token stream to stdout.
 
 	printNode()
 		printNode( astNode )
@@ -67,10 +75,6 @@
 	printTree()
 		printTree( astNode )
 		Print the structure of a whole AST to stdout.
-
-	toLua()
-		lua = toLua( astNode [, prettyOuput=false ] )
-		Convert an AST to Lua. Returns nil on error.
 
 
 	Tokens
@@ -161,6 +165,7 @@ local parseStringlikeToken
 local parseTable
 local printerr
 local printNode
+local printTokens
 local printTree
 local removeToken
 local reportErrorAtToken
@@ -222,7 +227,7 @@ local OPERATOR_PRECEDENCE = {
 	[".."]  = 8,
 	["+"]   = 9,  ["-"] = 9,
 	["*"]   = 10, ["/"] = 10, ["//"] = 10, ["%"] = 10,
-	unary   = 11, -- "-", "#", "not"
+	unary   = 11, -- "-", "not", "#", "~"
 	["^"]   = 12,
 }
 
@@ -255,7 +260,7 @@ local function AstVararg(tok) return {
 local function AstLiteral(tok) return {
 	type  = "literal",
 	token = tok,
-	value = nil, -- Number, string, boolean or nil.
+	value = nil, -- A number, string, boolean or nil.
 } end
 local function AstTable(tok) return {
 	type   = "table",
@@ -271,7 +276,7 @@ local function AstLookup(tok) return {
 local function AstUnary(tok) return {
 	type       = "unary",
 	token      = tok,
-	operator   = "", -- "-"|"#"|"not"
+	operator   = "", -- "-"|"not"|"#"|"~"
 	expression = nil,
 } end
 local function AstBinary(tok) return {
@@ -639,7 +644,7 @@ function tokenizeString(s, path)
 			tokType  = "punctuation"
 			tokRepr  = sub(s, ptrStart, ptr-1)
 			tokValue = tokRepr
-		elseif find(s, "^[+%-*/%%^#<>=(){}[%];:,.]", ptr) then
+		elseif find(s, "^[+%-*/%%^#<>=(){}[%];:,.&~|]", ptr) then
 			ptr      = ptr + 1
 			tokType  = "punctuation"
 			tokRepr  = sub(s, ptrStart, ptr-1)
@@ -701,7 +706,16 @@ function newTokenStream()
 	}
 end
 
--- insertToken( tokens, [ index=tokens.n+1, ] tokenType, tokenValue )
+--
+-- :TokenInsertion
+--
+-- insertToken( tokens, [ index=atTheEnd, ] "comment",     contents )
+-- insertToken( tokens, [ index=atTheEnd, ] "identifier",  name )
+-- insertToken( tokens, [ index=atTheEnd, ] "keyword",     name )
+-- insertToken( tokens, [ index=atTheEnd, ] "number",      number )  -- The number value must be a finite and positive.
+-- insertToken( tokens, [ index=atTheEnd, ] "punctuation", punctuationString )
+-- insertToken( tokens, [ index=atTheEnd, ] "string",      stringValue )
+--
 function insertToken(tokens, i, tokType, tokValue)
 	if type(i) == "string" then
 		i, tokType, tokValue = math.huge, i, tokType
@@ -814,65 +828,6 @@ function removeToken(tokens, i)
 end
 
 
-
---[=[
-	chunk ::= {stat [';']} [laststat [';']]
-
-	block ::= chunk
-
-	stat ::= varlist '=' explist |
-	         functioncall |
-	         do block end |
-	         while exp do block end |
-	         repeat block until exp |
-	         if exp then block {elseif exp then block} [else block] end |
-	         for Name '=' exp ',' exp [',' exp] do block end |
-	         for namelist in explist do block end |
-	         function funcname funcbody |
-	         local function Name funcbody |
-	         local namelist ['=' explist]
-
-	laststat ::= return [explist] | break
-
-	funcname ::= Name {'.' Name} [':' Name]
-
-	varlist ::= var {',' var}
-
-	var ::= Name | prefixexp '[' exp ']' | prefixexp '.' Name
-
-	namelist ::= Name {',' Name}
-
-	explist ::= {exp ','} exp
-
-	exp ::= nil | false | true | Number | String | '...' | function |
-	        prefixexp | tableconstructor | exp binop exp | unop exp
-
-	prefixexp ::= var | functioncall | '(' exp ')'
-
-	functioncall ::= prefixexp args | prefixexp ':' Name args
-
-	args ::= '(' [explist] ')' | tableconstructor | String
-
-	function ::= function funcbody
-
-	funcbody ::= '(' [parlist] ')' block end
-
-	parlist ::= namelist [',' '...'] | '...'
-
-	tableconstructor ::= '{' [fieldlist] '}'
-
-	fieldlist ::= field {fieldsep field} [fieldsep]
-
-	field ::= '[' exp ']' '=' exp | Name '=' exp | exp
-
-	fieldsep ::= ',' | ';'
-
-	binop ::= '+' | '-' | '*' | '/' | '^' | '%' | '..' |
-	          '<' | '<=' | '>' | '>=' | '==' | '~=' |
-	          and | or
-
-	unop ::= '-' | not | '#'
-]=]
 
 function isToken(tokens, tok, tokType, tokValue)
 	return tokens.type[tok] == tokType and tokens.value[tok] == tokValue
@@ -1006,14 +961,6 @@ function parseTable(tokens, tok) --> tableNode, token
 	return tableNode, tok
 end
 
-local binaryTokenTypes = {
-	["<"]   = true, [">"] = true, ["<="] = true, [">="] = true, ["~="] = true, ["=="] = true,
-	[".."]  = true,
-	["+"]   = true, ["-"] = true,
-	["*"]   = true, ["/"] = true, ["//"] = true, ["%"] = true,
-	["^"]   = true,
-}
-
 function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 	local expr
 
@@ -1055,7 +1002,7 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 
 	-- unary
 	elseif
-		(isToken(tokens, tok, "keyword", "not") or isToken(tokens, tok, "punctuation", "-") or isToken(tokens, tok, "punctuation", "#"))
+		(isToken(tokens, tok, "keyword", "not") or (isTokenType(tokens, tok, "punctuation") and isTokenAnyValue(tokens, tok, OPERATORS_UNARY)))
 		and OPERATOR_PRECEDENCE.unary > lastPrecedence
 	then
 		local unary    = AstUnary(tok)
@@ -1120,7 +1067,7 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 		-- a + b
 		if
 			(
-				(isTokenType(tokens, tok, "punctuation") and isTokenAnyValue(tokens, tok, binaryTokenTypes))
+				(isTokenType(tokens, tok, "punctuation") and isTokenAnyValue(tokens, tok, OPERATORS_BINARY))
 				or isToken(tokens, tok, "keyword", "and")
 				or isToken(tokens, tok, "keyword", "or")
 			)
@@ -2144,6 +2091,21 @@ end
 
 
 
+function printTokens(tokens)
+	local tokTypes  = tokens.type
+	local tokValues = tokens.value
+
+	for tok = 1, tokens.n do
+		local v = tostring(tokValues[tok])
+		if #v > 200 then  v = sub(v, 1, 200-3).."..."  end
+
+		v = gsub(v, "\n", "\\n")
+		print(F("%d. %-11s '%s'", tok, tokTypes[tok], v))
+	end
+end
+
+
+
 do
 	local writeNode
 	local writeStatements
@@ -2784,6 +2746,7 @@ return {
 
 	newNode        = newNode,
 
+	printTokens    = printTokens,
 	printNode      = printNode,
 	printTree      = printTree,
 
