@@ -1,13 +1,11 @@
 --[[============================================================
 --=
---=  Lua parsing library v1.0 (2020-07-03)
+--=  Lua parsing library v1.0 (2020-07-05)
 --=  by Marcus 'ReFreezed' Thunström
 --=
 --=  License: MIT (see the bottom of this file)
 --=
---=  Supported Lua versions: 5.1
---=
---=  @Incomplete: Support Lua 5.2+.
+--=  Supported Lua versions: 5.1, 5.2, 5.3
 --=
 --==============================================================
 
@@ -115,8 +113,10 @@
 		"declaration" -- Declaration of one or more local variables, possibly with initial values.
 		"for"         -- A 'for' loop.
 		"function"    -- Anonymous function header and body.
+		"goto"        -- A jump to a label.
 		"identifier"  -- An identifier.
 		"if"          -- If statement with a condition, a body if the condition is true, and possibly another body if the condition is false.
+		"label"       -- Label for goto commands.
 		"literal"     -- Number, string, boolean or nil literal.
 		"lookup"      -- Field lookup on an object.
 		"repeat"      -- A 'repeat' loop.
@@ -138,6 +138,9 @@ local gsub    = string.gsub
 local match   = string.match
 local rep     = string.rep
 local sub     = string.sub
+
+local loadLuaString = loadstring   or load
+local unpack        = table.unpack or unpack
 
 local countString
 local insertToken
@@ -303,6 +306,16 @@ local function AstReturn(tok) return {
 	type   = "return",
 	token  = tok,
 	values = {}, -- Array of expressions.
+} end
+local function AstLabel(tok) return {
+	type  = "label",
+	token = tok,
+	name  = nil, -- AstIdentifier
+} end
+local function AstGoto(tok) return {
+	type  = "goto",
+	token = tok,
+	name  = nil, -- AstIdentifier
 } end
 local function AstBlock(tok) return {
 	type       = "block",
@@ -515,7 +528,7 @@ function tokenizeString(s, path)
 
 			local n = tonumber(numStr)
 
-			-- Support hexadecimal floats in Lua 5.1.
+			-- Support hexadecimal floats if we're running Lua 5.1.
 			if not n and lua52Hex then
 				local               _, intStr, fracStr, expStr = match(numStr, NUM_HEX_FRAC_EXP)
 				if not intStr then  _, intStr, fracStr         = match(numStr, NUM_HEX_FRAC) ; expStr  = "0"
@@ -582,7 +595,7 @@ function tokenizeString(s, path)
 			tokType = "string"
 			tokRepr = sub(s, ptrStart, ptr-1)
 
-			local chunk, err = loadstring("return "..tokRepr, "@")
+			local chunk, err = loadLuaString("return "..tokRepr, "@")
 			if not chunk then
 				err = gsub(err, "^:%d+: ", "")
 				return nil, reportErrorInFile(s, path, ptrStart, "Tokenizer", "Could not convert string token to value. (%s)", err)
@@ -607,7 +620,7 @@ function tokenizeString(s, path)
 			tokType = "string"
 			tokRepr = sub(s, ptrStart, ptr-1)
 
-			local chunk, err = loadstring("return "..tokRepr, "@")
+			local chunk, err = loadLuaString("return "..tokRepr, "@")
 			if not chunk then
 				err = gsub(err, "^:%d+: ", "")
 				return nil, reportErrorInFile(s, path, ptrStart, "Tokenizer", "Could not convert long string token to value. (%s)", err)
@@ -1664,6 +1677,36 @@ function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> success, 
 		table.insert(statements, decl)
 		return true, tok
 
+	-- ::label::
+	elseif isToken(tokens, tok, "punctuation", "::") then
+		local label = AstLabel(tok)
+		tok         = tok + 1 -- '::'
+
+		label.name, tokNext = parseIdentifier(tokens, tok)
+		if not label.name then  return false, tok  end
+		tok = tokNext
+
+		if not isToken(tokens, tok, "punctuation", "::") then
+			reportErrorAtToken(tokens, tok, "Parser", "Expected '::'.")
+			return false, tok
+		end
+		tok = tok + 1 -- '::'
+
+		table.insert(statements, label)
+		return true, tok
+
+	-- goto
+	elseif isToken(tokens, tok, "keyword", "goto") then
+		local gotoNode = AstGoto(tok)
+		tok            = tok + 1 -- 'goto'
+
+		gotoNode.name, tokNext = parseIdentifier(tokens, tok)
+		if not gotoNode.name then  return false, tok  end
+		tok = tokNext
+
+		table.insert(statements, gotoNode)
+		return true, tok
+
 	-- return (last)
 	elseif isToken(tokens, tok, "keyword", "return") then
 		local returnNode = AstReturn(tok)
@@ -1740,6 +1783,11 @@ function parseBlock(tokens, tok, stopAtEndKeyword) --> block, token
 	local statements = block.statements
 
 	while tok <= tokens.n do
+		while isToken(tokens, tok, "punctuation", ";") do
+			-- Empty statements are valid in Lua 5.2+.
+			tok = tok + 1 -- ';'
+		end
+
 		if stopAtEndKeyword and isTokenType(tokens, tok, "keyword") and isTokenAnyValue(tokens, tok, blockEndTokenTypes) then
 			break
 		end
@@ -1839,6 +1887,8 @@ end
 -- functionNode = newNode( "function" )
 -- breakNode    = newNode( "break" )
 -- returnNode   = newNode( "return" )
+-- label        = newNode( "label" )
+-- gotoNode     = newNode( "goto" )
 -- block        = newNode( "block" )
 -- declaration  = newNode( "declaration" )
 -- assignment   = newNode( "assignment" )
@@ -1859,6 +1909,8 @@ function newNode(nodeType, ...)
 	elseif nodeType == "function"    then  node = AstFunction(0)
 	elseif nodeType == "break"       then  node = AstBreak(0)
 	elseif nodeType == "return"      then  node = AstReturn(0)
+	elseif nodeType == "label"       then  node = AstLabel(0)
+	elseif nodeType == "goto"        then  node = AstGoto(0)
 	elseif nodeType == "block"       then  node = AstBlock(0)
 	elseif nodeType == "declaration" then  node = AstDeclaration(0)
 	elseif nodeType == "assignment"  then  node = AstAssignment(0)
@@ -2027,6 +2079,12 @@ do
 
 		elseif nodeType == "return" then
 			for i, expr in ipairs(node.values) do  _printTree(expr, indent, nil)  end
+
+		elseif nodeType == "label" then
+			if node.name then  _printTree(node.name, indent, nil)  end
+
+		elseif nodeType == "goto" then
+			if node.name then  _printTree(node.name, indent, nil)  end
 
 		elseif nodeType == "block" then
 			for i, statement in ipairs(node.statements) do  _printTree(statement, indent, nil)  end
@@ -2483,6 +2541,28 @@ do
 				if not ok then  return false, lastOutput  end
 			end
 
+			lastOutput = writeLua(buffer, ";", "")
+
+		elseif nodeType == "label" then
+			local name = node.name.name
+			if not (name:find"^[%a_][%w_]*$" and not KEYWORDS[name]) then
+				printerr(F("AST: Invalid label '%s'.", name))
+				return false, lastOutput
+			end
+			lastOutput = writeLua(buffer, "::", "")
+			lastOutput = writeAlphanum(buffer, pretty, name, lastOutput)
+			lastOutput = writeLua(buffer, "::", "")
+			lastOutput = writeLua(buffer, ";", "")
+
+		elseif nodeType == "goto" then
+			local name = node.name.name
+			if not (name:find"^[%a_][%w_]*$" and not KEYWORDS[name]) then
+				printerr(F("AST: Invalid label '%s'.", name))
+				return false, lastOutput
+			end
+			lastOutput = writeAlphanum(buffer, pretty, "goto", lastOutput)
+			lastOutput = writeLua(buffer, " ", "")
+			lastOutput = writeAlphanum(buffer, pretty, name,   lastOutput)
 			lastOutput = writeLua(buffer, ";", "")
 
 		elseif nodeType == "block" then

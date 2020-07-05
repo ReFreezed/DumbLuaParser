@@ -44,4 +44,11 @@ do
 	local m = -8
 	local n = not false or false
 	local l = #t + 1
+
+	;;;;
+
+	--[[ Lua 5.2+
+	goto label
+	::label::
+	--]]
 end

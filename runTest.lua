@@ -2,7 +2,10 @@
 io.stdout:setvbuf("no")
 io.stderr:setvbuf("no")
 
-local parser = require"dumbParser"
+local loadLuaString = loadstring or load
+local parser        = require"dumbParser"
+
+local pretty = 1==1
 
 do
 	local path   = "./test.lua"
@@ -12,8 +15,7 @@ do
 
 	-- printTree(ast)
 
-	local pretty = 1==1
-	local lua    = parser.toLua(ast, pretty)
+	local lua = assert(parser.toLua(ast, pretty))
 
 	do
 		local luaEdit = lua
@@ -23,12 +25,12 @@ do
 		print(luaEdit)
 	end
 
-	assert(loadstring(lua, "@lua"))
+	assert(loadLuaString(lua, "@lua"))
 
 	-- Round-trip.
 	local tripTokens = assert(parser.tokenizeString(lua))
 	local tripAst    = assert(parser.parse(tripTokens))
-	local tripLua    = parser.toLua(tripAst, pretty)
+	local tripLua    = assert(parser.toLua(tripAst, pretty))
 	assert(tripLua == lua, tripLua)
 end
 
@@ -52,10 +54,10 @@ do
 	parser.removeToken(tokens, 4)
 
 	local ast = assert(parser.parse(tokens))
-	local lua = parser.toLua(ast, true)
+	local lua = assert(parser.toLua(ast, pretty))
 	print(lua)
 
-	assert(loadstring(lua, "@lua"))
+	assert(loadLuaString(lua, "@lua"))
 end
 
 -- AST manipulations.
@@ -96,10 +98,10 @@ do
 	block.statements[1].names[1]  = identifier
 	block.statements[1].values[1] = literal
 
-	local lua = parser.toLua(block, true)
+	local lua = assert(parser.toLua(block, pretty))
 	print(lua)
 
-	assert(loadstring(lua, "@lua"))
+	assert(loadLuaString(lua, "@lua"))
 end
 
 print("Tests passed!")
