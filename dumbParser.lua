@@ -1,6 +1,6 @@
 --[[============================================================
 --=
---=  Lua parsing library v1.0 (2020-07-05)
+--=  Lua parsing library v1.1 (2020-07-06)
 --=  by Marcus 'ReFreezed' Thunström
 --=
 --=  License: MIT (see the bottom of this file)
@@ -59,6 +59,13 @@
 	newNode()
 		astNode = newNode( nodeType, arguments... )
 		Create a new AST node. (Search for 'NodeCreation' for more info.)
+
+	traverseTree()
+		didBreak = traverseTree( astNode, callback [, topNodeContainer=nil, topNodeKey=nil ] )
+		action   = callback( astNode, container, key )
+		action   = "stop"|"ignorechildren"|nil  -- Returning nil (or nothing) means continue traversal.
+		Call a function on all nodes in an AST, going from astNode out to the leaf nodes.
+		container[key] is the position of the current node in the tree and can be used to replace the node.
 
 	toLua()
 		lua = toLua( astNode [, prettyOuput=false ] )
@@ -173,6 +180,7 @@ local reportErrorInFile
 local tokenizeFile
 local tokenizeString
 local toLua
+local traverseTree
 
 
 
@@ -276,8 +284,8 @@ local function AstLookup(tok) return {
 local function AstUnary(tok) return {
 	type       = "unary",
 	token      = tok,
-	operator   = "", -- "-"|"not"|"#"|"~"
-	expression = nil,
+	operator   = "",  -- "-"|"not"|"#"|"~"
+	expression = nil, -- Expression.
 } end
 local function AstBinary(tok) return {
 	type     = "binary",
@@ -1959,9 +1967,9 @@ do
 			if node.value == nil or node.value == true or node.value == false then
 				ioWrite(" (", tostring(node.value), ")")
 			elseif type(node.value) == "string" then
-				ioWrite(" (string='", node.value:gsub("\n","\\n"), "')")
+				ioWrite(' (string="', node.value:gsub('\r','{CR}'):gsub('\n','{NL}'), '")')
 			else
-				ioWrite(" (", type(node.value), "=", tostring(node.value):gsub("\n","\\n"), ")")
+				ioWrite(" (", type(node.value), "=", tostring(node.value), ")")
 			end
 
 		elseif nodeType == "unary" then
@@ -2087,6 +2095,113 @@ do
 	function printTree(node)
 		_printTree(node, 0, nil)
 	end
+end
+
+
+
+-- didBreak = traverseTree( astNode, callback [, topNodeContainer=nil, topNodeKey=nil ] )
+-- action   = callback( astNode, container, key )
+-- action   = "stop"|"ignorechildren"|nil  -- Returning nil (or nothing) means continue traversal.
+function traverseTree(node, cb, container, k)
+	local action = cb(node, container, k)
+	if action == "stop"           then  return true   end
+	if action == "ignorechildren" then  return false  end
+	if action                     then  error(F("Unknown traversal action '%s' returned from callback.", tostring(action)))  end
+
+	local nodeType = node.type
+
+	if nodeType == "identifier" or nodeType == "vararg" or nodeType == "literal" or nodeType == "break" then
+		-- void  No child nodes.
+
+	elseif nodeType == "table" then
+		for _, field in ipairs(node.fields) do
+			if field.key   and traverseTree(field.key,   cb, field, "key")   then  return true  end
+			if field.value and traverseTree(field.value, cb, field, "value") then  return true  end
+		end
+
+	elseif nodeType == "lookup" then
+		if node.object and traverseTree(node.object, cb, node, "object") then  return true  end
+		if node.member and traverseTree(node.member, cb, node, "member") then  return true  end
+
+	elseif nodeType == "unary" then
+		if node.expression and traverseTree(node.expression, cb, node, "expression") then  return true  end
+
+	elseif nodeType == "binary" then
+		if node.left  and traverseTree(node.left,  cb, node, "left")  then  return true  end
+		if node.right and traverseTree(node.right, cb, node, "right") then  return true  end
+
+	elseif nodeType == "call" then
+		if node.callee and traverseTree(node.callee, cb, node, "callee") then  return true  end
+		for i, expr in ipairs(node.arguments) do
+			if traverseTree(expr, cb, node.arguments, i) then  return true  end
+		end
+
+	elseif nodeType == "function" then
+		for i, name in ipairs(node.parameters) do
+			if traverseTree(name, cb, node.parameters, i) then  return true  end
+		end
+		if node.vararg and traverseTree(node.vararg, cb, node, "vararg") then  return true  end
+		if node.body   and traverseTree(node.body,   cb, node, "body")   then  return true  end
+
+	elseif nodeType == "return" then
+		for i, expr in ipairs(node.values) do
+			if traverseTree(expr, cb, node.values, i) then  return true  end
+		end
+
+	elseif nodeType == "label" then
+		if node.name and traverseTree(node.name, cb, node, "name") then  return true  end
+
+	elseif nodeType == "goto" then
+		if node.name and traverseTree(node.name, cb, node, "name") then  return true  end
+
+	elseif nodeType == "block" then
+		for i, statement in ipairs(node.statements) do
+			if traverseTree(statement, cb, node.statements, i) then  return true  end
+		end
+
+	elseif nodeType == "declaration" then
+		for i, ident in ipairs(node.names) do
+			if traverseTree(ident, cb, node.names, i) then  return true  end
+		end
+		for i, expr in ipairs(node.values) do
+			if traverseTree(expr, cb, node.values, i) then  return true  end
+		end
+
+	elseif nodeType == "assignment" then
+		for i, expr in ipairs(node.targets) do
+			if traverseTree(expr, cb, node.targets, i) then  return true  end
+		end
+		for i, expr in ipairs(node.values) do
+			if traverseTree(expr, cb, node.values, i) then  return true  end
+		end
+
+	elseif nodeType == "if" then
+		if node.condition and traverseTree(node.condition, cb, node, "condition") then  return true  end
+		if node.bodyTrue  and traverseTree(node.bodyTrue,  cb, node, "bodyTrue")  then  return true  end
+		if node.bodyFalse and traverseTree(node.bodyFalse, cb, node, "bodyFalse") then  return true  end
+
+	elseif nodeType == "while" then
+		if node.condition and traverseTree(node.condition, cb, node, "condition") then  return true  end
+		if node.body      and traverseTree(node.body,      cb, node, "body")      then  return true  end
+
+	elseif nodeType == "repeat" then
+		if node.body      and traverseTree(node.body,      cb, node, "body")      then  return true  end
+		if node.condition and traverseTree(node.condition, cb, node, "condition") then  return true  end
+
+	elseif nodeType == "for" then
+		for i, ident in ipairs(node.names) do
+			if traverseTree(ident, cb, node.names, i) then  return true  end
+		end
+		for i, expr in ipairs(node.values) do
+			if traverseTree(expr, cb, node.values, i) then  return true  end
+		end
+		if node.body and traverseTree(node.body, cb, node, "body") then  return true  end
+
+	else
+		error(F("Invalid node type '%s'.", tostring(nodeType)))
+	end
+
+	return false
 end
 
 
@@ -2743,14 +2858,13 @@ return {
 	removeToken    = removeToken,
 
 	parse          = parse,
-
 	newNode        = newNode,
+	traverseTree   = traverseTree,
+	toLua          = toLua,
 
 	printTokens    = printTokens,
 	printNode      = printNode,
 	printTree      = printTree,
-
-	toLua          = toLua,
 }
 
 

@@ -13,7 +13,24 @@ do
 	local tokens = assert(parser.tokenizeFile(path))
 	local ast    = assert(parser.parse(tokens))
 
-	-- printTree(ast)
+	-- parser.printTree(ast)
+
+	--[[
+	parser.traverseTree(ast, function(node, container, k)
+		io.write(tostring(container), ".", tostring(k), " ")
+		parser.printNode(node)
+		-- if container then
+		-- 	container[k]        = parser.newNode("call")
+		-- 	container[k].callee = parser.newNode("identifier", "foo")
+		-- end
+	end)
+	--]]
+
+	parser.traverseTree(ast, function(node)
+		if node.type == "identifier" and node.name == "foo" then
+			node.name = "dog"
+		end
+	end)
 
 	local lua = assert(parser.toLua(ast, pretty))
 
