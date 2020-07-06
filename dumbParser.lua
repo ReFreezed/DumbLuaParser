@@ -2103,6 +2103,9 @@ end
 -- action   = callback( astNode, container, key )
 -- action   = "stop"|"ignorechildren"|nil  -- Returning nil (or nothing) means continue traversal.
 function traverseTree(node, cb, container, k)
+	if type(node) ~= "table"    then  error(F("bad argument #1 to 'traverseTree' (table expected, got %s)",    type(node)), 2)  end
+	if type(cb)   ~= "function" then  error(F("bad argument #2 to 'traverseTree' (function expected, got %s)", type(cb  )), 2)  end
+
 	local action = cb(node, container, k)
 	if action == "stop"           then  return true   end
 	if action == "ignorechildren" then  return false  end
