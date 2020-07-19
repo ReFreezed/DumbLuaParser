@@ -15,8 +15,12 @@ do
 
 	do foo() ; o:m() end
 
-	while false or true do  foo()  end
-	repeat foo() until x - -7 == 8
+	while false or true do
+		foo()
+	end
+	repeat
+		local x = x + foo()
+	until x - -7 == 8
 
 	for i = 1, 9 do  foo(i)  end
 	for i, v in ipairs(t) do  bar(i, v)  end

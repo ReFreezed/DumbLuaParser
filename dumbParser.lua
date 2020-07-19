@@ -61,11 +61,15 @@
 		Create a new AST node. (Search for 'NodeCreation' for more info.)
 
 	traverseTree()
-		didBreak = traverseTree( astNode, callback [, topNodeContainer=nil, topNodeKey=nil ] )
-		action   = callback( astNode, container, key )
+		didBreak = traverseTree( astNode, callback [, topNodeParent=nil, topNodeContainer=nil, topNodeKey=nil ] )
+		action   = callback( astNode, parent, container, key )
 		action   = "stop"|"ignorechildren"|nil  -- Returning nil (or nothing) means continue traversal.
 		Call a function on all nodes in an AST, going from astNode out to the leaf nodes.
 		container[key] is the position of the current node in the tree and can be used to replace the node.
+
+	updateReferences()
+		Update references between nodes in the tree.
+		This function sets 'parent', 'container' and 'key' for all nodes and 'declaration' for identifiers.
 
 	toLua()
 		lua = toLua( astNode [, prettyOuput=false ] )
@@ -158,6 +162,9 @@ local insertToken
 local isToken
 local isTokenAnyValue
 local isTokenType
+local itemWith1
+local minify
+local newId
 local newNode
 local newTokenStream
 local parse
@@ -181,6 +188,7 @@ local tokenizeFile
 local tokenizeString
 local toLua
 local traverseTree
+local updateReferences
 
 
 
@@ -254,42 +262,52 @@ local ERROR_UNFINISHED_VALUE = {}
 
 -- :NodeFields
 
+-- All nodes also have a 'container' and a 'key' field.
+
 -- AST expressions.
 local function AstIdentifier(tok) return {
-	type  = "identifier",
-	token = tok,
-	name  = "",
+	type        = "identifier",
+	token       = tok,
+	id          = newId(),
+	name        = "",
+	declaration = nil, -- AstDeclaration, AstFunction or AstFor. This is nil for globals.
 } end
 local function AstVararg(tok) return {
 	type        = "vararg",
 	token       = tok,
+	id          = newId(),
 	adjustToOne = false, -- True if parentheses surround the vararg.
 } end
 local function AstLiteral(tok) return {
 	type  = "literal",
 	token = tok,
+	id    = newId(),
 	value = nil, -- A number, string, boolean or nil.
 } end
 local function AstTable(tok) return {
 	type   = "table",
 	token  = tok,
+	id     = newId(),
 	fields = {}, -- Array of {key=expression, value=expression, generatedKey=bool}.
 } end
 local function AstLookup(tok) return {
 	type   = "lookup",
 	token  = tok,
+	id     = newId(),
 	object = nil, -- Expression.
 	member = nil, -- Expression.
 } end
 local function AstUnary(tok) return {
 	type       = "unary",
 	token      = tok,
+	id         = newId(),
 	operator   = "",  -- "-"|"not"|"#"|"~"
 	expression = nil, -- Expression.
 } end
 local function AstBinary(tok) return {
 	type     = "binary",
 	token    = tok,
+	id       = newId(),
 	operator = "",  -- "+"|"-"|"*"|"/"|"//"|"^"|"%"|".."|"<"|"<="|">"|">="|"=="|"~="|"and"|"or"
 	left     = nil, -- Expression.
 	right    = nil, -- Expression.
@@ -297,6 +315,7 @@ local function AstBinary(tok) return {
 local function AstCall(tok) return {
 	type        = "call",
 	token       = tok,
+	id          = newId(),
 	callee      = nil,   -- Expression.
 	arguments   = {},    -- Array of expressions.
 	method      = false,
@@ -305,6 +324,7 @@ local function AstCall(tok) return {
 local function AstFunction(tok) return {
 	type       = "function",
 	token      = tok,
+	id         = newId(),
 	parameters = {},  -- Array of AstIdentifier.
 	vararg     = nil, -- AstVararg or nil.
 	body       = nil, -- AstBlock.
@@ -314,42 +334,51 @@ local function AstFunction(tok) return {
 local function AstBreak(tok) return {
 	type  = "break",
 	token = tok,
+	id    = newId(),
 } end
 local function AstReturn(tok) return {
 	type   = "return",
 	token  = tok,
+	id     = newId(),
 	values = {}, -- Array of expressions.
 } end
 local function AstLabel(tok) return {
 	type  = "label",
 	token = tok,
+	id    = newId(),
 	name  = nil, -- AstIdentifier
 } end
 local function AstGoto(tok) return {
 	type  = "goto",
 	token = tok,
+	id    = newId(),
 	name  = nil, -- AstIdentifier
 } end
 local function AstBlock(tok) return {
 	type       = "block",
 	token      = tok,
+	id         = newId(),
 	statements = {}, -- Array of statements.
 } end
 local function AstDeclaration(tok) return {
 	type   = "declaration",
 	token  = tok,
+	id     = newId(),
 	names  = {}, -- Array of AstIdentifier.
 	values = {}, -- Array of expressions.
+
 } end
 local function AstAssignment(tok) return {
 	type    = "assignment",
 	token   = tok,
+	id      = newId(),
 	targets = {}, -- Mixed array of AstIdentifier and AstLookup.
 	values  = {}, -- Array of expressions.
 } end
 local function AstIf(tok) return {
 	type      = "if",
 	token     = tok,
+	id        = newId(),
 	condition = nil, -- Expression.
 	bodyTrue  = nil, -- AstBlock.
 	bodyFalse = nil, -- AstBlock. May be nil.
@@ -357,18 +386,21 @@ local function AstIf(tok) return {
 local function AstWhile(tok) return {
 	type      = "while",
 	token     = tok,
+	id        = newId(),
 	condition = nil, -- Expression.
 	body      = nil, -- AstBlock.
 } end
 local function AstRepeat(tok) return {
 	type      = "repeat",
 	token     = tok,
+	id        = newId(),
 	body      = nil, -- AstBlock.
 	condition = nil, -- Expression.
 } end
 local function AstFor(tok) return {
 	type   = "for",
 	token  = tok,
+	id     = newId(),
 	kind   = "",  -- "numeric"|"generic"
 	names  = {},  -- Array of AstIdentifier.
 	values = {},  -- Array of expressions.
@@ -2099,14 +2131,14 @@ end
 
 
 
--- didBreak = traverseTree( astNode, callback [, topNodeContainer=nil, topNodeKey=nil ] )
--- action   = callback( astNode, container, key )
+-- didBreak = traverseTree( astNode, callback [, topNodeParent=nil, topNodeContainer=nil, topNodeKey=nil ] )
+-- action   = callback( astNode, parent, container, key )
 -- action   = "stop"|"ignorechildren"|nil  -- Returning nil (or nothing) means continue traversal.
-function traverseTree(node, cb, container, k)
+function traverseTree(node, cb, parent, container, k)
 	if type(node) ~= "table"    then  error(F("bad argument #1 to 'traverseTree' (table expected, got %s)",    type(node)), 2)  end
 	if type(cb)   ~= "function" then  error(F("bad argument #2 to 'traverseTree' (function expected, got %s)", type(cb  )), 2)  end
 
-	local action = cb(node, container, k)
+	local action = cb(node, parent, container, k)
 	if action == "stop"           then  return true   end
 	if action == "ignorechildren" then  return false  end
 	if action                     then  error(F("Unknown traversal action '%s' returned from callback.", tostring(action)))  end
@@ -2118,93 +2150,196 @@ function traverseTree(node, cb, container, k)
 
 	elseif nodeType == "table" then
 		for _, field in ipairs(node.fields) do
-			if field.key   and traverseTree(field.key,   cb, field, "key")   then  return true  end
-			if field.value and traverseTree(field.value, cb, field, "value") then  return true  end
+			if field.key   and traverseTree(field.key,   cb, node, field, "key")   then  return true  end
+			if field.value and traverseTree(field.value, cb, node, field, "value") then  return true  end
 		end
 
 	elseif nodeType == "lookup" then
-		if node.object and traverseTree(node.object, cb, node, "object") then  return true  end
-		if node.member and traverseTree(node.member, cb, node, "member") then  return true  end
+		if node.object and traverseTree(node.object, cb, node, node, "object") then  return true  end
+		if node.member and traverseTree(node.member, cb, node, node, "member") then  return true  end
 
 	elseif nodeType == "unary" then
-		if node.expression and traverseTree(node.expression, cb, node, "expression") then  return true  end
+		if node.expression and traverseTree(node.expression, cb, node, node, "expression") then  return true  end
 
 	elseif nodeType == "binary" then
-		if node.left  and traverseTree(node.left,  cb, node, "left")  then  return true  end
-		if node.right and traverseTree(node.right, cb, node, "right") then  return true  end
+		if node.left  and traverseTree(node.left,  cb, node, node, "left")  then  return true  end
+		if node.right and traverseTree(node.right, cb, node, node, "right") then  return true  end
 
 	elseif nodeType == "call" then
-		if node.callee and traverseTree(node.callee, cb, node, "callee") then  return true  end
+		if node.callee and traverseTree(node.callee, cb, node, node, "callee") then  return true  end
 		for i, expr in ipairs(node.arguments) do
-			if traverseTree(expr, cb, node.arguments, i) then  return true  end
+			if traverseTree(expr, cb, node, node.arguments, i) then  return true  end
 		end
 
 	elseif nodeType == "function" then
 		for i, name in ipairs(node.parameters) do
-			if traverseTree(name, cb, node.parameters, i) then  return true  end
+			if traverseTree(name, cb, node, node.parameters, i) then  return true  end
 		end
-		if node.vararg and traverseTree(node.vararg, cb, node, "vararg") then  return true  end
-		if node.body   and traverseTree(node.body,   cb, node, "body")   then  return true  end
+		if node.vararg and traverseTree(node.vararg, cb, node, node, "vararg") then  return true  end
+		if node.body   and traverseTree(node.body,   cb, node, node, "body")   then  return true  end
 
 	elseif nodeType == "return" then
 		for i, expr in ipairs(node.values) do
-			if traverseTree(expr, cb, node.values, i) then  return true  end
+			if traverseTree(expr, cb, node, node.values, i) then  return true  end
 		end
 
 	elseif nodeType == "label" then
-		if node.name and traverseTree(node.name, cb, node, "name") then  return true  end
+		if node.name and traverseTree(node.name, cb, node, node, "name") then  return true  end
 
 	elseif nodeType == "goto" then
-		if node.name and traverseTree(node.name, cb, node, "name") then  return true  end
+		if node.name and traverseTree(node.name, cb, node, node, "name") then  return true  end
 
 	elseif nodeType == "block" then
 		for i, statement in ipairs(node.statements) do
-			if traverseTree(statement, cb, node.statements, i) then  return true  end
+			if traverseTree(statement, cb, node, node.statements, i) then  return true  end
 		end
 
 	elseif nodeType == "declaration" then
 		for i, ident in ipairs(node.names) do
-			if traverseTree(ident, cb, node.names, i) then  return true  end
+			if traverseTree(ident, cb, node, node.names, i) then  return true  end
 		end
 		for i, expr in ipairs(node.values) do
-			if traverseTree(expr, cb, node.values, i) then  return true  end
+			if traverseTree(expr, cb, node, node.values, i) then  return true  end
 		end
 
 	elseif nodeType == "assignment" then
 		for i, expr in ipairs(node.targets) do
-			if traverseTree(expr, cb, node.targets, i) then  return true  end
+			if traverseTree(expr, cb, node, node.targets, i) then  return true  end
 		end
 		for i, expr in ipairs(node.values) do
-			if traverseTree(expr, cb, node.values, i) then  return true  end
+			if traverseTree(expr, cb, node, node.values, i) then  return true  end
 		end
 
 	elseif nodeType == "if" then
-		if node.condition and traverseTree(node.condition, cb, node, "condition") then  return true  end
-		if node.bodyTrue  and traverseTree(node.bodyTrue,  cb, node, "bodyTrue")  then  return true  end
-		if node.bodyFalse and traverseTree(node.bodyFalse, cb, node, "bodyFalse") then  return true  end
+		if node.condition and traverseTree(node.condition, cb, node, node, "condition") then  return true  end
+		if node.bodyTrue  and traverseTree(node.bodyTrue,  cb, node, node, "bodyTrue")  then  return true  end
+		if node.bodyFalse and traverseTree(node.bodyFalse, cb, node, node, "bodyFalse") then  return true  end
 
 	elseif nodeType == "while" then
-		if node.condition and traverseTree(node.condition, cb, node, "condition") then  return true  end
-		if node.body      and traverseTree(node.body,      cb, node, "body")      then  return true  end
+		if node.condition and traverseTree(node.condition, cb, node, node, "condition") then  return true  end
+		if node.body      and traverseTree(node.body,      cb, node, node, "body")      then  return true  end
 
 	elseif nodeType == "repeat" then
-		if node.body      and traverseTree(node.body,      cb, node, "body")      then  return true  end
-		if node.condition and traverseTree(node.condition, cb, node, "condition") then  return true  end
+		if node.body      and traverseTree(node.body,      cb, node, node, "body")      then  return true  end
+		if node.condition and traverseTree(node.condition, cb, node, node, "condition") then  return true  end
 
 	elseif nodeType == "for" then
 		for i, ident in ipairs(node.names) do
-			if traverseTree(ident, cb, node.names, i) then  return true  end
+			if traverseTree(ident, cb, node, node.names, i) then  return true  end
 		end
 		for i, expr in ipairs(node.values) do
-			if traverseTree(expr, cb, node.values, i) then  return true  end
+			if traverseTree(expr, cb, node, node.values, i) then  return true  end
 		end
-		if node.body and traverseTree(node.body, cb, node, "body") then  return true  end
+		if node.body and traverseTree(node.body, cb, node, node, "body") then  return true  end
 
 	else
 		error(F("Invalid node type '%s'.", tostring(nodeType)))
 	end
 
 	return false
+end
+
+
+
+function updateReferences(node)
+	local idents = {}
+
+	traverseTree(node, function(node, parent, container, key)
+		node.parent    = parent
+		node.container = container
+		node.key       = key
+
+		if node.type == "identifier" then
+			table.insert(idents, node)
+		end
+	end)
+
+	for _, ident in ipairs(idents) do
+		local name   = ident.name
+		local parent = ident
+		local lastChild
+
+		while true do
+			lastChild = parent
+			parent    = parent.parent
+
+			if not parent then  break  end
+
+			if parent.type == "declaration" then
+				local decl = parent
+				if lastChild.container == decl.names and itemWith1(decl.names, "name", name) then
+					ident.declaration = decl
+					break
+				end
+
+			elseif parent.type == "function" then
+				local func = parent
+				if itemWith1(func.parameters, "name", name) then
+					ident.declaration = func
+					break
+				end
+
+			elseif parent.type == "for" then
+				local forLoop = parent
+				if itemWith1(forLoop.names, "name", name) then
+					ident.declaration = forLoop
+					break
+				end
+
+			elseif parent.type == "block" then
+				local block = parent
+
+				for i = lastChild.key-1, 1, -1 do
+					local statement = block.statements[i]
+
+					if statement.type == "declaration" then
+						local decl = statement
+						if itemWith1(decl.names, "name", name) then
+							ident.declaration = decl
+							break
+						end
+					end
+				end
+
+				if ident.declaration then  break  end
+
+			elseif parent.type == "repeat" then
+				local repeatLoop = parent
+
+				if lastChild == repeatLoop.condition then
+					local block = repeatLoop.body
+
+					for i = #block.statements, 1, -1 do
+						local statement = block.statements[i]
+
+						if statement.type == "declaration" then
+							local decl = statement
+							if itemWith1(decl.names, "name", name) then
+								ident.declaration = decl
+								break
+							end
+						end
+					end
+
+					if ident.declaration then  break  end
+				end
+			end
+		end--while true
+
+		--[[ DEBUG
+		print(F(
+			"%-10s  %-12s  %s",
+			name,
+			(ident.declaration and ident.declaration.type or ""),
+			tostring(ident.declaration and ident.declaration.id or "")
+		))
+		--]]
+	end--for idents
+end
+
+
+
+function minify(node)
 end
 
 
@@ -2852,22 +2987,45 @@ end
 
 
 
+-- item, index = itemWith1( array, key, value )
+function itemWith1(t, k, v)
+	for i, item in ipairs(t) do
+		if item[k] == v then  return item, i  end
+	end
+	return nil
+end
+
+
+
+do
+	local lastId = 0
+
+	function newId()
+		lastId = lastId+1
+		return lastId
+	end
+end
+
+
+
 return {
-	tokenizeString = tokenizeString,
-	tokenizeFile   = tokenizeFile,
+	tokenizeString   = tokenizeString,
+	tokenizeFile     = tokenizeFile,
 
-	newTokenStream = newTokenStream,
-	insertToken    = insertToken,
-	removeToken    = removeToken,
+	newTokenStream   = newTokenStream,
+	insertToken      = insertToken,
+	removeToken      = removeToken,
 
-	parse          = parse,
-	newNode        = newNode,
-	traverseTree   = traverseTree,
-	toLua          = toLua,
+	parse            = parse,
+	newNode          = newNode,
+	traverseTree     = traverseTree,
+	updateReferences = updateReferences,
+	minify           = minify,
+	toLua            = toLua,
 
-	printTokens    = printTokens,
-	printNode      = printNode,
-	printTree      = printTree,
+	printTokens      = printTokens,
+	printNode        = printNode,
+	printTree        = printTree,
 }
 
 

@@ -16,7 +16,7 @@ do
 	-- parser.printTree(ast)
 
 	--[[
-	parser.traverseTree(ast, function(node, container, k)
+	parser.traverseTree(ast, function(node, parent, container, k)
 		io.write(tostring(container), ".", tostring(k), " ")
 		parser.printNode(node)
 		-- if container then
@@ -31,6 +31,9 @@ do
 			node.name = "dog"
 		end
 	end)
+
+	parser.updateReferences(ast)
+	parser.minify(ast)
 
 	local lua = assert(parser.toLua(ast, pretty))
 
