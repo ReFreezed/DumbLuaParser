@@ -1669,6 +1669,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		local label = AstLabel(tok)
 		tok         = tok + 1 -- '::'
 
+		local tokNext
 		label.name, tokNext = parseIdentifier(tokens, tok)
 		if not label.name then  return false, tok  end
 		tok = tokNext
@@ -1687,6 +1688,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		local gotoNode = AstGoto(tok)
 		tok            = tok + 1 -- 'goto'
 
+		local tokNext
 		gotoNode.name, tokNext = parseIdentifier(tokens, tok)
 		if not gotoNode.name then  return false, tok  end
 		tok = tokNext
