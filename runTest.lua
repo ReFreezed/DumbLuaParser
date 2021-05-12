@@ -33,7 +33,7 @@ do
 	end)
 
 	parser.updateReferences(ast)
-	parser.minify(ast)
+	-- parser.minify(ast)
 
 	local lua = assert(parser.toLua(ast, pretty))
 

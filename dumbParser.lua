@@ -1,6 +1,6 @@
 --[[============================================================
 --=
---=  Lua parsing library v1.1 (2020-07-06)
+--=  Lua parsing library v1.2 (2021-05-13)
 --=  by Marcus 'ReFreezed' Thunström
 --=
 --=  License: MIT (see the bottom of this file)
@@ -28,7 +28,7 @@
 	--------------------------------
 
 	tokenizeString()
-		tokens, error = parser.tokenizeString( luaString [, pathForErrors="?" ] )
+		tokens, error = parser.tokenizeString( luaString [, pathForErrorMessages="?" ] )
 		Convert a Lua string into tokens.
 		Returns nil and an error message on error.
 
@@ -51,7 +51,7 @@
 
 	parse()
 		astNode, error = parser.parse( tokens )
-		astNode, error = parser.parse( luaString, pathForErrors )
+		astNode, error = parser.parse( luaString, pathForErrorMessages )
 		astNode, error = parser.parse( path )
 		Convert tokens or Lua code into an abstract syntax tree.
 		Returns nil and an error message on error.
@@ -87,6 +87,10 @@
 	printTree()
 		parser.printTree( astNode )
 		Print the structure of a whole AST to stdout.
+
+	VERSION
+		parser.VERSION
+		The parser's version number (e.g. "1.0.2").
 
 
 	Tokens
@@ -147,6 +151,8 @@
 
 --============================================================]]
 
+local PARSER_VERSION = "1.2.0"
+
 local F       = string.format
 local find    = string.find
 local getByte = string.byte
@@ -159,34 +165,18 @@ local loadLuaString = loadstring   or load
 local unpack        = table.unpack or unpack
 
 local countString
-local insertToken
-local isToken
-local isTokenAnyValue
-local isTokenType
+local insertToken, removeToken
+local isToken, isTokenType, isTokenAnyValue
 local itemWith1
 local minify
 local newId
 local newNode
 local newTokenStream
 local parse
-local parseBlock
-local parseExpression
-local parseExpressionList
-local parseFunctionParametersAndBody
-local parseIdentifier
-local parseNameList
-local parseOneOrPossiblyMoreStatements
-local parseStringlikeToken
-local parseTable
-local printerr
-local printNode
+local printError, printfError, reportErrorInFile, reportErrorAtToken
+local printNode, printTree
 local printTokens
-local printTree
-local removeToken
-local reportErrorAtToken
-local reportErrorInFile
-local tokenizeFile
-local tokenizeString
+local tokenizeString, tokenizeFile
 local toLua
 local traverseTree
 local updateReferences
@@ -424,15 +414,18 @@ function countString(haystack, needle, plain)
 	end
 end
 
-function printerr(s)
+function printError(s)
 	io.stderr:write(s, "\n")
+end
+function printfError(s, ...)
+	io.stderr:write(s:format(...), "\n")
 end
 
 function reportErrorInFile(contents, path, ptr, agent, s, ...)
 	s = F(s, ...)
 
 	if contents == "" then
-		printerr(F("Error @ %s: [%s] %s\n", path, agent, s))
+		printfError("Error @ %s: [%s] %s\n", path, agent, s)
 		return s
 	end
 
@@ -447,10 +440,10 @@ function reportErrorInFile(contents, path, ptr, agent, s, ...)
 
 	-- print(debug.traceback("", 2)) -- DEBUG
 
-	printerr(F(
+	printfError(
 		"Error @ %s:%d: [%s] %s\n>\n> %s\n>%s^\n>\n",
 		path, ln, agent, s, lastLine, rep("-", col)
-	))
+	)
 
 	return s
 end
@@ -462,7 +455,7 @@ end
 
 
 -- success, equalSignCountIfLong|errorCode, ptr = parseStringlikeToken( s, ptr )
-function parseStringlikeToken(s, ptr)
+local function parseStringlikeToken(s, ptr)
 	local longEqualSigns       = match(s, "^%[(=*)%[", ptr)
 	local equalSignCountIfLong = longEqualSigns and #longEqualSigns
 
@@ -486,7 +479,7 @@ function parseStringlikeToken(s, ptr)
 	return true, equalSignCountIfLong, ptr
 end
 
--- tokens, error = tokenizeString( luaString [, pathForErrors="?" ] )
+-- tokens, error = tokenizeString( luaString [, pathForErrorMessages="?" ] )
 function tokenizeString(s, path)
 	if find(s, "\r", 1, true) then
 		s = gsub(s, "\r\n?", "\n")
@@ -873,14 +866,20 @@ end
 function isToken(tokens, tok, tokType, tokValue)
 	return tokens.type[tok] == tokType and tokens.value[tok] == tokValue
 end
+
 function isTokenType(tokens, tok, tokType)
 	return tokens.type[tok] == tokType
 end
+
 function isTokenAnyValue(tokens, tok, tokValueSet)
 	return tokValueSet[tokens.value[tok]] == true
 end
 
-function parseIdentifier(tokens, tok) --> ident, token
+
+
+local parseExpression, parseExpressionList, parseFunctionParametersAndBody, parseBlock
+
+local function parseIdentifier(tokens, tok) --> ident, token
 	if not isTokenType(tokens, tok, "identifier") then
 		reportErrorAtToken(tokens, tok, "Parser", "Expected an identifier.")
 		return nil, tok
@@ -893,7 +892,7 @@ function parseIdentifier(tokens, tok) --> ident, token
 	return ident, tok
 end
 
-function parseNameList(tokens, tok, names, allowVararg) --> success, token, vararg|nil
+local function parseNameList(tokens, tok, names, allowVararg) --> success, token, vararg|nil
 	while true do
 		if allowVararg and isToken(tokens, tok, "punctuation", "...") then
 			local vararg = AstVararg(tok)
@@ -916,7 +915,7 @@ function parseNameList(tokens, tok, names, allowVararg) --> success, token, vara
 	return true, tok
 end
 
-function parseTable(tokens, tok) --> tableNode, token
+local function parseTable(tokens, tok) --> tableNode, token
 	local tableNode = AstTable(tok)
 	tok             = tok + 1 -- '{'
 
@@ -1050,7 +1049,7 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 		unary.operator = tokens.value[tok]
 		tok            = tok + 1 -- operator
 
-		local subExpr, tokNext = parseExpression(tokens, tok, OPERATOR_PRECEDENCE.unary)
+		local subExpr, tokNext = parseExpression(tokens, tok, OPERATOR_PRECEDENCE.unary-1)
 		if not subExpr then  return false, tok  end
 		unary.expression = subExpr
 		tok              = tokNext
@@ -1341,9 +1340,9 @@ function parseFunctionParametersAndBody(tokens, tok)
 	return func, tok
 end
 
-local blockEndTokenTypes = {["end"]=true, ["else"]=true, ["elseif"]=true, ["until"]=true}
+local BLOCK_END_TOKEN_TYPES = {["end"]=true, ["else"]=true, ["elseif"]=true, ["until"]=true}
 
-function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> success, token
+local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> success, token
 	--[[
 	stat ::= varlist '=' explist |
 	         functioncall |
@@ -1700,7 +1699,7 @@ function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> success, 
 		local returnNode = AstReturn(tok)
 		tok              = tok + 1 -- 'return'
 
-		if tok <= tokens.n and not ((isTokenType(tokens, tok, "keyword") and isTokenAnyValue(tokens, tok, blockEndTokenTypes)) or isToken(tokens, tok, "punctuation", ";")) then
+		if tok <= tokens.n and not ((isTokenType(tokens, tok, "keyword") and isTokenAnyValue(tokens, tok, BLOCK_END_TOKEN_TYPES)) or isToken(tokens, tok, "punctuation", ";")) then
 			local ok, tokNext = parseExpressionList(tokens, tok, returnNode.values)
 			if not ok then  return false, tok  end
 			tok = tokNext
@@ -1776,7 +1775,7 @@ function parseBlock(tokens, tok, stopAtEndKeyword) --> block, token
 			tok = tok + 1 -- ';'
 		end
 
-		if stopAtEndKeyword and isTokenType(tokens, tok, "keyword") and isTokenAnyValue(tokens, tok, blockEndTokenTypes) then
+		if stopAtEndKeyword and isTokenType(tokens, tok, "keyword") and isTokenAnyValue(tokens, tok, BLOCK_END_TOKEN_TYPES) then
 			break
 		end
 
@@ -1809,7 +1808,7 @@ function parseBlock(tokens, tok, stopAtEndKeyword) --> block, token
 end
 
 -- ast, error = parse( tokens )
--- ast, error = parse( luaString, pathForErrors )
+-- ast, error = parse( luaString, pathForErrorMessages )
 -- ast, error = parse( path )
 function parse(tokens, path)
 	if type(tokens) == "string" then
@@ -2341,6 +2340,7 @@ end
 
 
 function minify(node)
+	printError("Error: Minifying not supported yet!")
 end
 
 
@@ -2503,7 +2503,7 @@ do
 			lastOutput = writeAlphanum(buffer, pretty, lookup.member.value, lastOutput)
 
 		elseif forMethodCall then
-			printerr(F("AST: Callee for method call is not a lookup."))
+			printfError("Error: AST: Callee for method call is not a lookup.")
 			return false, lastOutput
 
 		else
@@ -2627,7 +2627,7 @@ do
 				lastOutput = writeLua(buffer, F('"%s"', s), "")
 
 			else
-				printerr(F("Failed outputting value '%s'.", node.value))
+				printfError("Error: Failed outputting value '%s'.", node.value)
 				return false, lastOutput
 			end
 
@@ -2715,7 +2715,7 @@ do
 				local lookup = node.callee
 
 				if lookup.type ~= "lookup" then
-					printerr(F("AST: Callee for method call is not a lookup."))
+					printfError("Error: AST: Callee for method call is not a lookup.")
 					return false, lastOutput
 				end
 
@@ -2762,7 +2762,7 @@ do
 		elseif nodeType == "label" then
 			local name = node.name.name
 			if not (name:find"^[%a_][%w_]*$" and not KEYWORDS[name]) then
-				printerr(F("AST: Invalid label '%s'.", name))
+				printfError("Error: AST: Invalid label '%s'.", name)
 				return false, lastOutput
 			end
 			lastOutput = writeLua(buffer, "::", "")
@@ -2773,7 +2773,7 @@ do
 		elseif nodeType == "goto" then
 			local name = node.name.name
 			if not (name:find"^[%a_][%w_]*$" and not KEYWORDS[name]) then
-				printerr(F("AST: Invalid label '%s'.", name))
+				printfError("Error: AST: Invalid label '%s'.", name)
 				return false, lastOutput
 			end
 			lastOutput = writeAlphanum(buffer, pretty, "goto", lastOutput)
@@ -2944,7 +2944,7 @@ do
 				lastOutput = writeAlphanum(buffer, pretty, "in", lastOutput)
 
 			else
-				printerr(F("Unknown 'for' loop kind '%s'.", node.kind))
+				printfError("Error: Unknown 'for' loop kind '%s'.", node.kind)
 				return false, lastOutput
 			end
 
@@ -2964,7 +2964,7 @@ do
 			lastOutput = writeAlphanum(buffer, pretty, "end", lastOutput)
 
 		else
-			printerr(F("Unknown node type '%s'.", nodeType))
+			printfError("Error: Unknown node type '%s'.", nodeType)
 			return false, lastOutput
 		end
 		return true, lastOutput
@@ -3010,6 +3010,8 @@ end
 
 
 return {
+	VERSION          = PARSER_VERSION,
+
 	tokenizeString   = tokenizeString,
 	tokenizeFile     = tokenizeFile,
 
@@ -3033,7 +3035,7 @@ return {
 
 --[[============================================================
 
-Copyright © 2020 Marcus 'ReFreezed' Thunström
+Copyright © 2020-2021 Marcus 'ReFreezed' Thunström
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

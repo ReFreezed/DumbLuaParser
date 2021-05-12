@@ -1,0 +1,13 @@
+Changelog
+DumbLuaParser
+
+v1.2.0 (2021-05-13)
+- Added parser.updateReferences().
+- Changed arguments for parser.traverseTree() and the callback.
+- Fixed parsing of consecutive unary operations.
+
+v1.1.0 (2020-07-06)
+- Added parser.traverseTree().
+
+v1.0.0 (2020-07-05)
+- Initial release!

@@ -1,3 +1,4 @@
-*.sublime-*
-.run
 local/
+
+/*.sublime-*
+/.run
