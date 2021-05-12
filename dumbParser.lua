@@ -1,9 +1,12 @@
 --[[============================================================
 --=
---=  Lua parsing library v1.2 (2021-05-13)
+--=  Dumb Lua Parser - Lua parsing library
 --=  by Marcus 'ReFreezed' Thunström
 --=
+--=  v1.2 (2021-05-13)
+--=
 --=  License: MIT (see the bottom of this file)
+--=  Website: https://github.com/ReFreezed/DumbLuaParser
 --=
 --=  Supported Lua versions: 5.1, 5.2, 5.3
 --=

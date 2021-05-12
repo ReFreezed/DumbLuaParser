@@ -1,5 +1,5 @@
 Changelog
-DumbLuaParser
+Dumb Lua Parser
 
 v1.2.0 (2021-05-13)
 - Added parser.updateReferences().
