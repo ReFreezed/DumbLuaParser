@@ -28,63 +28,64 @@
 	--------------------------------
 
 	tokenizeString()
-		tokens, error = tokenizeString( luaString [, pathForErrors="?" ] )
+		tokens, error = parser.tokenizeString( luaString [, pathForErrors="?" ] )
 		Convert a Lua string into tokens.
 		Returns nil and an error message on error.
 
 	tokenizeFile()
-		tokens, error = tokenizeFile( path )
+		tokens, error = parser.tokenizeFile( path )
 		Convert the contents of a file into tokens. Uses io.open().
 		Returns nil and an error message on error.
 
 	newTokenStream()
-		tokens = newTokenStream( )
+		tokens = parser.newTokenStream( )
 		Create a new token stream table. (See more info below.)
 
 	insertToken()
-		insertToken( tokens, [ index=tokens.n+1, ] tokenType, tokenValue )
+		parser.insertToken( tokens, [ index=tokens.n+1, ] tokenType, tokenValue )
 		Insert a new token. (Search for 'TokenInsertion' for more info.)
 
 	removeToken()
-		removeToken( tokens [, index=1 ] )
+		parser.removeToken( tokens [, index=1 ] )
 		Remove a token.
 
 	parse()
-		astNode, error = parse( tokens )
-		astNode, error = parse( luaString, pathForErrors )
-		astNode, error = parse( path )
+		astNode, error = parser.parse( tokens )
+		astNode, error = parser.parse( luaString, pathForErrors )
+		astNode, error = parser.parse( path )
 		Convert tokens or Lua code into an abstract syntax tree.
 		Returns nil and an error message on error.
 
 	newNode()
-		astNode = newNode( nodeType, arguments... )
+		astNode = parser.newNode( nodeType, arguments... )
 		Create a new AST node. (Search for 'NodeCreation' for more info.)
 
 	traverseTree()
-		didBreak = traverseTree( astNode, callback [, topNodeParent=nil, topNodeContainer=nil, topNodeKey=nil ] )
+		didBreak = parser.traverseTree( astNode, callback [, topNodeParent=nil, topNodeContainer=nil, topNodeKey=nil ] )
 		action   = callback( astNode, parent, container, key )
 		action   = "stop"|"ignorechildren"|nil  -- Returning nil (or nothing) means continue traversal.
 		Call a function on all nodes in an AST, going from astNode out to the leaf nodes.
 		container[key] is the position of the current node in the tree and can be used to replace the node.
 
 	updateReferences()
+		parser.updateReferences( astNode )
 		Update references between nodes in the tree.
 		This function sets 'parent', 'container' and 'key' for all nodes and 'declaration' for identifiers.
 
 	toLua()
-		lua = toLua( astNode [, prettyOuput=false ] )
+		lua = parser.toLua( astNode [, prettyOuput=false ] )
 		Convert an AST to Lua. Returns nil on error.
 
 	printTokens()
-		printTokens( tokens )
+		parser.printTokens( tokens )
 		Print the contents of a token stream to stdout.
 
 	printNode()
-		printNode( astNode )
+		parser.printNode( astNode )
 		Print information about an AST node to stdout.
 
 	printTree()
-		printTree( astNode )
+		parser.printTree( astNode )
 		Print the structure of a whole AST to stdout.
 
 
