@@ -45,7 +45,7 @@ do
 		print(luaEdit)
 	end
 
-	assert(loadLuaString(lua, "@lua"))
+	assert(loadLuaString(lua, "@<luastring>"))
 
 	-- Round-trip.
 	local tripTokens = assert(parser.tokenizeString(lua))
@@ -77,7 +77,7 @@ do
 	local lua = assert(parser.toLua(ast, pretty))
 	print(lua)
 
-	assert(loadLuaString(lua, "@lua"))
+	assert(loadLuaString(lua, "@<luastring>"))
 end
 
 -- AST manipulations.
@@ -103,7 +103,7 @@ do
 
 	local block = assert(parser.parse([[
 		local x = 49
-	]], "<inline lua>"))
+	]], "<luastring>"))
 
 	assert(block.type == "block")
 	assert(block.statements[1])
@@ -121,7 +121,53 @@ do
 	local lua = assert(parser.toLua(block, pretty))
 	print(lua)
 
-	assert(loadLuaString(lua, "@lua"))
+	assert(loadLuaString(lua, "@<luastring>"))
 end
 
-print("Tests passed!")
+-- Tests that should fail.
+do
+	assert(    parser.parse([[ x =  tbl   () ]], "<luastring>"))
+	assert(    parser.parse([[ x =  tbl   "" ]], "<luastring>"))
+	assert(    parser.parse([[ x =  tbl .m() ]], "<luastring>"))
+	assert(    parser.parse([[ x =  tbl :m"" ]], "<luastring>"))
+	assert(    parser.parse([[ x = (tbl)  () ]], "<luastring>"))
+	assert(    parser.parse([[ x = (tbl)  "" ]], "<luastring>"))
+	assert(    parser.parse([[ x = (tbl).m() ]], "<luastring>"))
+	assert(    parser.parse([[ x = (tbl):m"" ]], "<luastring>"))
+	assert(not parser.parse([[ x =  " "   () ]], "<luastring>"))
+	assert(not parser.parse([[ x =  " "   "" ]], "<luastring>"))
+	assert(not parser.parse([[ x =  " " .m() ]], "<luastring>"))
+	assert(not parser.parse([[ x =  " " :m"" ]], "<luastring>"))
+	assert(    parser.parse([[ x = (" ")  () ]], "<luastring>"))
+	assert(    parser.parse([[ x = (" ")  "" ]], "<luastring>"))
+	assert(    parser.parse([[ x = (" ").m() ]], "<luastring>"))
+	assert(    parser.parse([[ x = (" "):m"" ]], "<luastring>"))
+	assert(not parser.parse([[ x =  { }   () ]], "<luastring>"))
+	assert(not parser.parse([[ x =  { }   "" ]], "<luastring>"))
+	assert(not parser.parse([[ x =  { } .m() ]], "<luastring>"))
+	assert(not parser.parse([[ x =  { } :m"" ]], "<luastring>"))
+	assert(    parser.parse([[ x = ({ })  () ]], "<luastring>"))
+	assert(    parser.parse([[ x = ({ })  "" ]], "<luastring>"))
+	assert(    parser.parse([[ x = ({ }).m() ]], "<luastring>"))
+	assert(    parser.parse([[ x = ({ }):m"" ]], "<luastring>"))
+	assert(not parser.parse([[ x =  123   () ]], "<luastring>"))
+	assert(not parser.parse([[ x =  123   "" ]], "<luastring>"))
+	assert(not parser.parse([[ x =  123 .m() ]], "<luastring>"))
+	assert(not parser.parse([[ x =  123 :m"" ]], "<luastring>"))
+	assert(    parser.parse([[ x = (123)  () ]], "<luastring>"))
+	assert(    parser.parse([[ x = (123)  "" ]], "<luastring>"))
+	assert(    parser.parse([[ x = (123).m() ]], "<luastring>"))
+	assert(    parser.parse([[ x = (123):m"" ]], "<luastring>"))
+	assert(not parser.parse([[ x =  nil   () ]], "<luastring>"))
+	assert(not parser.parse([[ x =  nil   "" ]], "<luastring>"))
+	assert(not parser.parse([[ x =  nil .m() ]], "<luastring>"))
+	assert(not parser.parse([[ x =  nil :m"" ]], "<luastring>"))
+	assert(    parser.parse([[ x = (nil)  () ]], "<luastring>"))
+	assert(    parser.parse([[ x = (nil)  "" ]], "<luastring>"))
+	assert(    parser.parse([[ x = (nil).m() ]], "<luastring>"))
+	assert(    parser.parse([[ x = (nil):m"" ]], "<luastring>"))
+end
+
+print()
+print("Tests passed successfully!")
+print()

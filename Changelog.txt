@@ -1,6 +1,9 @@
 Changelog
 Dumb Lua Parser
 
+v1.2.1 (2021-06-01)
+- Fixed lookups and calls that shouldn't parse, like "":sub().
+
 v1.2.0 (2021-05-13)
 - Added parser.updateReferences().
 - Changed arguments for parser.traverseTree() and the callback.

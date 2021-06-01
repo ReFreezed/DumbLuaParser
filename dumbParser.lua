@@ -3,7 +3,7 @@
 --=  Dumb Lua Parser - Lua parsing library
 --=  by Marcus 'ReFreezed' Thunström
 --=
---=  v1.2 (2021-05-13)
+--=  v1.2.1 (2021-06-01)
 --=
 --=  License: MIT (see the bottom of this file)
 --=  Website: https://github.com/ReFreezed/DumbLuaParser
@@ -154,7 +154,7 @@
 
 --============================================================]]
 
-local PARSER_VERSION = "1.2.0"
+local PARSER_VERSION = "1.2.1"
 
 local F       = string.format
 local find    = string.find
@@ -1006,6 +1006,7 @@ end
 
 function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 	local expr
+	local canParseLookupOrCall = false
 
 	-- identifier
 	if isTokenType(tokens, tok, "identifier") then
@@ -1013,7 +1014,8 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 		if not ident then  return false, tok  end
 		tok = tokNext
 
-		expr = ident
+		expr                 = ident
+		canParseLookupOrCall = true
 
 	-- ...
 	elseif isToken(tokens, tok, "punctuation", "...") then
@@ -1096,7 +1098,8 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 		end
 		tok = tok + 1 -- ')'
 
-		expr = _expr
+		expr                 = _expr
+		canParseLookupOrCall = true
 
 	else
 		reportErrorAtToken(tokens, tok, "Parser", "Failed parsing expression.")
@@ -1105,7 +1108,7 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 
 	assert(expr)
 
-	-- Binary expressions etc.
+	-- Binary expressions, including lookups and calls.
 	while true do
 		-- a + b
 		if
@@ -1130,6 +1133,9 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 			binary.right = rhsExpr
 
 			expr = binary
+
+		elseif not canParseLookupOrCall then
+			break
 
 		-- t.k
 		elseif isToken(tokens, tok, "punctuation", ".") then
@@ -2969,7 +2975,7 @@ do
 			lastOutput = writeAlphanum(buffer, pretty, "end", lastOutput)
 
 		else
-			printfError("Error: Unknown node type '%s'.", nodeType)
+			printfError("Error: Unknown node type '%s'.", tostring(nodeType))
 			return false, lastOutput
 		end
 		return true, lastOutput
@@ -2978,6 +2984,8 @@ do
 	-- lua = toLua( astNode [, prettyOuput=false ] )
 	-- Returns nil on error.
 	function toLua(node, pretty)
+		if type(node) ~= "table" then  error(F("bad argument #1 to 'toLua' (AST node expected, got %s)", type(node)), 2)  end
+
 		local buffer = {}
 
 		local ok
