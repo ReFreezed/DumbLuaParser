@@ -64,16 +64,22 @@
 		Create a new AST node. (Search for 'NodeCreation' for more info.)
 
 	traverseTree()
-		didBreak = parser.traverseTree( astNode, callback [, topNodeParent=nil, topNodeContainer=nil, topNodeKey=nil ] )
+		didBreak = parser.traverseTree( astNode, [ leavesFirst=false, ] callback [, topNodeParent=nil, topNodeContainer=nil, topNodeKey=nil ] )
 		action   = callback( astNode, parent, container, key )
 		action   = "stop"|"ignorechildren"|nil  -- Returning nil (or nothing) means continue traversal.
-		Call a function on all nodes in an AST, going from astNode out to the leaf nodes.
+		Call a function on all nodes in an AST, going from astNode out to the leaf nodes (or from leaf nodes and inwards if leavesFirst is set).
 		container[key] is the position of the current node in the tree and can be used to replace the node.
 
 	updateReferences()
 		parser.updateReferences( astNode )
 		Update references between nodes in the tree.
 		This function sets 'parent', 'container' and 'key' for all nodes and 'declaration' for identifiers.
+
+	minify()
+		parser.minify( astNode )
+		Remove useless nodes from the tree and replace local variable names with short names.
+		This function can be used to obfuscate the code to some extent.
+		Note: Make sure to call updateReferences() first so minify() knows what identifiers refer to local declarations, otherwise all identifiers will be treated as globals and are thus left untouched.
 
 	toLua()
 		lua = parser.toLua( astNode [, prettyOuput=false ] )
@@ -165,10 +171,16 @@ local gsub          = string.gsub
 local match         = string.match
 local repeatString  = string.rep
 
+local floor         = math.floor
+local getMax        = math.max
+local getMin        = math.min
+
 local loadLuaString = loadstring   or load
 local unpack        = table.unpack or unpack
 
+local assertArg
 local countString
+local formatNumber
 local isToken, isTokenType, isTokenAnyValue
 local itemWith1
 local newId
@@ -250,158 +262,139 @@ local NUM_DEC_FRAC     = gsub("^(        %d*          %.%d+                     
 local NUM_DEC_EXP      = gsub("^(        %d+          %.?             [Ee][-+]?%d+           )", " +", "")
 local NUM_DEC          = gsub("^(        %d+          %.?                                    )", " +", "")
 
-local ERROR_UNFINISHED_VALUE = {}
-
 local EMPTY_TABLE = {}
 
 
 
 -- :NodeFields
 
--- All nodes also have a 'container' and a 'key' field.
+-- All nodes also have a 'parent', 'container' and 'key' field (after updateReferences() has been called).
+-- 'parent' refers to the node's parent in the tree.
+-- 'container' refers to the specific table that the node is in, which could be the parent or a member of the parent.
+-- 'key' refers to the specific field in the container that the node is in, which is either a string or an integer.
 
 -- AST expressions.
-local function AstIdentifier(tok) return {
+local function AstIdentifier (tok)return{token=tok,
 	type        = "identifier",
-	token       = tok,
 	id          = newId(),
 	name        = "",
-	declaration = nil, -- AstDeclaration, AstFunction or AstFor. This is nil for globals.
-} end
-local function AstVararg(tok) return {
+	declaration = nil, -- AstDeclaration, AstFunction or AstFor. Updated by updateReferences(). This is nil for globals.
+}end
+local function AstVararg (tok)return{token=tok,
 	type        = "vararg",
-	token       = tok,
 	id          = newId(),
 	adjustToOne = false, -- True if parentheses surround the vararg.
-} end
-local function AstLiteral(tok) return {
-	type  = "literal",
-	token = tok,
-	id    = newId(),
-	value = nil, -- A number, string, boolean or nil.
-} end
-local function AstTable(tok) return {
-	type   = "table",
-	token  = tok,
-	id     = newId(),
-	fields = {}, -- Array of {key=expression, value=expression, generatedKey=bool}.
-} end
-local function AstLookup(tok) return {
-	type   = "lookup",
-	token  = tok,
-	id     = newId(),
-	object = nil, -- Expression.
-	member = nil, -- Expression.
-} end
-local function AstUnary(tok) return {
-	type       = "unary",
-	token      = tok,
-	id         = newId(),
-	operator   = "",  -- "-"|"not"|"#"|"~"
-	expression = nil, -- Expression.
-} end
-local function AstBinary(tok) return {
-	type     = "binary",
-	token    = tok,
-	id       = newId(),
-	operator = "",  -- "+"|"-"|"*"|"/"|"//"|"^"|"%"|".."|"<"|"<="|">"|">="|"=="|"~="|"and"|"or"
-	left     = nil, -- Expression.
-	right    = nil, -- Expression.
-} end
-local function AstCall(tok) return {
+}end
+local function AstLiteral (tok)return{token=tok,
+	type        = "literal",
+	id          = newId(),
+	value       = nil, -- A number, string, boolean or nil.
+}end
+local function AstTable (tok)return{token=tok,
+	type        = "table",
+	id          = newId(),
+	fields      = {}, -- Array of {key=expression, value=expression, generatedKey=bool}.
+}end
+local function AstLookup (tok)return{token=tok,
+	type        = "lookup",
+	id          = newId(),
+	object      = nil, -- Expression.
+	member      = nil, -- Expression.
+}end
+local function AstUnary (tok)return{token=tok,
+	type        = "unary",
+	id          = newId(),
+	operator    = "",  -- "-"|"not"|"#"|"~"
+	expression  = nil, -- Expression.
+}end
+local function AstBinary (tok)return{token=tok,
+	type        = "binary",
+	id          = newId(),
+	operator    = "",  -- "+"|"-"|"*"|"/"|"//"|"^"|"%"|"&"|"~"|"|"|">>"|"<<"|".."|"<"|"<="|">"|">="|"=="|"~="|"and"|"or"
+	left        = nil, -- Expression.
+	right       = nil, -- Expression.
+}end
+local function AstCall (tok)return{token=tok, -- This node type can be both an expression and a statement.
 	type        = "call",
-	token       = tok,
 	id          = newId(),
 	callee      = nil,   -- Expression.
 	arguments   = {},    -- Array of expressions.
 	method      = false,
 	adjustToOne = false, -- True if parentheses surround the call.
-} end
-local function AstFunction(tok) return {
-	type       = "function",
-	token      = tok,
-	id         = newId(),
-	parameters = {},  -- Array of AstIdentifier.
-	vararg     = nil, -- AstVararg or nil.
-	body       = nil, -- AstBlock.
-} end
+}end
+local function AstFunction (tok)return{token=tok,
+	type        = "function",
+	id          = newId(),
+	parameters  = {},  -- Array of AstIdentifier.
+	vararg      = nil, -- AstVararg or nil.
+	body        = nil, -- AstBlock.
+}end
 
 -- AST statements.
-local function AstBreak(tok) return {
-	type  = "break",
-	token = tok,
-	id    = newId(),
-} end
-local function AstReturn(tok) return {
-	type   = "return",
-	token  = tok,
-	id     = newId(),
-	values = {}, -- Array of expressions.
-} end
-local function AstLabel(tok) return {
-	type  = "label",
-	token = tok,
-	id    = newId(),
-	name  = nil, -- AstIdentifier
-} end
-local function AstGoto(tok) return {
-	type  = "goto",
-	token = tok,
-	id    = newId(),
-	name  = nil, -- AstIdentifier
-} end
-local function AstBlock(tok) return {
-	type       = "block",
-	token      = tok,
-	id         = newId(),
-	statements = {}, -- Array of statements.
-} end
-local function AstDeclaration(tok) return {
-	type   = "declaration",
-	token  = tok,
-	id     = newId(),
-	names  = {}, -- Array of AstIdentifier.
-	values = {}, -- Array of expressions.
+local function AstBreak (tok)return{token=tok,
+	type        = "break",
+	id          = newId(),
+}end
+local function AstReturn (tok)return{token=tok,
+	type        = "return",
+	id          = newId(),
+	values      = {}, -- Array of expressions.
+}end
+local function AstLabel (tok)return{token=tok,
+	type        = "label",
+	id          = newId(),
+	name        = nil, -- AstIdentifier
+}end
+local function AstGoto (tok)return{token=tok,
+	type        = "goto",
+	id          = newId(),
+	name        = nil, -- AstIdentifier
+}end
+local function AstBlock (tok)return{token=tok,
+	type        = "block",
+	id          = newId(),
+	statements  = {}, -- Array of statements.
+}end
+local function AstDeclaration (tok)return{token=tok,
+	type        = "declaration",
+	id          = newId(),
+	names       = {}, -- Array of AstIdentifier.
+	values      = {}, -- Array of expressions.
 
-} end
-local function AstAssignment(tok) return {
-	type    = "assignment",
-	token   = tok,
-	id      = newId(),
-	targets = {}, -- Mixed array of AstIdentifier and AstLookup.
-	values  = {}, -- Array of expressions.
-} end
-local function AstIf(tok) return {
-	type      = "if",
-	token     = tok,
-	id        = newId(),
-	condition = nil, -- Expression.
-	bodyTrue  = nil, -- AstBlock.
-	bodyFalse = nil, -- AstBlock. May be nil.
-} end
-local function AstWhile(tok) return {
-	type      = "while",
-	token     = tok,
-	id        = newId(),
-	condition = nil, -- Expression.
-	body      = nil, -- AstBlock.
-} end
-local function AstRepeat(tok) return {
-	type      = "repeat",
-	token     = tok,
-	id        = newId(),
-	body      = nil, -- AstBlock.
-	condition = nil, -- Expression.
-} end
-local function AstFor(tok) return {
-	type   = "for",
-	token  = tok,
-	id     = newId(),
-	kind   = "",  -- "numeric"|"generic"
-	names  = {},  -- Array of AstIdentifier.
-	values = {},  -- Array of expressions.
-	body   = nil, -- AstBlock.
-} end
+}end
+local function AstAssignment (tok)return{token=tok,
+	type        = "assignment",
+	id          = newId(),
+	targets     = {}, -- Mixed array of AstIdentifier and AstLookup.
+	values      = {}, -- Array of expressions.
+}end
+local function AstIf (tok)return{token=tok,
+	type        = "if",
+	id          = newId(),
+	condition   = nil, -- Expression.
+	bodyTrue    = nil, -- AstBlock.
+	bodyFalse   = nil, -- AstBlock. May be nil.
+}end
+local function AstWhile (tok)return{token=tok,
+	type        = "while",
+	id          = newId(),
+	condition   = nil, -- Expression.
+	body        = nil, -- AstBlock.
+}end
+local function AstRepeat (tok)return{token=tok,
+	type        = "repeat",
+	id          = newId(),
+	body        = nil, -- AstBlock.
+	condition   = nil, -- Expression.
+}end
+local function AstFor (tok)return{token=tok,
+	type        = "for",
+	id          = newId(),
+	kind        = "",  -- "numeric"|"generic"
+	names       = {},  -- Array of AstIdentifier.
+	values      = {},  -- Array of expressions.
+	body        = nil, -- AstBlock.
+}end
 
 
 
@@ -458,6 +451,8 @@ function reportErrorAtToken(tokens, tok, agent, s, ...)
 end
 
 
+
+local ERROR_UNFINISHED_VALUE = {}
 
 -- success, equalSignCountIfLong|errorCode, ptr = parseStringlikeToken( s, ptr )
 local function parseStringlikeToken(s, ptr)
@@ -751,15 +746,15 @@ end
 -- insertToken( tokens, [ index=atTheEnd, ] "comment",     contents )
 -- insertToken( tokens, [ index=atTheEnd, ] "identifier",  name )
 -- insertToken( tokens, [ index=atTheEnd, ] "keyword",     name )
--- insertToken( tokens, [ index=atTheEnd, ] "number",      number )  -- The number value must be a finite and positive.
+-- insertToken( tokens, [ index=atTheEnd, ] "number",      number )
 -- insertToken( tokens, [ index=atTheEnd, ] "punctuation", punctuationString )
 -- insertToken( tokens, [ index=atTheEnd, ] "string",      stringValue )
 --
 local function insertToken(tokens, i, tokType, tokValue)
 	if type(i) == "string" then
-		i, tokType, tokValue = math.huge, i, tokType
+		i, tokType, tokValue = 1/0, i, tokType
 	end
-	i = math.min(math.max(i, 1), tokens.n+1)
+	i = getMin(getMax(i, 1), tokens.n+1)
 
 	local tokRepr
 
@@ -775,12 +770,16 @@ local function insertToken(tokens, i, tokType, tokValue)
 		tokRepr = tokValue
 
 	elseif tokType == "number" then
-		if type(tokValue) ~= "number"   then  error(F("Expected number value for 'number' token. (Got %s)", type(tokValue)))  end
-		if tokValue       ==  math.huge then  error(F("Number value cannot be huge."))  end
-		if tokValue       == -math.huge then  error(F("Number value cannot be huge."))  end
-		if tokValue       ~= tokValue   then  error(F("Number value cannot be NaN."))  end
-		if tokValue       <  0          then  error(F("Number value cannot be negative."))  end
-		tokRepr = (tokValue == 0 and "0" or tostring(tokValue))
+		if type(tokValue) ~= "number" then
+			error(F("Expected number value for 'number' token. (Got %s)", type(tokValue)))
+		end
+		tokRepr = (
+			tokValue == 0        and "0"      or -- Avoid '-0'.
+			tokValue == 1/0      and "(1/0)"  or
+			tokValue == -1/0     and "(-1/0)" or
+			tokValue ~= tokValue and "(0/0)"  or
+			formatNumber(tokValue)
+		)
 
 	elseif tokType == "string" then
 		if type(tokValue) ~= "string" then  error(F("Expected string value for 'string' token. (Got %s)", type(tokValue)))  end
@@ -2151,17 +2150,25 @@ end
 
 
 
--- didBreak = traverseTree( astNode, callback [, topNodeParent=nil, topNodeContainer=nil, topNodeKey=nil ] )
+-- didBreak = traverseTree( astNode, [ leavesFirst=false, ] callback [, topNodeParent=nil, topNodeContainer=nil, topNodeKey=nil ] )
 -- action   = callback( astNode, parent, container, key )
 -- action   = "stop"|"ignorechildren"|nil  -- Returning nil (or nothing) means continue traversal.
-function traverseTree(node, cb, parent, container, k)
-	if type(node) ~= "table"    then  error(F("bad argument #1 to 'traverseTree' (table expected, got %s)",    type(node)), 2)  end
-	if type(cb)   ~= "function" then  error(F("bad argument #2 to 'traverseTree' (function expected, got %s)", type(cb  )), 2)  end
+function traverseTree(node, leavesFirst, cb, parent, container, k)
+	assertArg("traverseTree", 1, node, "table")
 
-	local action = cb(node, parent, container, k)
-	if action == "stop"           then  return true   end
-	if action == "ignorechildren" then  return false  end
-	if action                     then  error(F("Unknown traversal action '%s' returned from callback.", tostring(action)))  end
+	if type(leavesFirst) == "boolean" then
+		assertArg("traverseTree", 3, cb, "function")
+	else
+		leavesFirst, cb, parent, container, k = false, leavesFirst, cb, parent, container
+		assertArg("traverseTree", 2, cb, "function")
+	end
+
+	if not leavesFirst then
+		local action = cb(node, parent, container, k)
+		if action == "stop"           then  return true   end
+		if action == "ignorechildren" then  return false  end
+		if action                     then  error(F("Unknown traversal action '%s' returned from callback.", tostring(action)))  end
+	end
 
 	local nodeType = node.type
 
@@ -2170,90 +2177,97 @@ function traverseTree(node, cb, parent, container, k)
 
 	elseif nodeType == "table" then
 		for _, field in ipairs(node.fields) do
-			if field.key   and traverseTree(field.key,   cb, node, field, "key")   then  return true  end
-			if field.value and traverseTree(field.value, cb, node, field, "value") then  return true  end
+			if field.key   and traverseTree(field.key,   leavesFirst, cb, node, field, "key")   then  return true  end
+			if field.value and traverseTree(field.value, leavesFirst, cb, node, field, "value") then  return true  end
 		end
 
 	elseif nodeType == "lookup" then
-		if node.object and traverseTree(node.object, cb, node, node, "object") then  return true  end
-		if node.member and traverseTree(node.member, cb, node, node, "member") then  return true  end
+		if node.object and traverseTree(node.object, leavesFirst, cb, node, node, "object") then  return true  end
+		if node.member and traverseTree(node.member, leavesFirst, cb, node, node, "member") then  return true  end
 
 	elseif nodeType == "unary" then
-		if node.expression and traverseTree(node.expression, cb, node, node, "expression") then  return true  end
+		if node.expression and traverseTree(node.expression, leavesFirst, cb, node, node, "expression") then  return true  end
 
 	elseif nodeType == "binary" then
-		if node.left  and traverseTree(node.left,  cb, node, node, "left")  then  return true  end
-		if node.right and traverseTree(node.right, cb, node, node, "right") then  return true  end
+		if node.left  and traverseTree(node.left,  leavesFirst, cb, node, node, "left")  then  return true  end
+		if node.right and traverseTree(node.right, leavesFirst, cb, node, node, "right") then  return true  end
 
 	elseif nodeType == "call" then
-		if node.callee and traverseTree(node.callee, cb, node, node, "callee") then  return true  end
+		if node.callee and traverseTree(node.callee, leavesFirst, cb, node, node, "callee") then  return true  end
 		for i, expr in ipairs(node.arguments) do
-			if traverseTree(expr, cb, node, node.arguments, i) then  return true  end
+			if traverseTree(expr, leavesFirst, cb, node, node.arguments, i) then  return true  end
 		end
 
 	elseif nodeType == "function" then
 		for i, name in ipairs(node.parameters) do
-			if traverseTree(name, cb, node, node.parameters, i) then  return true  end
+			if traverseTree(name, leavesFirst, cb, node, node.parameters, i) then  return true  end
 		end
-		if node.vararg and traverseTree(node.vararg, cb, node, node, "vararg") then  return true  end
-		if node.body   and traverseTree(node.body,   cb, node, node, "body")   then  return true  end
+		if node.vararg and traverseTree(node.vararg, leavesFirst, cb, node, node, "vararg") then  return true  end
+		if node.body   and traverseTree(node.body,   leavesFirst, cb, node, node, "body")   then  return true  end
 
 	elseif nodeType == "return" then
 		for i, expr in ipairs(node.values) do
-			if traverseTree(expr, cb, node, node.values, i) then  return true  end
+			if traverseTree(expr, leavesFirst, cb, node, node.values, i) then  return true  end
 		end
 
 	elseif nodeType == "label" then
-		if node.name and traverseTree(node.name, cb, node, node, "name") then  return true  end
+		if node.name and traverseTree(node.name, leavesFirst, cb, node, node, "name") then  return true  end
 
 	elseif nodeType == "goto" then
-		if node.name and traverseTree(node.name, cb, node, node, "name") then  return true  end
+		if node.name and traverseTree(node.name, leavesFirst, cb, node, node, "name") then  return true  end
 
 	elseif nodeType == "block" then
 		for i, statement in ipairs(node.statements) do
-			if traverseTree(statement, cb, node, node.statements, i) then  return true  end
+			if traverseTree(statement, leavesFirst, cb, node, node.statements, i) then  return true  end
 		end
 
 	elseif nodeType == "declaration" then
 		for i, ident in ipairs(node.names) do
-			if traverseTree(ident, cb, node, node.names, i) then  return true  end
+			if traverseTree(ident, leavesFirst, cb, node, node.names, i) then  return true  end
 		end
 		for i, expr in ipairs(node.values) do
-			if traverseTree(expr, cb, node, node.values, i) then  return true  end
+			if traverseTree(expr, leavesFirst, cb, node, node.values, i) then  return true  end
 		end
 
 	elseif nodeType == "assignment" then
 		for i, expr in ipairs(node.targets) do
-			if traverseTree(expr, cb, node, node.targets, i) then  return true  end
+			if traverseTree(expr, leavesFirst, cb, node, node.targets, i) then  return true  end
 		end
 		for i, expr in ipairs(node.values) do
-			if traverseTree(expr, cb, node, node.values, i) then  return true  end
+			if traverseTree(expr, leavesFirst, cb, node, node.values, i) then  return true  end
 		end
 
 	elseif nodeType == "if" then
-		if node.condition and traverseTree(node.condition, cb, node, node, "condition") then  return true  end
-		if node.bodyTrue  and traverseTree(node.bodyTrue,  cb, node, node, "bodyTrue")  then  return true  end
-		if node.bodyFalse and traverseTree(node.bodyFalse, cb, node, node, "bodyFalse") then  return true  end
+		if node.condition and traverseTree(node.condition, leavesFirst, cb, node, node, "condition") then  return true  end
+		if node.bodyTrue  and traverseTree(node.bodyTrue,  leavesFirst, cb, node, node, "bodyTrue")  then  return true  end
+		if node.bodyFalse and traverseTree(node.bodyFalse, leavesFirst, cb, node, node, "bodyFalse") then  return true  end
 
 	elseif nodeType == "while" then
-		if node.condition and traverseTree(node.condition, cb, node, node, "condition") then  return true  end
-		if node.body      and traverseTree(node.body,      cb, node, node, "body")      then  return true  end
+		if node.condition and traverseTree(node.condition, leavesFirst, cb, node, node, "condition") then  return true  end
+		if node.body      and traverseTree(node.body,      leavesFirst, cb, node, node, "body")      then  return true  end
 
 	elseif nodeType == "repeat" then
-		if node.body      and traverseTree(node.body,      cb, node, node, "body")      then  return true  end
-		if node.condition and traverseTree(node.condition, cb, node, node, "condition") then  return true  end
+		if node.body      and traverseTree(node.body,      leavesFirst, cb, node, node, "body")      then  return true  end
+		if node.condition and traverseTree(node.condition, leavesFirst, cb, node, node, "condition") then  return true  end
 
 	elseif nodeType == "for" then
 		for i, ident in ipairs(node.names) do
-			if traverseTree(ident, cb, node, node.names, i) then  return true  end
+			if traverseTree(ident, leavesFirst, cb, node, node.names, i) then  return true  end
 		end
 		for i, expr in ipairs(node.values) do
-			if traverseTree(expr, cb, node, node.values, i) then  return true  end
+			if traverseTree(expr, leavesFirst, cb, node, node.values, i) then  return true  end
 		end
-		if node.body and traverseTree(node.body, cb, node, node, "body") then  return true  end
+		if node.body and traverseTree(node.body, leavesFirst, cb, node, node, "body") then  return true  end
 
 	else
 		error(F("Invalid node type '%s'.", tostring(nodeType)))
+	end
+
+	if leavesFirst then
+		local action = cb(node, parent, container, k)
+		if action == "stop"           then  return true   end
+		if action == "ignorechildren" then  error("Cannot ignore children when leavesFirst is set.")  end
+		if action                     then  error(F("Unknown traversal action '%s' returned from callback.", tostring(action)))  end
 	end
 
 	return false
@@ -2379,7 +2393,7 @@ do
 				local charBank  = (i == 1) and BANK_LETTERS or BANK_ALPHANUM
 				local charIndex = nameGeneration % #charBank + 1
 				charBytes[i]    = charBank:byte(charIndex)
-				nameGeneration  = math.floor(nameGeneration / #charBank)
+				nameGeneration  = floor(nameGeneration / #charBank)
 
 				if nameGeneration == 0 then  break  end
 			end
@@ -2390,12 +2404,227 @@ do
 		return cache[nameGeneration]
 	end
 
-	-- for nameGeneration = 1, 3500 do  print(generateName(nameGeneration))  end ; error("DEBUG")
-	-- for pow = 0, 32 do  print(generateName(2^pow))  end ; error("DEBUG")
+	-- for nameGeneration = 1, 3500 do  print(generateName(nameGeneration))  end ; error("TEST")
+	-- for pow = 0, 32 do  print(generateName(2^pow))  end ; error("TEST")
+end
+
+local unaryFolders = {
+	["-"] = function(unary, expr)
+		if expr.type == "literal" and type(expr.value) == "number" then
+			local literal = AstLiteral(unary.token)
+			literal.value = -expr.value
+			return literal
+		end
+		return nil
+	end,
+	["not"] = function(unary, expr)
+		if expr.type == "literal" then
+			local literal = AstLiteral(unary.token)
+			literal.value = not expr.value
+			return literal
+		end
+		return nil
+	end,
+	["#"] = function(unary, expr)
+		-- I don't think there's ever anything to do here.
+		return nil
+	end,
+	["~"] = function(unary, expr)
+		-- @Incomplete
+		return nil
+	end,
+}
+
+local binaryFolders = {
+	-- @Robustness: The bitwise operations are probably not very robust.
+	["+"] = function(binary, l, r)
+		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and type(l.value) == "number" then
+			local literal = AstLiteral(binary.token)
+			literal.value = (l.value + r.value)
+			return literal
+		end
+		return nil
+	end,
+	["-"] = function(binary, l, r)
+		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and type(l.value) == "number" then
+			local literal = AstLiteral(binary.token)
+			literal.value = (l.value - r.value)
+			return literal
+		end
+		return nil
+	end,
+	["*"] = function(binary, l, r)
+		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and type(l.value) == "number" then
+			local literal = AstLiteral(binary.token)
+			literal.value = (l.value * r.value)
+			return literal
+		end
+		return nil
+	end,
+	["/"] = function(binary, l, r)
+		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and type(l.value) == "number" then
+			local literal = AstLiteral(binary.token)
+			literal.value = (l.value / r.value)
+			return literal
+		end
+		return nil
+	end,
+	["//"] = function(binary, l, r)
+		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and type(l.value) == "number" then
+			local literal = AstLiteral(binary.token)
+			literal.value = floor(l.value / r.value)
+			return literal
+		end
+		return nil
+	end,
+	["^"] = function(binary, l, r)
+		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and type(l.value) == "number" then
+			local literal = AstLiteral(binary.token)
+			literal.value = (l.value ^ r.value)
+			return literal
+		end
+		return nil
+	end,
+	["%"] = function(binary, l, r)
+		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and type(l.value) == "number" then
+			local literal = AstLiteral(binary.token)
+			literal.value = (l.value % r.value)
+			return literal
+		end
+		return nil
+	end,
+	["&"] = function(binary, l, r)
+		-- @Incomplete
+		return nil
+	end,
+	["~"] = function(binary, l, r)
+		-- @Incomplete
+		return nil
+	end,
+	["|"] = function(binary, l, r)
+		-- @Incomplete
+		return nil
+	end,
+	[">>"] = function(binary, l, r)
+		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and type(l.value) == "number" and l.value >= 0 then
+			local n = floor(l.value)
+
+			if r.value > 0 then
+				for _ = 1,  r.value do  n = floor(n*.5)  end
+			else
+				for _ = 1, -r.value do  n = n*2          end
+			end
+
+			local literal = AstLiteral(binary.token)
+			literal.value = n
+			return literal
+		end
+		return nil
+	end,
+	["<<"] = function(binary, l, r)
+		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and type(l.value) == "number" and l.value >= 0 then
+			local n = floor(l.value)
+
+			if r.value > 0 then
+				for _ = 1,  r.value do  n = n*2          end
+			else
+				for _ = 1, -r.value do  n = floor(n*.5)  end
+			end
+
+			local literal = AstLiteral(binary.token)
+			literal.value = n
+			return literal
+		end
+		return nil
+	end,
+	[".."] = function(binary, l, r)
+		if l.type == "literal" and r.type == "literal" and (type(l.value) == "number" or type(l.value) == "string") and (type(r.value) == "number" or type(r.value) == "string") then
+			local literal = AstLiteral(binary.token)
+			literal.value = (l.value .. r.value)
+			return literal
+		end
+		return nil
+	end,
+	["<"] = function(binary, l, r)
+		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and (type(l.value) == "number" or type(l.value) == "string") then
+			local literal = AstLiteral(binary.token)
+			literal.value = (l.value < r.value)
+			return literal
+		end
+		return nil
+	end,
+	["<="] = function(binary, l, r)
+		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and (type(l.value) == "number" or type(l.value) == "string") then
+			local literal = AstLiteral(binary.token)
+			literal.value = (l.value <= r.value)
+			return literal
+		end
+		return nil
+	end,
+	[">"] = function(binary, l, r)
+		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and (type(l.value) == "number" or type(l.value) == "string") then
+			local literal = AstLiteral(binary.token)
+			literal.value = (l.value > r.value)
+			return literal
+		end
+		return nil
+	end,
+	[">="] = function(binary, l, r)
+		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and (type(l.value) == "number" or type(l.value) == "string") then
+			local literal = AstLiteral(binary.token)
+			literal.value = (l.value >= r.value)
+			return literal
+		end
+		return nil
+	end,
+	["=="] = function(binary, l, r)
+		if l.type == "literal" and r.type == "literal" then
+			local literal = AstLiteral(binary.token)
+			literal.value = (l.value == r.value)
+			return literal
+		end
+		return nil
+	end,
+	["~="] = function(binary, l, r)
+		if l.type == "literal" and r.type == "literal" then
+			local literal = AstLiteral(binary.token)
+			literal.value = (l.value ~= r.value)
+			return literal
+		end
+		return nil
+	end,
+	["and"] = function(binary, l, r)
+		if l.type == "literal" then  return l.value and r or l  end
+		return nil
+	end,
+	["or"] = function(binary, l, r)
+		if l.type == "literal" then  return l.value and l or r  end
+		return nil
+	end,
+}
+
+local function maybeReplace(parent, container, key, replacement)
+	if not replacement then  return  end
+
+	container[key]        = replacement
+	replacement.parent    = parent
+	replacement.container = container
+	replacement.key       = key
 end
 
 local function minify(node)
-	-- @Incomplete: Remove unused declarations and other useless things.
+	--
+	-- Remove unused declarations and other useless things.  @Incomplete
+	--
+	traverseTree(node, true, function(node, parent, container, key)
+		if not parent then
+			-- void
+		elseif node.type == "unary" then
+			maybeReplace(parent, container, key, unaryFolders[node.operator](node, node.expression))
+		elseif node.type == "binary" then
+			maybeReplace(parent, container, key, binaryFolders[node.operator](node, node.left, node.right))
+		end
+	end)
 
 	--
 	-- Collect identifiers.
@@ -2635,7 +2864,7 @@ do
 	end
 	local function writeNumber(buffer, pretty, n, lastOutput)
 		ensureSpaceIfNotPretty(buffer, pretty, lastOutput, "alphanum","number")
-		lastOutput = writeLua(buffer, tostring(n), "number")
+		lastOutput = writeLua(buffer, formatNumber(n), "number")
 		return "number"
 	end
 
@@ -2834,11 +3063,11 @@ do
 			if node.value == 0 then
 				lastOutput = writeNumber(buffer, pretty, 0, lastOutput) -- Avoid writing '-0'.
 
-			elseif node.value == math.huge then
-				lastOutput = writeAlphanum(buffer, pretty, "math.huge", lastOutput)
+			elseif node.value == 1/0 then
+				lastOutput = writeAlphanum(buffer, pretty, "(1/0)", lastOutput)
 
-			elseif node.value == -math.huge then
-				lastOutput = writeLua(buffer, "(-math.huge)", "")
+			elseif node.value == -1/0 then
+				lastOutput = writeLua(buffer, "(-1/0)", "")
 
 			elseif node.value ~= node.value then
 				lastOutput = writeLua(buffer, "(0/0)", "")
@@ -3221,7 +3450,7 @@ do
 	-- lua = toLua( astNode [, prettyOuput=false ] )
 	-- Returns nil on error.
 	function toLua(node, pretty)
-		if type(node) ~= "table" then  error(F("bad argument #1 to 'toLua' (AST node expected, got %s)", type(node)), 2)  end
+		assertArg("toLua", 1, node, "table")
 
 		local buffer = {}
 
@@ -3255,6 +3484,22 @@ do
 		lastId = lastId+1
 		return lastId
 	end
+end
+
+
+
+function assertArg(funcName, argNum, v, expectedType)
+	if type(v) == expectedType then  return  end
+	error(F("bad argument #%d to '%s' (%s expected, got %s)", argNum, funcName, expectedType, type(v)), 3)
+end
+
+
+
+function formatNumber(n)
+	return (tostring(n)
+		:gsub("(e[-+])0+(%d+)$", "%1%2") -- Remove unnecessary zeroes after 'e'.
+		:gsub("e%+",             "e"   ) -- Remove plus after 'e'.
+	)
 end
 
 

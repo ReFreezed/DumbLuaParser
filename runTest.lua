@@ -39,10 +39,12 @@ do
 
 	parser.updateReferences(ast)
 	-- parser.printTree(ast)
-	-- print(parser.toLua(ast, 1==0))
+	-- print(parser.toLua(ast, 1==1))
+	-- error("DEBUG")
 
 	parser.minify(ast)
-	-- print(parser.toLua(ast, 1==0))
+	-- parser.printTree(ast)
+	-- print(parser.toLua(ast, 1==1))
 	-- error("DEBUG")
 
 	local lua = assert(parser.toLua(ast, PRETTY))

@@ -93,4 +93,24 @@ do
 			func(upvalue, arg1,arg2, assign1,assign2, decl, loop1,loop2)
 		end
 	end
+
+	-- Folding:
+	local n = 1 << 8     -- 256
+	local n = 2^99999    -- huge
+	local n = 5 - - - -5 -- 10
+
+	local b = "yes" == "no"
+	local b = 5     ~= nil
+	local b = 80.6  >= 34
+
+	local s = "one" .. 2 .. "three"
+
+	local v = true  and always()
+	local v = true  or  never()
+	local v = 0     and always()
+	local v = 0     or  never()
+	local v = false and never()
+	local v = false or  always()
+	local v = nil   and never()
+	local v = nil   or  always()
 end
