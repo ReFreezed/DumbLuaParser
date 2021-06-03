@@ -156,24 +156,22 @@
 
 local PARSER_VERSION = "1.2.1"
 
-local F       = string.format
-local find    = string.find
-local getByte = string.byte
-local gsub    = string.gsub
-local match   = string.match
-local rep     = string.rep
-local sub     = string.sub
+local bytesToString = string.char
+local F             = string.format
+local find          = string.find
+local getByte       = string.byte
+local getSubstring  = string.sub
+local gsub          = string.gsub
+local match         = string.match
+local repeatString  = string.rep
 
 local loadLuaString = loadstring   or load
 local unpack        = table.unpack or unpack
 
 local countString
-local insertToken, removeToken
 local isToken, isTokenType, isTokenAnyValue
 local itemWith1
-local minify
 local newId
-local newNode
 local newTokenStream
 local parse
 local printError, printfError, reportErrorInFile, reportErrorAtToken
@@ -183,6 +181,8 @@ local tokenizeString, tokenizeFile
 local toLua
 local traverseTree
 local updateReferences
+
+local parser
 
 
 
@@ -251,6 +251,8 @@ local NUM_DEC_EXP      = gsub("^(        %d+          %.?             [Ee][-+]?%
 local NUM_DEC          = gsub("^(        %d+          %.?                                    )", " +", "")
 
 local ERROR_UNFINISHED_VALUE = {}
+
+local EMPTY_TABLE = {}
 
 
 
@@ -432,7 +434,7 @@ function reportErrorInFile(contents, path, ptr, agent, s, ...)
 		return s
 	end
 
-	local pre       = contents:sub(1, ptr-1)
+	local pre       = getSubstring(contents, 1, ptr-1)
 
 	local lastLine1 = pre:reverse():match"^[^\n]*":reverse():gsub("\t", "    ")
 	local lastLine2 = contents:match("^[^\n]*", ptr):gsub("\t", "    ")
@@ -445,7 +447,7 @@ function reportErrorInFile(contents, path, ptr, agent, s, ...)
 
 	printfError(
 		"Error @ %s:%d: [%s] %s\n>\n> %s\n>%s^\n>\n",
-		path, ln, agent, s, lastLine, rep("-", col)
+		path, ln, agent, s, lastLine, repeatString("-", col)
 	)
 
 	return s
@@ -523,7 +525,7 @@ function tokenizeString(s, path)
 			local i1, i2, word = find(s, "^([%a_][%w_]*)", ptr)
 			ptr      = i2+1
 			tokType  = KEYWORDS[word] and "keyword" or "identifier"
-			tokRepr  = sub(s, ptrStart, ptr-1)
+			tokRepr  = getSubstring(s, ptrStart, ptr-1)
 			tokValue = tokRepr
 
 		-- Comment.
@@ -551,8 +553,8 @@ function tokenizeString(s, path)
 			end
 
 			tokType  = "comment"
-			tokRepr  = sub(s, ptrStart, ptr-1)
-			tokValue = equalSignCountIfLong and sub(tokRepr, 5+equalSignCountIfLong, -3-equalSignCountIfLong) or sub(tokRepr, 3)
+			tokRepr  = getSubstring(s, ptrStart, ptr-1)
+			tokValue = equalSignCountIfLong and getSubstring(tokRepr, 5+equalSignCountIfLong, -3-equalSignCountIfLong) or getSubstring(tokRepr, 3)
 			tokValue = gsub(gsub(tokValue, "^%s+", ""), "%s+$", "")
 
 		-- Number.
@@ -583,7 +585,7 @@ function tokenizeString(s, path)
 				local fracValue = 1
 				for i = 1, #fracStr do
 					fracValue = fracValue / 16
-					n         = n + tonumber(sub(fracStr, i, i), 16) * fracValue
+					n         = n + tonumber(getSubstring(fracStr, i, i), 16) * fracValue
 				end
 
 				n = n * 2 ^ gsub(expStr, "^+", "")
@@ -604,11 +606,11 @@ function tokenizeString(s, path)
 
 		-- String (short).
 		elseif find(s, "^[\"']", ptr) then
-			local quoteChar = sub(s, ptr, ptr)
+			local quoteChar = getSubstring(s, ptr, ptr)
 			ptr = ptr + 1
 
 			while true do
-				local c = sub(s, ptr, ptr)
+				local c = getSubstring(s, ptr, ptr)
 
 				if c == "" then
 					return nil, reportErrorInFile(s, path, ptrStart, "Tokenizer", "Unfinished string.")
@@ -635,7 +637,7 @@ function tokenizeString(s, path)
 			end
 
 			tokType = "string"
-			tokRepr = sub(s, ptrStart, ptr-1)
+			tokRepr = getSubstring(s, ptrStart, ptr-1)
 
 			local chunk, err = loadLuaString("return "..tokRepr, "@")
 			if not chunk then
@@ -660,7 +662,7 @@ function tokenizeString(s, path)
 			end
 
 			tokType = "string"
-			tokRepr = sub(s, ptrStart, ptr-1)
+			tokRepr = getSubstring(s, ptrStart, ptr-1)
 
 			local chunk, err = loadLuaString("return "..tokRepr, "@")
 			if not chunk then
@@ -674,17 +676,17 @@ function tokenizeString(s, path)
 		elseif find(s, "^%.%.%.", ptr) then
 			ptr      = ptr + 3
 			tokType  = "punctuation"
-			tokRepr  = sub(s, ptrStart, ptr-1)
+			tokRepr  = getSubstring(s, ptrStart, ptr-1)
 			tokValue = tokRepr
 		elseif find(s, "^%.%.", ptr) or find(s, "^[=~<>]=", ptr) or find(s, "^::", ptr) or find(s, "^//", ptr) or find(s, "^<<", ptr) or find(s, "^>>", ptr) then
 			ptr      = ptr + 2
 			tokType  = "punctuation"
-			tokRepr  = sub(s, ptrStart, ptr-1)
+			tokRepr  = getSubstring(s, ptrStart, ptr-1)
 			tokValue = tokRepr
 		elseif find(s, "^[+%-*/%%^#<>=(){}[%];:,.&~|]", ptr) then
 			ptr      = ptr + 1
 			tokType  = "punctuation"
-			tokRepr  = sub(s, ptrStart, ptr-1)
+			tokRepr  = getSubstring(s, ptrStart, ptr-1)
 			tokValue = tokRepr
 
 		else
@@ -753,7 +755,7 @@ end
 -- insertToken( tokens, [ index=atTheEnd, ] "punctuation", punctuationString )
 -- insertToken( tokens, [ index=atTheEnd, ] "string",      stringValue )
 --
-function insertToken(tokens, i, tokType, tokValue)
+local function insertToken(tokens, i, tokType, tokValue)
 	if type(i) == "string" then
 		i, tokType, tokValue = math.huge, i, tokType
 	end
@@ -838,7 +840,7 @@ function insertToken(tokens, i, tokType, tokValue)
 	tokens.n = tokens.n + 1
 end
 
-function removeToken(tokens, i)
+local function removeToken(tokens, i)
 	i = i or tokens.n
 
 	if i < 1 or i > tokens.n then  return  end
@@ -1897,7 +1899,7 @@ end
 --
 -- Search for 'NodeFields' for each node's fields.
 --
-function newNode(nodeType, ...)
+local function newNode(nodeType, ...)
 	local node
 
 	if     nodeType == "vararg"      then  node = AstVararg(0)
@@ -1998,10 +2000,17 @@ do
 
 	local function _printNode(node)
 		local nodeType = node.type
+
 		ioWrite(nodeType)
+		if parser.printIds then  ioWrite("#", node.id)  end
 
 		if nodeType == "identifier" then
-			ioWrite(" (", node.name, ")")
+			ioWrite(" (", node.name)
+			if node.declaration then
+				ioWrite(" local:", node.declaration.type)
+				if parser.printIds then  ioWrite("#", node.declaration.id)  end
+			end
+			ioWrite(")")
 
 		elseif nodeType == "vararg" then
 			if node.adjustToOne then  ioWrite(" (adjustToOne)")  end
@@ -2064,19 +2073,19 @@ do
 
 		elseif nodeType == "binary" then
 			if node.left  then  _printTree(node.left,  indent, nil)  end
-			ioWrite(rep("    ", indent), node.operator, "\n")
+			ioWrite(repeatString("    ", indent), node.operator, "\n")
 			if node.right then  _printTree(node.right, indent, nil)  end
 
 		elseif nodeType == "call" then
-			if node.callee then  _printTree(node.callee, indent, "callee")  end
+			if node.callee then  _printTree(node.callee, indent, "CALLEE")  end
 			for i, expr in ipairs(node.arguments) do  _printTree(expr, indent, "ARG"..i)  end
 
 		elseif nodeType == "function" then
 			for i, ident in ipairs(node.parameters) do  _printTree(ident, indent, "PARAM"..i)  end
-			if node.body then  _printTree(node.body, indent, "body")  end
+			if node.body then  _printTree(node.body, indent, "BODY")  end
 
 		elseif nodeType == "return" then
-			for i, expr in ipairs(node.values) do  _printTree(expr, indent, nil)  end
+			for i, expr in ipairs(node.values) do  _printTree(expr, indent, tostring(i))  end
 
 		elseif nodeType == "label" then
 			if node.name then  _printTree(node.name, indent, nil)  end
@@ -2085,7 +2094,7 @@ do
 			if node.name then  _printTree(node.name, indent, nil)  end
 
 		elseif nodeType == "block" then
-			for i, statement in ipairs(node.statements) do  _printTree(statement, indent, nil)  end
+			for i, statement in ipairs(node.statements) do  _printTree(statement, indent, tostring(i))  end
 
 		elseif nodeType == "declaration" then
 			for i, ident in ipairs(node.names)  do  _printTree(ident, indent,  "NAME"..i)  end
@@ -2350,8 +2359,236 @@ end
 
 
 
-function minify(node)
-	printError("Error: Minifying not supported yet!")
+local function getNamesFromDeclarationLike(declLike)
+	return declLike.names or declLike.parameters
+end
+
+local generateName
+do
+	local BANK_LETTERS  = "etaoinshrdlcumwfgypbvkxjqz_ETAOINSHRDLCUMWFGYPBVKXJQZ" -- http://en.wikipedia.org/wiki/Letter_frequencies
+	local BANK_ALPHANUM = "etaoinshrdlcumwfgypbvkxjqz_ETAOINSHRDLCUMWFGYPBVKXJQZ0123456789"
+	local cache         = {}
+
+	function generateName(nameGeneration)
+		if not cache[nameGeneration] then
+			-- @Cleanup: Output the most significant byte first. (We need to know the length beforehand then, probably, so we use the correct bank.)
+			local charBytes = {}
+
+			for i = 1, 1/0 do
+				nameGeneration  = nameGeneration - 1
+				local charBank  = (i == 1) and BANK_LETTERS or BANK_ALPHANUM
+				local charIndex = nameGeneration % #charBank + 1
+				charBytes[i]    = charBank:byte(charIndex)
+				nameGeneration  = math.floor(nameGeneration / #charBank)
+
+				if nameGeneration == 0 then  break  end
+			end
+
+			cache[nameGeneration] = bytesToString(unpack(charBytes))
+		end
+
+		return cache[nameGeneration]
+	end
+
+	-- for nameGeneration = 1, 3500 do  print(generateName(nameGeneration))  end ; error("DEBUG")
+	-- for pow = 0, 32 do  print(generateName(2^pow))  end ; error("DEBUG")
+end
+
+local function minify(node)
+	-- @Incomplete: Remove unused declarations and other useless things.
+
+	--
+	-- Collect identifiers.
+	--
+	local identInfos = {--[[ [ident1]=identInfo1, identInfo1, ... ]]} -- identInfo = {ident=ident, visibleDeclLikes=declLikes}
+
+	traverseTree(node, function(node, parent, container, key)
+		if node.type == "identifier" then
+			local ident = node
+
+			local identInfo = {ident=ident--[[, visibleDeclLikes={}]]}
+			table.insert(identInfos, identInfo)
+			identInfos[ident] = identInfo
+		end
+	end)
+
+	--
+	-- Determine visible declarations for each identifier.
+	--
+	-- (statement, block) | declLike | repeatLoop | func = findParentStatementAndBlockOrExpressionOfInterest( node, declLike )
+	local function findParentStatementAndBlockOrExpressionOfInterest(node, declLike)
+		while true do
+			local lastChild = node
+			node            = node.parent
+
+			if not node                then  return nil,       nil   end
+			if node == declLike        then  return declLike,  nil   end
+			if node.type == "block"    then  return lastChild, node  end
+			if node.type == "function" then  return node,      nil   end
+			if node.type == "for"      then  return node,      nil   end
+
+			if node.type == "repeat" and lastChild == node.condition then  return node, nil  end
+		end
+	end
+
+	local declLikeWatchers = {--[[ [declLike1]={ident1,...}, ... ]]}
+
+	-- foundCurrentDeclLike = lookForDeclarationLikesAndRegisterWatchers( identInfo, block, iStart )
+	local function lookForDeclarationLikesAndRegisterWatchers(identInfo, block, iStart)
+		local statements      = block.statements
+		local currentDeclLike = identInfo.ident.declaration
+
+		for i = iStart, 1, -1 do
+			local statement  = statements[i]
+			local nodeType   = statement.type
+			local isDeclLike = nodeType == "declaration" or nodeType == "function" or nodeType == "for"
+
+			if isDeclLike then
+				-- Note: Identifiers in declaration-likes also watch their own declaration-like. :DeclarationIdentifiersWatchTheirParent
+				declLikeWatchers[statement] = declLikeWatchers[statement] or {}
+				table.insert(declLikeWatchers[statement], identInfo.ident)
+			end
+
+			if statement == currentDeclLike then  return true  end
+
+			-- if isDeclLike then
+			-- 	table.insert(identInfo.visibleDeclLikes, statement)
+			-- end
+		end
+
+		return false
+	end
+
+	for _, identInfo in ipairs(identInfos) do
+		local currentIdent    = identInfo.ident
+		local currentDeclLike = currentIdent.declaration
+		local block           = currentIdent -- Start node for while loop.
+
+		while true do
+			local statementOrInterest
+			statementOrInterest, block = findParentStatementAndBlockOrExpressionOfInterest(block, currentDeclLike)
+
+			if not statementOrInterest then
+				assert(currentDeclLike == nil)
+				break
+			end
+
+			if block then
+				local statement = statementOrInterest
+
+				assert(type(statement.key) == "number")
+				assert(statement.container == block.statements)
+
+				if lookForDeclarationLikesAndRegisterWatchers(identInfo, block, statement.key-1) then
+					break
+				end
+
+			elseif statementOrInterest.type == "function" or statementOrInterest.type == "for" then
+				local declLike = statementOrInterest
+				block          = declLike -- Start node for while loop.
+
+				-- :DeclarationIdentifiersWatchTheirParent
+				declLikeWatchers[declLike] = declLikeWatchers[declLike] or {}
+				table.insert(declLikeWatchers[declLike], identInfo.ident)
+
+				if declLike == currentDeclLike then  break  end
+
+			elseif statementOrInterest.type == "repeat" then
+				local repeatLoop = statementOrInterest
+				block            = repeatLoop.body
+
+				if lookForDeclarationLikesAndRegisterWatchers(identInfo, block, #block.statements) then
+					break
+				end
+
+			else
+				local declLike = statementOrInterest
+				assert(declLike == currentDeclLike)
+				break
+			end
+		end
+	end
+
+	--
+	-- Remember old declaration info before we start modifying things.
+	--
+	local declLikes_oldNameToIdent = {--[[ [declLike1]={[name1]=declIdent1,...}, ... ]]}
+
+	for i, identInfo in ipairs(identInfos) do
+		local declLike = identInfo.ident.declaration
+
+		if declLike and not declLikes_oldNameToIdent[declLike] then
+			local oldNameToIdent               = {}
+			declLikes_oldNameToIdent[declLike] = oldNameToIdent
+
+			for _, ident in ipairs(getNamesFromDeclarationLike(declLike)) do
+				oldNameToIdent[ident.name] = ident
+			end
+		end
+	end
+
+	--
+	-- Make sure frequencies affect who gets shorter names first. @Incomplete
+	--
+	--[[
+	table.sort(identInfos, function(a, b)
+		if #a.visibleDeclLikes ~= #b.visibleDeclLikes then
+			-- I feel this is kinda reversed - it should be how many can see you, not how many you can see. Does this matter? This sure is confusing!
+			return #a.visibleDeclLikes < #b.visibleDeclLikes
+		end
+		-- if (localCounts[a.ident.name] or 0) ~= (localCounts[b.ident.name] or 0) then -- This is most certainly incorrect, because the names are old!
+		-- 	return (localCounts[a.ident.name] or 0) > (localCounts[b.ident.name] or 0)
+		-- end
+		return a.ident.id < b.ident.id
+	end)
+	--]]
+
+	--
+	-- Rename locals!
+	--
+	local renamed = {--[[ [declIdent1]=true, ... ]]}
+
+	for _, identInfo in ipairs(identInfos) do
+		local declLike = identInfo.ident.declaration
+
+		if declLike then
+			local oldName   = identInfo.ident.name
+			local declIdent = declLikes_oldNameToIdent[declLike][oldName]
+
+			if not renamed[declIdent] then
+				local newName
+
+				for nameGeneration = 1, 1/0 do
+					newName         = generateName(nameGeneration)
+					local collision = false
+
+					for _, watcherIdent in ipairs(declLikeWatchers[declLike] or EMPTY_TABLE) do
+						local watcherDeclLike = watcherIdent.declaration
+
+						if watcherDeclLike then
+							for _, watcherDeclIdent in ipairs(getNamesFromDeclarationLike(watcherDeclLike)) do
+								if renamed[watcherDeclIdent] and watcherDeclIdent.name == newName then
+									collision = true
+									break
+								end
+							end--for names
+
+						elseif watcherIdent.name == newName then
+							collision = true
+							break
+						end
+					end--for declLikeWatchers
+
+					if not collision then  break  end
+				end--for nameGeneration
+
+				declIdent.name     = newName
+				renamed[declIdent] = true
+			end
+
+			identInfo.ident.name = declIdent.name
+		end
+	end--for identInfos
 end
 
 
@@ -2362,7 +2599,7 @@ function printTokens(tokens)
 
 	for tok = 1, tokens.n do
 		local v = tostring(tokValues[tok])
-		if #v > 200 then  v = sub(v, 1, 200-3).."..."  end
+		if #v > 200 then  v = getSubstring(v, 1, 200-3).."..."  end
 
 		v = gsub(v, "\n", "\\n")
 		print(F("%d. %-11s '%s'", tok, tokTypes[tok], v))
@@ -2427,7 +2664,7 @@ do
 
 	local function writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
 		if pretty and indent > 0 then
-			lastOutput = writeLua(buffer, rep("\t", indent), "")
+			lastOutput = writeLua(buffer, repeatString("\t", indent), "")
 		end
 		return lastOutput
 	end
@@ -3022,9 +3259,11 @@ end
 
 
 
-return {
+parser = {
+	-- Constants.
 	VERSION          = PARSER_VERSION,
 
+	-- Functions.
 	tokenizeString   = tokenizeString,
 	tokenizeFile     = tokenizeFile,
 
@@ -3042,11 +3281,16 @@ return {
 	printTokens      = printTokens,
 	printNode        = printNode,
 	printTree        = printTree,
+
+	-- Settings.
+	printIds = false, -- @Undocumented
 }
 
+return parser
 
 
---[[============================================================
+
+--[=[===========================================================
 
 Copyright © 2020-2021 Marcus 'ReFreezed' Thunström
 
@@ -3068,4 +3312,4 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-==============================================================]]
+=============================================================]=]

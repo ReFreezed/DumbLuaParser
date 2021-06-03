@@ -67,3 +67,30 @@ do
 	local foo = ((y & 0x7) << 4) | 0xFF00
 	--]]
 end
+
+do
+	-- Minify tests:
+	local longNameA = global    -- Watchers: 3
+	local longNameB = longNameA -- Watchers: 5
+	local global    = global    -- Watchers: 4
+	local longNameC = longNameB -- Watchers: 3
+	local getGlobal = e         -- Watchers: 2
+	local longNameD = longNameB -- Watchers: 1
+	local longNameE = longNameA -- Watchers: 0
+
+	function f(x) local x = x end
+
+	local upvalue = 0
+
+	local function f(arg1, arg2)
+		local assign1, assign2 = 0, 0
+		local decl, func
+
+		decl = 0
+		func = function()end
+
+		for loop1, loop2 in ipairs(t) do
+			func(upvalue, arg1,arg2, assign1,assign2, decl, loop1,loop2)
+		end
+	end
+end
