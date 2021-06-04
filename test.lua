@@ -52,6 +52,14 @@ do
 
 	;;;;
 
+	-- Special number notations.
+	local n = - -5
+	local n = -1/0
+	local n = - - 1 / 0
+	local n = - (-1/0)
+	local n = 5 - 1/0
+	local n = - - (-0)
+
 	--[[ Lua 5.2+
 	goto label
 	::label::

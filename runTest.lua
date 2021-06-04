@@ -63,7 +63,15 @@ do
 	local tripTokens = assert(parser.tokenizeString(lua))
 	local tripAst    = assert(parser.parse(tripTokens))
 	local tripLua    = assert(parser.toLua(tripAst, PRETTY))
-	assert(tripLua == lua, tripLua)
+
+	if tripLua ~= lua then
+		print(("-"):rep(64))
+		print(lua)
+		print(("-"):rep(64))
+		print(tripLua)
+		print(("-"):rep(64))
+		error("Failed round-trip.")
+	end
 end
 
 -- Token stream manipulations.

@@ -304,17 +304,17 @@ local function AstLookup (tok)return{token=tok,
 local function AstUnary (tok)return{token=tok,
 	type        = "unary",
 	id          = newId(),
-	operator    = "",  -- "-"|"not"|"#"|"~"
+	operator    = "",  -- "-" | "not" | "#" | "~"
 	expression  = nil, -- Expression.
 }end
 local function AstBinary (tok)return{token=tok,
 	type        = "binary",
 	id          = newId(),
-	operator    = "",  -- "+"|"-"|"*"|"/"|"//"|"^"|"%"|"&"|"~"|"|"|">>"|"<<"|".."|"<"|"<="|">"|">="|"=="|"~="|"and"|"or"
+	operator    = "",  -- "+" | "-" | "*" | "/" | "//" | "^" | "%" | "&" | "~" | "|" | ">>" | "<<" | ".." | "<" | "<=" | ">" | ">=" | "==" | "~=" | "and" | "or"
 	left        = nil, -- Expression.
 	right       = nil, -- Expression.
 }end
-local function AstCall (tok)return{token=tok, -- This node type can be both an expression and a statement.
+local function AstCall (tok)return{token=tok, -- Calls can be both expressions and statements.
 	type        = "call",
 	id          = newId(),
 	callee      = nil,   -- Expression.
@@ -390,7 +390,7 @@ local function AstRepeat (tok)return{token=tok,
 local function AstFor (tok)return{token=tok,
 	type        = "for",
 	id          = newId(),
-	kind        = "",  -- "numeric"|"generic"
+	kind        = "",  -- "numeric" | "generic"
 	names       = {},  -- Array of AstIdentifier.
 	values      = {},  -- Array of expressions.
 	body        = nil, -- AstBlock.
@@ -1062,6 +1062,13 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 
 		expr = unary
 
+		-- Special rule: Treat '-n' as one literal (but not '-n^n' because of operator precedence).
+		if unary.operator == "-" and subExpr.type == "literal" and type(subExpr.value) == "number" and isTokenType(tokens, subExpr.token, "number") then
+			subExpr.value = -subExpr.value
+			subExpr.token = unary.token
+			expr          = subExpr
+		end
+
 	-- {...}
 	elseif isToken(tokens, tok, "punctuation", "{") then
 		local tableNode, tokNext = parseTable(tokens, tok)
@@ -1126,6 +1133,8 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 			binary.operator = tokens.value[tok]
 			tok             = tok + 1 -- operator
 
+			local lhsExpr = expr
+
 			local rhsExpr, tokNext = parseExpression(tokens, tok, OPERATOR_PRECEDENCE[binary.operator] + (rightAssociative and -1 or 0))
 			if not rhsExpr then  return false, tok  end
 			tok = tokNext
@@ -1134,6 +1143,21 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 			binary.right = rhsExpr
 
 			expr = binary
+
+			-- Special rule: Treat 'n/0' and '-n/0' as one literal (because that's how toLua() outputs infinity/NaN).
+			if
+				binary.operator  == "/"
+				and lhsExpr.type == "literal" and type(lhsExpr.value) == "number"
+				and rhsExpr.type == "literal" and      rhsExpr.value  == 0
+				and (
+					isTokenType(tokens, lhsExpr.token, "number")
+					or (isToken(tokens, lhsExpr.token, "punctuation", "-") and isTokenType(tokens, lhsExpr.token+1, "number"))
+				)
+				and isTokenType(tokens, rhsExpr.token, "number")
+			then
+				lhsExpr.value = lhsExpr.value / 0
+				expr          = lhsExpr
+			end
 
 		elseif not canParseLookupOrCall then
 			break
@@ -2373,41 +2397,6 @@ end
 
 
 
-local function getNamesFromDeclarationLike(declLike)
-	return declLike.names or declLike.parameters
-end
-
-local generateName
-do
-	local BANK_LETTERS  = "etaoinshrdlcumwfgypbvkxjqz_ETAOINSHRDLCUMWFGYPBVKXJQZ" -- http://en.wikipedia.org/wiki/Letter_frequencies
-	local BANK_ALPHANUM = "etaoinshrdlcumwfgypbvkxjqz_ETAOINSHRDLCUMWFGYPBVKXJQZ0123456789"
-	local cache         = {}
-
-	function generateName(nameGeneration)
-		if not cache[nameGeneration] then
-			-- @Cleanup: Output the most significant byte first. (We need to know the length beforehand then, probably, so we use the correct bank.)
-			local charBytes = {}
-
-			for i = 1, 1/0 do
-				nameGeneration  = nameGeneration - 1
-				local charBank  = (i == 1) and BANK_LETTERS or BANK_ALPHANUM
-				local charIndex = nameGeneration % #charBank + 1
-				charBytes[i]    = charBank:byte(charIndex)
-				nameGeneration  = floor(nameGeneration / #charBank)
-
-				if nameGeneration == 0 then  break  end
-			end
-
-			cache[nameGeneration] = bytesToString(unpack(charBytes))
-		end
-
-		return cache[nameGeneration]
-	end
-
-	-- for nameGeneration = 1, 3500 do  print(generateName(nameGeneration))  end ; error("TEST")
-	-- for pow = 0, 32 do  print(generateName(2^pow))  end ; error("TEST")
-end
-
 local unaryFolders = {
 	["-"] = function(unary, expr)
 		if expr.type == "literal" and type(expr.value) == "number" then
@@ -2612,10 +2601,7 @@ local function maybeReplace(parent, container, key, replacement)
 	replacement.key       = key
 end
 
-local function minify(node)
-	--
-	-- Remove unused declarations and other useless things.  @Incomplete
-	--
+local function foldTree(node) -- @Incomplete: Expose in API.
 	traverseTree(node, true, function(node, parent, container, key)
 		if not parent then
 			-- void
@@ -2625,10 +2611,52 @@ local function minify(node)
 			maybeReplace(parent, container, key, binaryFolders[node.operator](node, node.left, node.right))
 		end
 	end)
+end
 
-	--
+
+
+-- (statement, block) | declLike | repeatLoop | func = findParentStatementAndBlockOrExpressionOfInterest( node, declLike )
+local function findParentStatementAndBlockOrExpressionOfInterest(node, declLike)
+	while true do
+		local lastChild = node
+		node            = node.parent
+
+		if not node                then  return nil,       nil   end
+		if node == declLike        then  return declLike,  nil   end
+		if node.type == "block"    then  return lastChild, node  end
+		if node.type == "function" then  return node,      nil   end
+		if node.type == "for"      then  return node,      nil   end
+
+		if node.type == "repeat" and lastChild == node.condition then  return node, nil  end
+	end
+end
+
+-- foundCurrentDeclLike = lookForDeclarationLikesAndRegisterWatchers( declLikeWatchers, currentIdentInfo, block, statementStartIndex )
+local function lookForDeclarationLikesAndRegisterWatchers(declLikeWatchers, identInfo, block, iStart)
+	local statements      = block.statements
+	local currentDeclLike = identInfo.ident.declaration
+
+	for i = iStart, 1, -1 do
+		local statement = statements[i]
+
+		if statement.type == "declaration" or statement.type == "for" then
+			local declLike = statement
+
+			-- Note: Identifiers in declaration-likes also watch their own declaration-like. :DeclarationIdentifiersWatchTheirParent
+			declLikeWatchers[declLike] = declLikeWatchers[declLike] or {}
+			table.insert(declLikeWatchers[declLike], identInfo.ident)
+
+			if declLike == currentDeclLike then  return true  end
+
+			-- table.insert(identInfo.visibleDeclLikes, declLike)
+		end
+	end
+
+	return false
+end
+
+local function getInformationAboutIdentifiers(node)
 	-- Collect identifiers.
-	--
 	local identInfos = {--[[ [ident1]=identInfo1, identInfo1, ... ]]} -- identInfo = {ident=ident, visibleDeclLikes=declLikes}
 
 	traverseTree(node, function(node, parent, container, key)
@@ -2641,52 +2669,8 @@ local function minify(node)
 		end
 	end)
 
-	--
 	-- Determine visible declarations for each identifier.
-	--
-	-- (statement, block) | declLike | repeatLoop | func = findParentStatementAndBlockOrExpressionOfInterest( node, declLike )
-	local function findParentStatementAndBlockOrExpressionOfInterest(node, declLike)
-		while true do
-			local lastChild = node
-			node            = node.parent
-
-			if not node                then  return nil,       nil   end
-			if node == declLike        then  return declLike,  nil   end
-			if node.type == "block"    then  return lastChild, node  end
-			if node.type == "function" then  return node,      nil   end
-			if node.type == "for"      then  return node,      nil   end
-
-			if node.type == "repeat" and lastChild == node.condition then  return node, nil  end
-		end
-	end
-
 	local declLikeWatchers = {--[[ [declLike1]={ident1,...}, ... ]]}
-
-	-- foundCurrentDeclLike = lookForDeclarationLikesAndRegisterWatchers( identInfo, block, iStart )
-	local function lookForDeclarationLikesAndRegisterWatchers(identInfo, block, iStart)
-		local statements      = block.statements
-		local currentDeclLike = identInfo.ident.declaration
-
-		for i = iStart, 1, -1 do
-			local statement  = statements[i]
-			local nodeType   = statement.type
-			local isDeclLike = nodeType == "declaration" or nodeType == "function" or nodeType == "for"
-
-			if isDeclLike then
-				-- Note: Identifiers in declaration-likes also watch their own declaration-like. :DeclarationIdentifiersWatchTheirParent
-				declLikeWatchers[statement] = declLikeWatchers[statement] or {}
-				table.insert(declLikeWatchers[statement], identInfo.ident)
-			end
-
-			if statement == currentDeclLike then  return true  end
-
-			-- if isDeclLike then
-			-- 	table.insert(identInfo.visibleDeclLikes, statement)
-			-- end
-		end
-
-		return false
-	end
 
 	for _, identInfo in ipairs(identInfos) do
 		local currentIdent    = identInfo.ident
@@ -2708,7 +2692,7 @@ local function minify(node)
 				assert(type(statement.key) == "number")
 				assert(statement.container == block.statements)
 
-				if lookForDeclarationLikesAndRegisterWatchers(identInfo, block, statement.key-1) then
+				if lookForDeclarationLikesAndRegisterWatchers(declLikeWatchers, identInfo, block, statement.key-1) then
 					break
 				end
 
@@ -2726,7 +2710,7 @@ local function minify(node)
 				local repeatLoop = statementOrInterest
 				block            = repeatLoop.body
 
-				if lookForDeclarationLikesAndRegisterWatchers(identInfo, block, #block.statements) then
+				if lookForDeclarationLikesAndRegisterWatchers(declLikeWatchers, identInfo, block, #block.statements) then
 					break
 				end
 
@@ -2737,6 +2721,58 @@ local function minify(node)
 			end
 		end
 	end
+
+	return identInfos, declLikeWatchers
+end
+
+
+
+local function optimizeTree(node) -- @Incomplete: Expose in API.
+	-- @Incomplete
+end
+
+
+
+local function getNamesFromDeclarationLike(declLike)
+	return declLike.names or declLike.parameters
+end
+
+local generateName
+do
+	local BANK_LETTERS  = "etaoinshrdlcumwfgypbvkxjqz_ETAOINSHRDLCUMWFGYPBVKXJQZ" -- http://en.wikipedia.org/wiki/Letter_frequencies
+	local BANK_ALPHANUM = "etaoinshrdlcumwfgypbvkxjqz_ETAOINSHRDLCUMWFGYPBVKXJQZ0123456789"
+	local cache         = {}
+
+	function generateName(nameGeneration)
+		if not cache[nameGeneration] then
+			-- @Cleanup: Output the most significant byte first. (We need to know the length beforehand then, probably, so we use the correct bank.)
+			local charBytes = {}
+
+			for i = 1, 1/0 do
+				nameGeneration  = nameGeneration - 1
+				local charBank  = (i == 1) and BANK_LETTERS or BANK_ALPHANUM
+				local charIndex = nameGeneration % #charBank + 1
+				charBytes[i]    = charBank:byte(charIndex)
+				nameGeneration  = floor(nameGeneration / #charBank)
+
+				if nameGeneration == 0 then  break  end
+			end
+
+			cache[nameGeneration] = bytesToString(unpack(charBytes))
+		end
+
+		return cache[nameGeneration]
+	end
+
+	-- for nameGeneration = 1, 3500 do  print(generateName(nameGeneration))  end ; error("TEST")
+	-- for pow = 0, 32 do  print(generateName(2^pow))  end ; error("TEST")
+end
+
+local function minify(node)
+	foldTree(node)
+	optimizeTree(node)
+
+	local identInfos, declLikeWatchers = getInformationAboutIdentifiers(node)
 
 	--
 	-- Remember old declaration info before we start modifying things.
@@ -2775,7 +2811,8 @@ local function minify(node)
 	--
 	-- Rename locals!
 	--
-	local renamed = {--[[ [declIdent1]=true, ... ]]}
+	local renamed       = {--[[ [declIdent1]=true, ... ]]}
+	-- local collisions = 0
 
 	for _, identInfo in ipairs(identInfos) do
 		local declLike = identInfo.ident.declaration
@@ -2809,6 +2846,8 @@ local function minify(node)
 					end--for declLikeWatchers
 
 					if not collision then  break  end
+
+					-- collisions = collisions + 1
 				end--for nameGeneration
 
 				declIdent.name     = newName
@@ -2818,6 +2857,8 @@ local function minify(node)
 			identInfo.ident.name = declIdent.name
 		end
 	end--for identInfos
+
+	-- print("collisions", collisions) -- DEBUG
 end
 
 
@@ -3061,16 +3102,16 @@ do
 
 		elseif nodeType == "literal" then
 			if node.value == 0 then
-				lastOutput = writeNumber(buffer, pretty, 0, lastOutput) -- Avoid writing '-0'.
+				lastOutput = writeNumber(buffer, pretty, 0, lastOutput) -- Avoid writing '-0'. (This rule might mess up round-trip tests in rare cases, I think.)
 
 			elseif node.value == 1/0 then
-				lastOutput = writeAlphanum(buffer, pretty, "(1/0)", lastOutput)
+				lastOutput = writeAlphanum(buffer, pretty, "(1/0)", lastOutput) -- Note: We parse this as one literal.
 
 			elseif node.value == -1/0 then
-				lastOutput = writeLua(buffer, "(-1/0)", "")
+				lastOutput = writeLua(buffer, "(-1/0)", "") -- Note: We parse this as one literal.
 
 			elseif node.value ~= node.value then
-				lastOutput = writeLua(buffer, "(0/0)", "")
+				lastOutput = writeLua(buffer, "(0/0)", "") -- Note: We parse this as one literal.
 
 			elseif node.value == nil or type(node.value) == "boolean" then
 				lastOutput = writeAlphanum(buffer, pretty, tostring(node.value), lastOutput)
