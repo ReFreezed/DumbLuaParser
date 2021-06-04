@@ -25,9 +25,11 @@ do
 	for i = 1, 9 do  foo(i)  end
 	for i, v in ipairs(t) do  bar(i, v)  end
 
-	local function foo(...) end
-	function a:b(x, ...) return end
-	a[x] = function() return x end
+	local function foo() end
+	local function foo(a, ...) return end
+	function a:b(x, ...) return ... end
+	a[x] = function(i, j) if i then return end return 5 end
+	g = a[x]()
 
 	local a = 1 + 2 + 3
 	local b = "1".."2".."3"
@@ -76,8 +78,10 @@ do
 	--]]
 end
 
+--
+-- Minify tests
+--
 do
-	-- Minify tests:
 	local longNameA = global    -- Watchers: 3
 	local longNameB = longNameA -- Watchers: 5
 	local global    = global    -- Watchers: 4
@@ -86,7 +90,7 @@ do
 	local longNameD = longNameB -- Watchers: 1
 	local longNameE = longNameA -- Watchers: 0
 
-	function f(x) local x = x end
+	function globalFunc(x) local x = x end
 
 	local upvalue = 0
 
@@ -101,8 +105,10 @@ do
 			func(upvalue, arg1,arg2, assign1,assign2, decl, loop1,loop2)
 		end
 	end
+end
 
-	-- Folding:
+-- Folding.
+do
 	local n = 1 << 8     -- 256
 	local n = 2^99999    -- huge
 	local n = 5 - - - -5 -- 10
@@ -113,12 +119,73 @@ do
 
 	local s = "one" .. 2 .. "three"
 
-	local v = true  and always()
-	local v = true  or  never()
-	local v = 0     and always()
-	local v = 0     or  never()
-	local v = false and never()
-	local v = false or  always()
-	local v = nil   and never()
-	local v = nil   or  always()
+	local v = true  and always1()
+	local v = true  or  never1()
+	local v = 0     and always2()
+	local v = 0     or  never2()
+	local v = false and never3()
+	local v = false or  always3()
+	local v = nil   and never4()
+	local v = nil   or  always4()
+end
+
+-- Removal of nodes.
+do
+	do
+		local noButKeep, yesKeep, noRemove = globalFunc()
+		globalFunc(yesKeep)
+		noButKeep, yesKeep, noRemove = globalFunc()
+	end
+
+	for noButKeep, yesKeep, noRemove in globalFunc() do
+		globalFunc(yesKeep)
+	end
+
+	do
+		local noButKeep, yesKeep, noRemove = globalFunc()
+		local function called()
+			yesKeep = global1
+		end
+		local function notCalled()
+			yesKeep = global2
+			return global3
+		end
+		noButKeep, yesKeep, noRemove = globalFunc()
+		called()
+		print(yesKeep)
+	end
+
+	do
+		globalFunc()
+	end
+
+	do
+		local forward
+
+		local function localFunc()
+			forward()
+		end
+
+		function globalFunc()
+			localFunc()
+		end
+
+		do
+			local n = 0
+			function forward()
+				n = n + 1
+				return n
+			end
+		end
+	end
+
+	-- This should be removed completely.
+	do
+		local n = 1 + 2
+
+		local function f()
+			local g = global
+		end
+		f = nil
+	end
 end

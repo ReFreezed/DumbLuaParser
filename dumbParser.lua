@@ -71,15 +71,15 @@
 		container[key] is the position of the current node in the tree and can be used to replace the node.
 
 	updateReferences()
-		parser.updateReferences( astNode )
+		parser.updateReferences( astNode [, updateTopNodePosition=true ] )
 		Update references between nodes in the tree.
 		This function sets 'parent', 'container' and 'key' for all nodes and 'declaration' for identifiers.
+		If 'updateTopNodePosition' is false then 'parent', 'container' and 'key' will remain as-it for 'astNode' specifically.
 
 	minify()
 		parser.minify( astNode )
 		Remove useless nodes from the tree and replace local variable names with short names.
 		This function can be used to obfuscate the code to some extent.
-		Note: Make sure to call updateReferences() first so minify() knows what identifiers refer to local declarations, otherwise all identifiers will be treated as globals and are thus left untouched.
 
 	toLua()
 		lua = parser.toLua( astNode [, prettyOuput=false ] )
@@ -162,6 +162,9 @@
 
 local PARSER_VERSION = "1.2.1"
 
+local io            = io
+local ioWrite       = io.write
+
 local bytesToString = string.char
 local F             = string.format
 local find          = string.find
@@ -175,68 +178,63 @@ local floor         = math.floor
 local getMax        = math.max
 local getMin        = math.min
 
-local loadLuaString = loadstring   or load
+local concat        = table.concat
+local insert        = table.insert
+local remove        = table.remove
+local sort          = table.sort
 local unpack        = table.unpack or unpack
 
-local assertArg
+local loadLuaString = loadstring or load
+
+local assertArg, errorf
 local countString
 local formatNumber
+local getNameArrayOfDeclarationLike
+local ipairsr
 local isToken, isTokenType, isTokenAnyValue
 local itemWith1
-local newId
-local newTokenStream
+local mayNodeCauseJump, mayAnyNodeCauseJump
+local newTokenStream, dummyTokens
 local parse
-local printError, printfError, reportErrorInFile, reportErrorAtToken
+local printError, printfError, reportErrorInFile, reportErrorAtToken, reportErrorAtNode
 local printNode, printTree
 local printTokens
 local tokenizeString, tokenizeFile
 local toLua
-local traverseTree
+local traverseTree, traverseTreeReverse
 local updateReferences
 
 local parser
 
 
 
-local KEYWORDS = {
-	["and"]      = true,
-	["break"]    = true,
-	["do"]       = true,
-	["else"]     = true,
-	["elseif"]   = true,
-	["end"]      = true,
-	["false"]    = true,
-	["for"]      = true,
-	["function"] = true,
-	["goto"]     = true,
-	["if"]       = true,
-	["in"]       = true,
-	["local"]    = true,
-	["nil"]      = true,
-	["not"]      = true,
-	["or"]       = true,
-	["repeat"]   = true,
-	["return"]   = true,
-	["then"]     = true,
-	["true"]     = true,
-	["until"]    = true,
-	["while"]    = true,
+local function newSet(values)
+	local set = {}
+	for _, v in ipairs(values) do
+		set[v] = true
+	end
+	return set
+end
+
+local KEYWORDS = newSet{
+	"and", "break", "do", "else", "elseif", "end", "false", "for", "function", "goto", "if",
+	"in", "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while",
 }
-local PUNCTUATION = {
-	["+"]=true,  ["-"]=true,  ["*"]=true,  ["/"]=true,  ["%"]=true,  ["^"]=true,   ["#"]=true,
-	["&"]=true,  ["~"]=true,  ["|"]=true,  ["<<"]=true, [">>"]=true, ["//"]=true,
-	["=="]=true, ["~="]=true, ["<="]=true, [">="]=true, ["<"]=true,  [">"]=true,   ["="]=true,
-	["("]=true,  [")"]=true,  ["{"]=true,  ["}"]=true,  ["["]=true,  ["]"]=true,   ["::"]=true,
-	[";"]=true,  [":"]=true,  [","]=true,  ["."]=true,  [".."]=true, ["..."]=true,
+local PUNCTUATION = newSet{
+	"+",  "-",  "*",  "/",  "%",  "^",  "#",
+	"&",  "~",  "|",  "<<", ">>", "//",
+	"==", "~=", "<=", ">=", "<",  ">",  "=",
+	"(",  ")",  "{",  "}",  "[",  "]",  "::",
+	";",  ":",  ",",  ".",  "..", "...",
 }
-local OPERATORS_UNARY = {
-	["-"]=true, ["not"]=true, ["#"]=true, ["~"]=true,
+local OPERATORS_UNARY = newSet{
+	"-", "not", "#", "~",
 }
-local OPERATORS_BINARY = {
-	["+"]=true,   ["-"]=true,  ["*"]=true, ["/"]=true,  ["//"]=true, ["^"]=true,  ["%"]=true,
-	["&"]=true,   ["~"]=true,  ["|"]=true, [">>"]=true, ["<<"]=true, [".."]=true,
-	["<"]=true,   ["<="]=true, [">"]=true, [">="]=true, ["=="]=true, ["~="]=true,
-	["and"]=true, ["or"]=true,
+local OPERATORS_BINARY = newSet{
+	"+",   "-",  "*", "/",  "//", "^", "%",
+	"&",   "~",  "|", ">>", "<<", "..",
+	"<",   "<=", ">", ">=", "==", "~=",
+	"and", "or",
 }
 local OPERATOR_PRECEDENCE = {
 	["or"]  = 1,
@@ -264,137 +262,134 @@ local NUM_DEC          = gsub("^(        %d+          %.?                       
 
 local EMPTY_TABLE = {}
 
+local nextSerialNumber = 1
+
 
 
 -- :NodeFields
 
--- All nodes also have a 'parent', 'container' and 'key' field (after updateReferences() has been called).
--- 'parent' refers to the node's parent in the tree.
--- 'container' refers to the specific table that the node is in, which could be the parent or a member of the parent.
--- 'key' refers to the specific field in the container that the node is in, which is either a string or an integer.
+local function populateCommonNodeFields(tokens, tok, node)
+	-- All nodes have these fields.
+	node.id          = nextSerialNumber
+	nextSerialNumber = nextSerialNumber + 1
+
+	node.sourcePath   = tokens.sourcePath
+	node.sourceString = tokens.sourceString
+
+	node.token    = tok
+	node.line     = tokens.lineStart    [tok] or 0
+	node.position = tokens.positionStart[tok] or 0
+
+	-- These fields are set by updateReferences():
+	-- node.parent    = nil -- Refers to the node's parent in the tree.
+	-- node.container = nil -- Refers to the specific table that the node is in, which could be the parent or a member of the parent.
+	-- node.key       = nil -- Refers to the specific field in the container that the node is in, which is either a string or an integer.
+
+	return node
+end
 
 -- AST expressions.
-local function AstIdentifier (tok)return{token=tok,
+local function AstIdentifier (tokens,tok,name)return populateCommonNodeFields(tokens,tok,{
 	type        = "identifier",
-	id          = newId(),
-	name        = "",
+	name        = name, -- String.
 	declaration = nil, -- AstDeclaration, AstFunction or AstFor. Updated by updateReferences(). This is nil for globals.
-}end
-local function AstVararg (tok)return{token=tok,
+})end
+local function AstVararg (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "vararg",
-	id          = newId(),
 	adjustToOne = false, -- True if parentheses surround the vararg.
-}end
-local function AstLiteral (tok)return{token=tok,
+})end
+local function AstLiteral (tokens,tok,value)return populateCommonNodeFields(tokens,tok,{
 	type        = "literal",
-	id          = newId(),
-	value       = nil, -- A number, string, boolean or nil.
-}end
-local function AstTable (tok)return{token=tok,
+	value       = value, -- Number, string, boolean or nil.
+})end
+local function AstTable (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "table",
-	id          = newId(),
 	fields      = {}, -- Array of {key=expression, value=expression, generatedKey=bool}.
-}end
-local function AstLookup (tok)return{token=tok,
+})end
+local function AstLookup (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "lookup",
-	id          = newId(),
 	object      = nil, -- Expression.
 	member      = nil, -- Expression.
-}end
-local function AstUnary (tok)return{token=tok,
+})end
+local function AstUnary (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "unary",
-	id          = newId(),
 	operator    = "",  -- "-" | "not" | "#" | "~"
 	expression  = nil, -- Expression.
-}end
-local function AstBinary (tok)return{token=tok,
+})end
+local function AstBinary (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "binary",
-	id          = newId(),
 	operator    = "",  -- "+" | "-" | "*" | "/" | "//" | "^" | "%" | "&" | "~" | "|" | ">>" | "<<" | ".." | "<" | "<=" | ">" | ">=" | "==" | "~=" | "and" | "or"
 	left        = nil, -- Expression.
 	right       = nil, -- Expression.
-}end
-local function AstCall (tok)return{token=tok, -- Calls can be both expressions and statements.
+})end
+local function AstCall (tokens,tok)return populateCommonNodeFields(tokens,tok,{ -- Calls can be both expressions and statements.
 	type        = "call",
-	id          = newId(),
 	callee      = nil,   -- Expression.
 	arguments   = {},    -- Array of expressions.
 	method      = false,
 	adjustToOne = false, -- True if parentheses surround the call.
-}end
-local function AstFunction (tok)return{token=tok,
+})end
+local function AstFunction (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "function",
-	id          = newId(),
 	parameters  = {},  -- Array of AstIdentifier.
 	vararg      = nil, -- AstVararg or nil.
 	body        = nil, -- AstBlock.
-}end
+})end
 
 -- AST statements.
-local function AstBreak (tok)return{token=tok,
+local function AstBreak (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "break",
-	id          = newId(),
-}end
-local function AstReturn (tok)return{token=tok,
+})end
+local function AstReturn (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "return",
-	id          = newId(),
 	values      = {}, -- Array of expressions.
-}end
-local function AstLabel (tok)return{token=tok,
+})end
+local function AstLabel (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "label",
-	id          = newId(),
 	name        = nil, -- AstIdentifier
-}end
-local function AstGoto (tok)return{token=tok,
+})end
+local function AstGoto (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "goto",
-	id          = newId(),
 	name        = nil, -- AstIdentifier
-}end
-local function AstBlock (tok)return{token=tok,
+})end
+local function AstBlock (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "block",
-	id          = newId(),
 	statements  = {}, -- Array of statements.
-}end
-local function AstDeclaration (tok)return{token=tok,
+})end
+local function AstDeclaration (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "declaration",
-	id          = newId(),
 	names       = {}, -- Array of AstIdentifier.
 	values      = {}, -- Array of expressions.
 
-}end
-local function AstAssignment (tok)return{token=tok,
+})end
+local function AstAssignment (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "assignment",
-	id          = newId(),
 	targets     = {}, -- Mixed array of AstIdentifier and AstLookup.
 	values      = {}, -- Array of expressions.
-}end
-local function AstIf (tok)return{token=tok,
+})end
+local function AstIf (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "if",
-	id          = newId(),
 	condition   = nil, -- Expression.
 	bodyTrue    = nil, -- AstBlock.
 	bodyFalse   = nil, -- AstBlock. May be nil.
-}end
-local function AstWhile (tok)return{token=tok,
+})end
+local function AstWhile (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "while",
-	id          = newId(),
 	condition   = nil, -- Expression.
 	body        = nil, -- AstBlock.
-}end
-local function AstRepeat (tok)return{token=tok,
+})end
+local function AstRepeat (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "repeat",
-	id          = newId(),
 	body        = nil, -- AstBlock.
 	condition   = nil, -- Expression.
-}end
-local function AstFor (tok)return{token=tok,
+})end
+local function AstFor (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "for",
-	id          = newId(),
 	kind        = "",  -- "numeric" | "generic"
 	names       = {},  -- Array of AstIdentifier.
 	values      = {},  -- Array of expressions.
 	body        = nil, -- AstBlock.
-}end
+})end
 
 
 
@@ -448,6 +443,9 @@ end
 
 function reportErrorAtToken(tokens, tok, agent, s, ...)
 	reportErrorInFile(tokens.sourceString, tokens.sourcePath, tokens.positionStart[tok], agent, s, ...)
+end
+function reportErrorAtNode(node, agent, s, ...)
+	reportErrorInFile(node.sourceString, node.sourcePath, node.position, agent, s, ...)
 end
 
 
@@ -739,6 +737,7 @@ function newTokenStream()
 		positionEnd    = {},
 	}
 end
+dummyTokens = newTokenStream()
 
 --
 -- :TokenInsertion
@@ -759,19 +758,19 @@ local function insertToken(tokens, i, tokType, tokValue)
 	local tokRepr
 
 	if tokType == "keyword" then
-		if type(tokValue) ~= "string" then  error(F("Expected string value for 'keyword' token. (Got %s)", type(tokValue)))  end
-		if not KEYWORDS[tokValue]     then  error(F("Invalid keyword '%s'.", tokValue))  end
+		if type(tokValue) ~= "string" then  errorf(2, "Expected string value for 'keyword' token. (Got %s)", type(tokValue))  end
+		if not KEYWORDS[tokValue]     then  errorf(2, "Invalid keyword '%s'.", tokValue)  end
 		tokRepr = tokValue
 
 	elseif tokType == "identifier" then
-		if type(tokValue) ~= "string"          then  error(F("Expected string value for 'identifier' token. (Got %s)", type(tokValue)))  end
-		if not find(tokValue, "^[%a_][%w_]*$") then  error(F("Invalid identifier '%s'.", tokValue))  end
-		if KEYWORDS[tokValue]                  then  error(F("Invalid identifier '%s'.", tokValue))  end
+		if type(tokValue) ~= "string"          then  errorf(2, "Expected string value for 'identifier' token. (Got %s)", type(tokValue))  end
+		if not find(tokValue, "^[%a_][%w_]*$") then  errorf(2, "Invalid identifier '%s'.", tokValue)  end
+		if KEYWORDS[tokValue]                  then  errorf(2, "Invalid identifier '%s'.", tokValue)  end
 		tokRepr = tokValue
 
 	elseif tokType == "number" then
 		if type(tokValue) ~= "number" then
-			error(F("Expected number value for 'number' token. (Got %s)", type(tokValue)))
+			errorf(2, "Expected number value for 'number' token. (Got %s)", type(tokValue))
 		end
 		tokRepr = (
 			tokValue == 0        and "0"      or -- Avoid '-0'.
@@ -782,16 +781,16 @@ local function insertToken(tokens, i, tokType, tokValue)
 		)
 
 	elseif tokType == "string" then
-		if type(tokValue) ~= "string" then  error(F("Expected string value for 'string' token. (Got %s)", type(tokValue)))  end
+		if type(tokValue) ~= "string" then  errorf(2, "Expected string value for 'string' token. (Got %s)", type(tokValue))  end
 		tokRepr = gsub(F("%q", tokRepr), "\n", "n")
 
 	elseif tokType == "punctuation" then
-		if type(tokValue) ~= "string" then  error(F("Expected string value for 'punctuation' token. (Got %s)", type(tokValue)))  end
-		if not PUNCTUATION[tokValue]  then  error(F("Invalid punctuation '%s'.", tokValue))  end
+		if type(tokValue) ~= "string" then  errorf(2, "Expected string value for 'punctuation' token. (Got %s)", type(tokValue))  end
+		if not PUNCTUATION[tokValue]  then  errorf(2, "Invalid punctuation '%s'.", tokValue)  end
 		tokRepr = tokValue
 
 	elseif tokType == "comment" then
-		if type(tokValue) ~= "string" then  error(F("Expected string value for 'comment' token. (Got %s)", type(tokValue)))  end
+		if type(tokValue) ~= "string" then  errorf(2, "Expected string value for 'comment' token. (Got %s)", type(tokValue))  end
 
 		if find(tokValue, "\n") then
 			local equalSigns = find(tokValue, "[[", 1, true) and "=" or ""
@@ -807,7 +806,7 @@ local function insertToken(tokens, i, tokType, tokValue)
 		end
 
 	else
-		error(F("Invalid token type '%s'.", tostring(tokType)))
+		errorf(2, "Invalid token type '%s'.", tostring(tokType))
 	end
 
 	local tokTypes  = tokens.type
@@ -889,8 +888,7 @@ local function parseIdentifier(tokens, tok) --> ident, token
 		return nil, tok
 	end
 
-	local ident = AstIdentifier(tok)
-	ident.name  = tokens.value[tok]
+	local ident = AstIdentifier(tokens, tok, tokens.value[tok])
 	tok         = tok + 1
 
 	return ident, tok
@@ -899,7 +897,7 @@ end
 local function parseNameList(tokens, tok, names, allowVararg) --> success, token, vararg|nil
 	while true do
 		if allowVararg and isToken(tokens, tok, "punctuation", "...") then
-			local vararg = AstVararg(tok)
+			local vararg = AstVararg(tokens, tok)
 			tok          = tok + 1 -- '...'
 			return true, tok, vararg
 		end
@@ -908,7 +906,7 @@ local function parseNameList(tokens, tok, names, allowVararg) --> success, token
 		if not ident then  return false, tok  end
 		tok = tokNext
 
-		table.insert(names, ident)
+		insert(names, ident)
 
 		if not isToken(tokens, tok, "punctuation", ",") then
 			return true, tok, nil
@@ -920,7 +918,7 @@ local function parseNameList(tokens, tok, names, allowVararg) --> success, token
 end
 
 local function parseTable(tokens, tok) --> tableNode, token
-	local tableNode = AstTable(tok)
+	local tableNode = AstTable(tokens, tok)
 	tok             = tok + 1 -- '{'
 
 	local generatedIndex = 0
@@ -954,11 +952,10 @@ local function parseTable(tokens, tok) --> tableNode, token
 			tok = tokNext
 
 			local field = {key=keyExpr, value=valueExpr, generatedKey=false}
-			table.insert(tableNode.fields, field)
+			insert(tableNode.fields, field)
 
 		elseif isTokenType(tokens, tok, "identifier") and isToken(tokens, tok+1, "punctuation", "=") then
-			local keyExpr = AstLiteral(tok)
-			keyExpr.value = tokens.value[tok]
+			local keyExpr = AstLiteral(tokens, tok, tokens.value[tok])
 			tok           = tok + 1 -- identifier
 
 			if not isToken(tokens, tok, "punctuation", "=") then
@@ -972,20 +969,18 @@ local function parseTable(tokens, tok) --> tableNode, token
 			tok = tokNext
 
 			local field = {key=keyExpr, value=valueExpr, generatedKey=false}
-			table.insert(tableNode.fields, field)
+			insert(tableNode.fields, field)
 
 		else
 			generatedIndex = generatedIndex + 1
-
-			local keyExpr = AstLiteral(tok)
-			keyExpr.value = generatedIndex
+			local keyExpr  = AstLiteral(tokens, tok, generatedIndex)
 
 			local valueExpr, tokNext = parseExpression(tokens, tok, 0)
 			if not valueExpr then  return nil, tok  end
 			tok = tokNext
 
 			local field = {key=keyExpr, value=valueExpr, generatedKey=true}
-			table.insert(tableNode.fields, field)
+			insert(tableNode.fields, field)
 		end
 
 		if isToken(tokens, tok, "punctuation", ",") or isToken(tokens, tok, "punctuation", ";") then
@@ -1020,29 +1015,25 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 
 	-- ...
 	elseif isToken(tokens, tok, "punctuation", "...") then
-		local vararg = AstVararg(tok)
+		local vararg = AstVararg(tokens, tok)
 		tok          = tok + 1 -- '...'
 		expr         = vararg
 
 	-- literal
 	elseif isTokenType(tokens, tok, "string") or isTokenType(tokens, tok, "number") then
-		local literal = AstLiteral(tok)
-		literal.value = tokens.value[tok]
+		local literal = AstLiteral(tokens, tok, tokens.value[tok])
 		tok           = tok + 1 -- literal
 		expr          = literal
 	elseif isToken(tokens, tok, "keyword", "true") then
-		local literal = AstLiteral(tok)
-		literal.value = true
+		local literal = AstLiteral(tokens, tok, true)
 		tok           = tok + 1 -- 'true'
 		expr          = literal
 	elseif isToken(tokens, tok, "keyword", "false") then
-		local literal = AstLiteral(tok)
-		literal.value = false
+		local literal = AstLiteral(tokens, tok, false)
 		tok           = tok + 1 -- 'false'
 		expr          = literal
 	elseif isToken(tokens, tok, "keyword", "nil") then
-		local literal = AstLiteral(tok)
-		literal.value = nil
+		local literal = AstLiteral(tokens, tok, nil)
 		tok           = tok + 1 -- 'nil'
 		expr          = literal
 
@@ -1051,7 +1042,7 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 		(isToken(tokens, tok, "keyword", "not") or (isTokenType(tokens, tok, "punctuation") and isTokenAnyValue(tokens, tok, OPERATORS_UNARY)))
 		and OPERATOR_PRECEDENCE.unary > lastPrecedence
 	then
-		local unary    = AstUnary(tok)
+		local unary    = AstUnary(tokens, tok)
 		unary.operator = tokens.value[tok]
 		tok            = tok + 1 -- operator
 
@@ -1129,7 +1120,7 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 		then
 			local rightAssociative = isToken(tokens, tok, "punctuation", "..") or isToken(tokens, tok, "punctuation", "^")
 
-			local binary    = AstBinary(tok)
+			local binary    = AstBinary(tokens, tok)
 			binary.operator = tokens.value[tok]
 			tok             = tok + 1 -- operator
 
@@ -1164,15 +1155,14 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 
 		-- t.k
 		elseif isToken(tokens, tok, "punctuation", ".") then
-			local lookup = AstLookup(tok)
+			local lookup = AstLookup(tokens, tok)
 			tok          = tok + 1 -- '.'
 
 			local ident, tokNext = parseIdentifier(tokens, tok)
 			if not ident then  return false, tok  end
 			tok = tokNext
 
-			local literal = AstLiteral(ident.tok)
-			literal.value = ident.name
+			local literal = AstLiteral(tokens, ident.tok, ident.name)
 
 			lookup.object = expr
 			lookup.member = literal
@@ -1181,7 +1171,7 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 
 		-- t[k]
 		elseif isToken(tokens, tok, "punctuation", "[") then
-			local lookup = AstLookup(tok)
+			local lookup = AstLookup(tokens, tok)
 			tok          = tok + 1 -- '['
 
 			local memberExpr, tokNext = parseExpression(tokens, tok, 0)
@@ -1201,10 +1191,9 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 
 		-- f""
 		elseif isTokenType(tokens, tok, "string") then
-			local call = AstCall(tok)
+			local call = AstCall(tokens, tok)
 
-			local literal     = AstLiteral(tok)
-			literal.value     = tokens.value[tok]
+			local literal     = AstLiteral(tokens, tok, tokens.value[tok])
 			tok               = tok + 1 -- string
 			call.arguments[1] = literal
 
@@ -1213,7 +1202,7 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 
 		-- f{}
 		elseif isToken(tokens, tok, "punctuation", "{") then
-			local call = AstCall(tok)
+			local call = AstCall(tokens, tok)
 
 			local tableNode, tokNext = parseTable(tokens, tok)
 			if not tableNode then  return false, tok  end
@@ -1230,7 +1219,7 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 				return false, tok
 			end
 
-			local call = AstCall(tok)
+			local call = AstCall(tokens, tok)
 			tok        = tok + 1 -- '('
 
 			if not isToken(tokens, tok, "punctuation", ")") then
@@ -1251,15 +1240,14 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 		-- o:m()
 		elseif isToken(tokens, tok, "punctuation", ":") then
 			do
-				local lookup = AstLookup(tok)
+				local lookup = AstLookup(tokens, tok)
 				tok          = tok + 1 -- ':'
 
 				local ident, tokNext = parseIdentifier(tokens, tok)
 				if not ident then  return false, tok  end
 				tok = tokNext
 
-				local literal = AstLiteral(ident.tok)
-				literal.value = ident.name
+				local literal = AstLiteral(tokens, ident.tok, ident.name)
 
 				lookup.object = expr
 				lookup.member = literal
@@ -1268,12 +1256,11 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 			end
 
 			do
-				local call  = AstCall(tok)
+				local call  = AstCall(tokens, tok)
 				call.method = true
 
 				if isTokenType(tokens, tok, "string") then
-					local literal     = AstLiteral(tok)
-					literal.value     = tokens.value[tok]
+					local literal     = AstLiteral(tokens, tok, tokens.value[tok])
 					tok               = tok + 1 -- string
 					call.arguments[1] = literal
 
@@ -1328,7 +1315,7 @@ function parseExpressionList(tokens, tok, expressions) --> success, token
 		if not expr then  return false, tok  end
 		tok = tokNext
 
-		table.insert(expressions, expr)
+		insert(expressions, expr)
 
 		if not isToken(tokens, tok, "punctuation", ",") then
 			return true, tok
@@ -1338,7 +1325,7 @@ function parseExpressionList(tokens, tok, expressions) --> success, token
 end
 
 function parseFunctionParametersAndBody(tokens, tok)
-	local func = AstFunction(tok)
+	local func = AstFunction(tokens, tok)
 
 	if not isToken(tokens, tok, "punctuation", "(") then
 		reportErrorAtToken(tokens, tok, "Parser", "Expected '('.")
@@ -1374,7 +1361,7 @@ function parseFunctionParametersAndBody(tokens, tok)
 	return func, tok
 end
 
-local BLOCK_END_TOKEN_TYPES = {["end"]=true, ["else"]=true, ["elseif"]=true, ["until"]=true}
+local BLOCK_END_TOKEN_TYPES = newSet{ "end", "else", "elseif", "until" }
 
 local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> success, token
 	--[[
@@ -1408,12 +1395,12 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		end
 		tok = tok + 1 -- 'end'
 
-		table.insert(statements, block)
+		insert(statements, block)
 		return true, tok
 
 	-- while
 	elseif isToken(tokens, tok, "keyword", "while") then
-		local whileLoop = AstWhile(tok)
+		local whileLoop = AstWhile(tokens, tok)
 		tok             = tok + 1 -- 'while'
 
 		local expr, tokNext = parseExpression(tokens, tok, 0)
@@ -1439,12 +1426,12 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		end
 		tok = tok + 1 -- 'end'
 
-		table.insert(statements, whileLoop)
+		insert(statements, whileLoop)
 		return true, tok
 
 	-- repeat
 	elseif isToken(tokens, tok, "keyword", "repeat") then
-		local repeatLoop = AstRepeat(tok)
+		local repeatLoop = AstRepeat(tokens, tok)
 		tok              = tok + 1 -- 'repeat'
 
 		local block, tokNext = parseBlock(tokens, tok, true)
@@ -1463,12 +1450,12 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		repeatLoop.condition = expr
 		tok                  = tokNext
 
-		table.insert(statements, repeatLoop)
+		insert(statements, repeatLoop)
 		return true, tok
 
 	-- if
 	elseif isToken(tokens, tok, "keyword", "if") then
-		local ifNode = AstIf(tok)
+		local ifNode = AstIf(tokens, tok)
 		tok          = tok + 1 -- 'if'
 
 		local expr, tokNext = parseExpression(tokens, tok, 0)
@@ -1492,8 +1479,8 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		while isToken(tokens, tok, "keyword", "elseif") do
 			tok = tok + 1 -- 'elseif'
 
-			ifNodeLeaf.bodyFalse               = AstBlock(tok)
-			ifNodeLeaf.bodyFalse.statements[1] = AstIf(tok)
+			ifNodeLeaf.bodyFalse               = AstBlock(tokens, tok)
+			ifNodeLeaf.bodyFalse.statements[1] = AstIf(tokens, tok)
 			ifNodeLeaf                         = ifNodeLeaf.bodyFalse.statements[1]
 
 			local expr, tokNext = parseExpression(tokens, tok, 0)
@@ -1528,12 +1515,12 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		end
 		tok = tok + 1 -- 'end'
 
-		table.insert(statements, ifNode)
+		insert(statements, ifNode)
 		return true, tok
 
 	-- for
 	elseif isToken(tokens, tok, "keyword", "for") then
-		local forLoop = AstFor(tok)
+		local forLoop = AstFor(tokens, tok)
 		tok           = tok + 1 -- 'for'
 
 		local ok, tokNext = parseNameList(tokens, tok, forLoop.names, false)
@@ -1589,12 +1576,12 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		end
 		tok = tok + 1 -- 'end'
 
-		table.insert(statements, forLoop)
+		insert(statements, forLoop)
 		return true, tok
 
 	-- function
 	elseif isToken(tokens, tok, "keyword", "function") then
-		local assignment = AstAssignment(tok)
+		local assignment = AstAssignment(tokens, tok)
 		tok              = tok + 1 -- 'function'
 
 		local targetExpr, tokNext = parseIdentifier(tokens, tok)
@@ -1602,15 +1589,14 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		tok = tokNext
 
 		while isToken(tokens, tok, "punctuation", ".") do
-			local lookup = AstLookup(tok)
+			local lookup = AstLookup(tokens, tok)
 			tok          = tok + 1 -- '.'
 
 			local ident, tokNext = parseIdentifier(tokens, tok)
 			if not ident then  return false, tok  end
 			tok = tokNext
 
-			local literal = AstLiteral(ident.tok)
-			literal.value = ident.name
+			local literal = AstLiteral(tokens, ident.tok, ident.name)
 			lookup.member = literal
 
 			lookup.object = targetExpr
@@ -1622,15 +1608,14 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		local isMethod = isToken(tokens, tok, "punctuation", ":")
 
 		if isMethod then
-			local lookup = AstLookup(tok)
+			local lookup = AstLookup(tokens, tok)
 			tok          = tok + 1 -- ':'
 
 			local ident, tokNext = parseIdentifier(tokens, tok)
 			if not ident then  return false, tok  end
 			tok = tokNext
 
-			local literal = AstLiteral(ident.tok)
-			literal.value = ident.name
+			local literal = AstLiteral(tokens, ident.tok, ident.name)
 			lookup.member = literal
 
 			lookup.object = targetExpr
@@ -1644,21 +1629,20 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		tok = tokNext
 
 		if isMethod then
-			local ident = AstIdentifier(func.token)
-			ident.name  = "self"
-			table.insert(func.parameters, 1, ident)
+			local ident = AstIdentifier(tokens, func.token, "self")
+			insert(func.parameters, 1, ident)
 		end
 
 		assignment.targets[1] = targetExpr
 		assignment.values[1]  = func
 
-		table.insert(statements, assignment)
+		insert(statements, assignment)
 		return true, tok
 
 	-- local function
 	elseif isToken(tokens, tok, "keyword", "local") and isToken(tokens, tok+1, "keyword", "function") then
-		local decl       = AstDeclaration(tok)
-		local assignment = AstAssignment(tok)
+		local decl       = AstDeclaration(tokens, tok)
+		local assignment = AstAssignment(tokens, tok)
 		tok              = tok + 2 -- 'local' & 'function'
 
 		local ident, tokNext = parseIdentifier(tokens, tok)
@@ -1674,13 +1658,13 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		assignment.targets[1] = identCopy
 		assignment.values[1]  = func
 
-		table.insert(statements, decl)
-		table.insert(statements, assignment)
+		insert(statements, decl)
+		insert(statements, assignment)
 		return true, tok
 
 	-- local
 	elseif isToken(tokens, tok, "keyword", "local") then
-		local decl = AstDeclaration(tok)
+		local decl = AstDeclaration(tokens, tok)
 		tok        = tok + 1 -- 'local'
 
 		local ok, tokNext = parseNameList(tokens, tok, decl.names, false)
@@ -1695,12 +1679,12 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 			tok = tokNext
 		end
 
-		table.insert(statements, decl)
+		insert(statements, decl)
 		return true, tok
 
 	-- ::label::
 	elseif isToken(tokens, tok, "punctuation", "::") then
-		local label = AstLabel(tok)
+		local label = AstLabel(tokens, tok)
 		tok         = tok + 1 -- '::'
 
 		local tokNext
@@ -1714,12 +1698,12 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		end
 		tok = tok + 1 -- '::'
 
-		table.insert(statements, label)
+		insert(statements, label)
 		return true, tok
 
 	-- goto
 	elseif isToken(tokens, tok, "keyword", "goto") then
-		local gotoNode = AstGoto(tok)
+		local gotoNode = AstGoto(tokens, tok)
 		tok            = tok + 1 -- 'goto'
 
 		local tokNext
@@ -1727,12 +1711,12 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		if not gotoNode.name then  return false, tok  end
 		tok = tokNext
 
-		table.insert(statements, gotoNode)
+		insert(statements, gotoNode)
 		return true, tok
 
 	-- return (last)
 	elseif isToken(tokens, tok, "keyword", "return") then
-		local returnNode = AstReturn(tok)
+		local returnNode = AstReturn(tokens, tok)
 		tok              = tok + 1 -- 'return'
 
 		if tok <= tokens.n and not ((isTokenType(tokens, tok, "keyword") and isTokenAnyValue(tokens, tok, BLOCK_END_TOKEN_TYPES)) or isToken(tokens, tok, "punctuation", ";")) then
@@ -1741,15 +1725,15 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 			tok = tokNext
 		end
 
-		table.insert(statements, returnNode)
+		insert(statements, returnNode)
 		return true, tok
 
 	-- break (last)
 	elseif isToken(tokens, tok, "keyword", "break") then
-		local breakNode = AstBreak(tok)
+		local breakNode = AstBreak(tokens, tok)
 		tok             = tok + 1 -- 'break'
 
-		table.insert(statements, breakNode)
+		insert(statements, breakNode)
 		return true, tok
 
 	elseif isTokenType(tokens, tok, "keyword") then
@@ -1763,11 +1747,11 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 			local call = lookahead
 			tok        = tokNext
 
-			table.insert(statements, call)
+			insert(statements, call)
 			return true, tok
 
 		elseif isToken(tokens, tokNext, "punctuation", "=") or isToken(tokens, tokNext, "punctuation", ",") then
-			local assignment = AstAssignment(tokNext)
+			local assignment = AstAssignment(tokens, tokNext)
 
 			local ok, tokNext = parseExpressionList(tokens, tok, assignment.targets)
 			if not ok then  return false, tok  end
@@ -1790,7 +1774,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 			if not ok then  return false, tok  end
 			tok = tokNext
 
-			table.insert(statements, assignment)
+			insert(statements, assignment)
 			return true, tok
 
 		else
@@ -1802,7 +1786,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 end
 
 function parseBlock(tokens, tok, stopAtEndKeyword) --> block, token
-	local block      = AstBlock(tok)
+	local block      = AstBlock(tokens, tok)
 	local statements = block.statements
 
 	while tok <= tokens.n do
@@ -1925,93 +1909,91 @@ end
 local function newNode(nodeType, ...)
 	local node
 
-	if     nodeType == "vararg"      then  node = AstVararg(0)
-	elseif nodeType == "table"       then  node = AstTable(0)
-	elseif nodeType == "lookup"      then  node = AstLookup(0)
-	elseif nodeType == "call"        then  node = AstCall(0)
-	elseif nodeType == "function"    then  node = AstFunction(0)
-	elseif nodeType == "break"       then  node = AstBreak(0)
-	elseif nodeType == "return"      then  node = AstReturn(0)
-	elseif nodeType == "label"       then  node = AstLabel(0)
-	elseif nodeType == "goto"        then  node = AstGoto(0)
-	elseif nodeType == "block"       then  node = AstBlock(0)
-	elseif nodeType == "declaration" then  node = AstDeclaration(0)
-	elseif nodeType == "assignment"  then  node = AstAssignment(0)
-	elseif nodeType == "if"          then  node = AstIf(0)
-	elseif nodeType == "while"       then  node = AstWhile(0)
-	elseif nodeType == "repeat"      then  node = AstRepeat(0)
+	if     nodeType == "vararg"      then  node = AstVararg     (dummyTokens, 0)
+	elseif nodeType == "table"       then  node = AstTable      (dummyTokens, 0)
+	elseif nodeType == "lookup"      then  node = AstLookup     (dummyTokens, 0)
+	elseif nodeType == "call"        then  node = AstCall       (dummyTokens, 0)
+	elseif nodeType == "function"    then  node = AstFunction   (dummyTokens, 0)
+	elseif nodeType == "break"       then  node = AstBreak      (dummyTokens, 0)
+	elseif nodeType == "return"      then  node = AstReturn     (dummyTokens, 0)
+	elseif nodeType == "label"       then  node = AstLabel      (dummyTokens, 0)
+	elseif nodeType == "goto"        then  node = AstGoto       (dummyTokens, 0)
+	elseif nodeType == "block"       then  node = AstBlock      (dummyTokens, 0)
+	elseif nodeType == "declaration" then  node = AstDeclaration(dummyTokens, 0)
+	elseif nodeType == "assignment"  then  node = AstAssignment (dummyTokens, 0)
+	elseif nodeType == "if"          then  node = AstIf         (dummyTokens, 0)
+	elseif nodeType == "while"       then  node = AstWhile      (dummyTokens, 0)
+	elseif nodeType == "repeat"      then  node = AstRepeat     (dummyTokens, 0)
 
 	elseif nodeType == "identifier" then
 		if select("#", ...) == 0 then
-			error(F("Missing name argument for identifier."))
+			errorf(2, "Missing name argument for identifier.")
 		end
 
 		local name = ...
 		if type(name) ~= "string" then
-			error(F("Invalid name argument value type '%s'. (Expected string)", type(name)))
+			errorf(2, "Invalid name argument value type '%s'. (Expected string)", type(name))
 		elseif not find(name, "^[%a_][%w_]*$") then
-			error(F("Invalid identifier name '%s'.", name))
+			errorf(2, "Invalid identifier name '%s'.", name)
 		elseif KEYWORDS[name] then
-			error(F("Invalid identifier name '%s'.", name))
+			errorf(2, "Invalid identifier name '%s'.", name)
 		end
 
-		node       = AstIdentifier(0)
-		node.name = name
+		node = AstIdentifier(dummyTokens, 0, name)
 
 	elseif nodeType == "literal" then
 		if select("#", ...) == 0 then
-			error(F("Missing value argument for literal."))
+			errorf(2, "Missing value argument for literal.")
 		end
 
 		local value = ...
 		if not (type(value) == "number" or type(value) == "string" or type(value) == "boolean" or type(value) == "nil") then
-			error(F("Invalid literal value type '%s'. (Expected number, string, boolean or nil)", type(value)))
+			errorf(2, "Invalid literal value type '%s'. (Expected number, string, boolean or nil)", type(value))
 		end
 
-		node       = AstLiteral(0)
-		node.value = value
+		node = AstLiteral(dummyTokens, 0, value)
 
 	elseif nodeType == "unary" then
 		if select("#", ...) == 0 then
-			error(F("Missing operator argument for unary expression."))
+			errorf(2, "Missing operator argument for unary expression.")
 		end
 
 		local op = ...
 		if not OPERATORS_UNARY[op] then
-			error(F("Invalid unary operator '%s'.", tostring(op)))
+			errorf(2, "Invalid unary operator '%s'.", tostring(op))
 		end
 
-		node          = AstUnary(0)
+		node          = AstUnary(dummyTokens, 0)
 		node.operator = op
 
 	elseif nodeType == "binary" then
 		if select("#", ...) == 0 then
-			error(F("Missing operator argument for binary expression."))
+			errorf(2, "Missing operator argument for binary expression.")
 		end
 
 		local op = ...
 		if not OPERATORS_BINARY[op] then
-			error(F("Invalid binary operator '%s'.", tostring(op)))
+			errorf(2, "Invalid binary operator '%s'.", tostring(op))
 		end
 
-		node          = AstBinary(0)
+		node          = AstBinary(dummyTokens, 0)
 		node.operator = op
 
 	elseif nodeType == "for" then
 		if select("#", ...) == 0 then
-			error(F("Missing kind argument for 'for' loop."))
+			errorf(2, "Missing kind argument for 'for' loop.")
 		end
 
 		local kind = ...
 		if not (kind == "numeric" or kind == "generic") then
-			error(F("Invalid for loop kind '%s'. (Must be 'numeric' or 'generic')", tostring(kind)))
+			errorf(2, "Invalid for loop kind '%s'. (Must be 'numeric' or 'generic')", tostring(kind))
 		end
 
-		node      = AstFor(0)
+		node      = AstFor(dummyTokens, 0)
 		node.kind = kind
 
 	else
-		error(F("Invalid node type '%s'.", tostring(nodeType)))
+		errorf(2, "Invalid node type '%s'.", tostring(nodeType))
 	end
 	return node
 end
@@ -2019,13 +2001,13 @@ end
 
 
 do
-	local ioWrite = io.write
-
 	local function _printNode(node)
 		local nodeType = node.type
 
 		ioWrite(nodeType)
 		if parser.printIds then  ioWrite("#", node.id)  end
+
+		-- if mayNodeCauseJump(node) then  ioWrite("[MAYJUMP]")  end -- DEBUG
 
 		if nodeType == "identifier" then
 			ioWrite(" (", node.name)
@@ -2191,7 +2173,7 @@ function traverseTree(node, leavesFirst, cb, parent, container, k)
 		local action = cb(node, parent, container, k)
 		if action == "stop"           then  return true   end
 		if action == "ignorechildren" then  return false  end
-		if action                     then  error(F("Unknown traversal action '%s' returned from callback.", tostring(action)))  end
+		if action                     then  errorf("Unknown traversal action '%s' returned from callback.", tostring(action))  end
 	end
 
 	local nodeType = node.type
@@ -2284,14 +2266,137 @@ function traverseTree(node, leavesFirst, cb, parent, container, k)
 		if node.body and traverseTree(node.body, leavesFirst, cb, node, node, "body") then  return true  end
 
 	else
-		error(F("Invalid node type '%s'.", tostring(nodeType)))
+		errorf("Invalid node type '%s'.", tostring(nodeType))
 	end
 
 	if leavesFirst then
 		local action = cb(node, parent, container, k)
 		if action == "stop"           then  return true   end
-		if action == "ignorechildren" then  error("Cannot ignore children when leavesFirst is set.")  end
-		if action                     then  error(F("Unknown traversal action '%s' returned from callback.", tostring(action)))  end
+		if action == "ignorechildren" then  errorf("Cannot ignore children when leavesFirst is set.")  end
+		if action                     then  errorf("Unknown traversal action '%s' returned from callback.", tostring(action))  end
+	end
+
+	return false
+end
+
+-- didBreak = traverseTreeReverse( astNode, [ leavesFirst=false, ] callback [, topNodeParent=nil, topNodeContainer=nil, topNodeKey=nil ] )
+-- action   = callback( astNode, parent, container, key )
+-- action   = "stop"|"ignorechildren"|nil  -- Returning nil (or nothing) means continue traversal.
+function traverseTreeReverse(node, leavesFirst, cb, parent, container, k) -- @Incomplete: Expose in API? Yeah.
+	assertArg("traverseTreeReverse", 1, node, "table")
+
+	if type(leavesFirst) == "boolean" then
+		assertArg("traverseTreeReverse", 3, cb, "function")
+	else
+		leavesFirst, cb, parent, container, k = false, leavesFirst, cb, parent, container
+		assertArg("traverseTreeReverse", 2, cb, "function")
+	end
+
+	if not leavesFirst then
+		local action = cb(node, parent, container, k)
+		if action == "stop"           then  return true   end
+		if action == "ignorechildren" then  return false  end
+		if action                     then  errorf("Unknown traversal action '%s' returned from callback.", tostring(action))  end
+	end
+
+	local nodeType = node.type
+
+	if nodeType == "identifier" or nodeType == "vararg" or nodeType == "literal" or nodeType == "break" then
+		-- void  No child nodes.
+
+	elseif nodeType == "table" then
+		for _, field in ipairsr(node.fields) do
+			if field.value and traverseTreeReverse(field.value, leavesFirst, cb, node, field, "value") then  return true  end
+			if field.key   and traverseTreeReverse(field.key,   leavesFirst, cb, node, field, "key")   then  return true  end
+		end
+
+	elseif nodeType == "lookup" then
+		if node.member and traverseTreeReverse(node.member, leavesFirst, cb, node, node, "member") then  return true  end
+		if node.object and traverseTreeReverse(node.object, leavesFirst, cb, node, node, "object") then  return true  end
+
+	elseif nodeType == "unary" then
+		if node.expression and traverseTreeReverse(node.expression, leavesFirst, cb, node, node, "expression") then  return true  end
+
+	elseif nodeType == "binary" then
+		if node.right and traverseTreeReverse(node.right, leavesFirst, cb, node, node, "right") then  return true  end
+		if node.left  and traverseTreeReverse(node.left,  leavesFirst, cb, node, node, "left")  then  return true  end
+
+	elseif nodeType == "call" then
+		for i, expr in ipairsr(node.arguments) do
+			if traverseTreeReverse(expr, leavesFirst, cb, node, node.arguments, i) then  return true  end
+		end
+		if node.callee and traverseTreeReverse(node.callee, leavesFirst, cb, node, node, "callee") then  return true  end
+
+	elseif nodeType == "function" then
+		if node.body   and traverseTreeReverse(node.body,   leavesFirst, cb, node, node, "body")   then  return true  end
+		if node.vararg and traverseTreeReverse(node.vararg, leavesFirst, cb, node, node, "vararg") then  return true  end
+		for i, name in ipairsr(node.parameters) do
+			if traverseTreeReverse(name, leavesFirst, cb, node, node.parameters, i) then  return true  end
+		end
+
+	elseif nodeType == "return" then
+		for i, expr in ipairsr(node.values) do
+			if traverseTreeReverse(expr, leavesFirst, cb, node, node.values, i) then  return true  end
+		end
+
+	elseif nodeType == "label" then
+		if node.name and traverseTreeReverse(node.name, leavesFirst, cb, node, node, "name") then  return true  end
+
+	elseif nodeType == "goto" then
+		if node.name and traverseTreeReverse(node.name, leavesFirst, cb, node, node, "name") then  return true  end
+
+	elseif nodeType == "block" then
+		for i, statement in ipairsr(node.statements) do
+			if traverseTreeReverse(statement, leavesFirst, cb, node, node.statements, i) then  return true  end
+		end
+
+	elseif nodeType == "declaration" then
+		for i, expr in ipairsr(node.values) do
+			if traverseTreeReverse(expr, leavesFirst, cb, node, node.values, i) then  return true  end
+		end
+		for i, ident in ipairsr(node.names) do
+			if traverseTreeReverse(ident, leavesFirst, cb, node, node.names, i) then  return true  end
+		end
+
+	elseif nodeType == "assignment" then
+		for i, expr in ipairsr(node.values) do
+			if traverseTreeReverse(expr, leavesFirst, cb, node, node.values, i) then  return true  end
+		end
+		for i, expr in ipairsr(node.targets) do
+			if traverseTreeReverse(expr, leavesFirst, cb, node, node.targets, i) then  return true  end
+		end
+
+	elseif nodeType == "if" then
+		if node.bodyFalse and traverseTreeReverse(node.bodyFalse, leavesFirst, cb, node, node, "bodyFalse") then  return true  end
+		if node.bodyTrue  and traverseTreeReverse(node.bodyTrue,  leavesFirst, cb, node, node, "bodyTrue")  then  return true  end
+		if node.condition and traverseTreeReverse(node.condition, leavesFirst, cb, node, node, "condition") then  return true  end
+
+	elseif nodeType == "while" then
+		if node.body      and traverseTreeReverse(node.body,      leavesFirst, cb, node, node, "body")      then  return true  end
+		if node.condition and traverseTreeReverse(node.condition, leavesFirst, cb, node, node, "condition") then  return true  end
+
+	elseif nodeType == "repeat" then
+		if node.condition and traverseTreeReverse(node.condition, leavesFirst, cb, node, node, "condition") then  return true  end
+		if node.body      and traverseTreeReverse(node.body,      leavesFirst, cb, node, node, "body")      then  return true  end
+
+	elseif nodeType == "for" then
+		if node.body and traverseTreeReverse(node.body, leavesFirst, cb, node, node, "body") then  return true  end
+		for i, expr in ipairsr(node.values) do
+			if traverseTreeReverse(expr, leavesFirst, cb, node, node.values, i) then  return true  end
+		end
+		for i, ident in ipairsr(node.names) do
+			if traverseTreeReverse(ident, leavesFirst, cb, node, node.names, i) then  return true  end
+		end
+
+	else
+		errorf("Invalid node type '%s'.", tostring(nodeType))
+	end
+
+	if leavesFirst then
+		local action = cb(node, parent, container, k)
+		if action == "stop"           then  return true   end
+		if action == "ignorechildren" then  errorf("Cannot ignore children when leavesFirst is set.")  end
+		if action                     then  errorf("Unknown traversal action '%s' returned from callback.", tostring(action))  end
 	end
 
 	return false
@@ -2299,8 +2404,17 @@ end
 
 
 
-function updateReferences(node)
-	local idents = {}
+function updateReferences(node, updateTopNodePosition)
+	local idents           = {}
+	local topNodeParent    = nil
+	local topNodeContainer = nil
+	local topNodeKey       = nil
+
+	if updateTopNodePosition == false then
+		parent    = node.parent
+		container = node.container
+		key       = node.key
+	end
 
 	traverseTree(node, function(node, parent, container, key)
 		node.parent    = parent
@@ -2308,9 +2422,9 @@ function updateReferences(node)
 		node.key       = key
 
 		if node.type == "identifier" then
-			table.insert(idents, node)
+			insert(idents, node)
 		end
-	end)
+	end, topNodeParent, topNodeContainer, topNodeKey)
 
 	for _, ident in ipairs(idents) do
 		local name   = ident.name
@@ -2400,17 +2514,13 @@ end
 local unaryFolders = {
 	["-"] = function(unary, expr)
 		if expr.type == "literal" and type(expr.value) == "number" then
-			local literal = AstLiteral(unary.token)
-			literal.value = -expr.value
-			return literal
+			return AstLiteral(dummyTokens, unary.token, -expr.value)
 		end
 		return nil
 	end,
 	["not"] = function(unary, expr)
 		if expr.type == "literal" then
-			local literal = AstLiteral(unary.token)
-			literal.value = not expr.value
-			return literal
+			return AstLiteral(dummyTokens, unary.token, not expr.value)
 		end
 		return nil
 	end,
@@ -2428,57 +2538,43 @@ local binaryFolders = {
 	-- @Robustness: The bitwise operations are probably not very robust.
 	["+"] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and type(l.value) == "number" then
-			local literal = AstLiteral(binary.token)
-			literal.value = (l.value + r.value)
-			return literal
+			return AstLiteral(dummyTokens, binary.token, l.value+r.value)
 		end
 		return nil
 	end,
 	["-"] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and type(l.value) == "number" then
-			local literal = AstLiteral(binary.token)
-			literal.value = (l.value - r.value)
-			return literal
+			return AstLiteral(dummyTokens, binary.token, l.value-r.value)
 		end
 		return nil
 	end,
 	["*"] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and type(l.value) == "number" then
-			local literal = AstLiteral(binary.token)
-			literal.value = (l.value * r.value)
-			return literal
+			return AstLiteral(dummyTokens, binary.token, l.value*r.value)
 		end
 		return nil
 	end,
 	["/"] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and type(l.value) == "number" then
-			local literal = AstLiteral(binary.token)
-			literal.value = (l.value / r.value)
-			return literal
+			return AstLiteral(dummyTokens, binary.token, l.value/r.value)
 		end
 		return nil
 	end,
 	["//"] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and type(l.value) == "number" then
-			local literal = AstLiteral(binary.token)
-			literal.value = floor(l.value / r.value)
-			return literal
+			return AstLiteral(dummyTokens, binary.token, floor(l.value/r.value))
 		end
 		return nil
 	end,
 	["^"] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and type(l.value) == "number" then
-			local literal = AstLiteral(binary.token)
-			literal.value = (l.value ^ r.value)
-			return literal
+			return AstLiteral(dummyTokens, binary.token, l.value^r.value)
 		end
 		return nil
 	end,
 	["%"] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and type(l.value) == "number" then
-			local literal = AstLiteral(binary.token)
-			literal.value = (l.value % r.value)
-			return literal
+			return AstLiteral(dummyTokens, binary.token, l.value%r.value)
 		end
 		return nil
 	end,
@@ -2504,9 +2600,7 @@ local binaryFolders = {
 				for _ = 1, -r.value do  n = n*2          end
 			end
 
-			local literal = AstLiteral(binary.token)
-			literal.value = n
-			return literal
+			return AstLiteral(dummyTokens, binary.token, n)
 		end
 		return nil
 	end,
@@ -2520,65 +2614,49 @@ local binaryFolders = {
 				for _ = 1, -r.value do  n = floor(n*.5)  end
 			end
 
-			local literal = AstLiteral(binary.token)
-			literal.value = n
-			return literal
+			return AstLiteral(dummyTokens, binary.token, n)
 		end
 		return nil
 	end,
 	[".."] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" and (type(l.value) == "number" or type(l.value) == "string") and (type(r.value) == "number" or type(r.value) == "string") then
-			local literal = AstLiteral(binary.token)
-			literal.value = (l.value .. r.value)
-			return literal
+			return AstLiteral(dummyTokens, binary.token, l.value..r.value)
 		end
 		return nil
 	end,
 	["<"] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and (type(l.value) == "number" or type(l.value) == "string") then
-			local literal = AstLiteral(binary.token)
-			literal.value = (l.value < r.value)
-			return literal
+			return AstLiteral(dummyTokens, binary.token, (l.value < r.value))
 		end
 		return nil
 	end,
 	["<="] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and (type(l.value) == "number" or type(l.value) == "string") then
-			local literal = AstLiteral(binary.token)
-			literal.value = (l.value <= r.value)
-			return literal
+			return AstLiteral(dummyTokens, binary.token, (l.value <= r.value))
 		end
 		return nil
 	end,
 	[">"] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and (type(l.value) == "number" or type(l.value) == "string") then
-			local literal = AstLiteral(binary.token)
-			literal.value = (l.value > r.value)
-			return literal
+			return AstLiteral(dummyTokens, binary.token, (l.value > r.value))
 		end
 		return nil
 	end,
 	[">="] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and (type(l.value) == "number" or type(l.value) == "string") then
-			local literal = AstLiteral(binary.token)
-			literal.value = (l.value >= r.value)
-			return literal
+			return AstLiteral(dummyTokens, binary.token, (l.value >= r.value))
 		end
 		return nil
 	end,
 	["=="] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" then
-			local literal = AstLiteral(binary.token)
-			literal.value = (l.value == r.value)
-			return literal
+			return AstLiteral(dummyTokens, binary.token, (l.value == r.value))
 		end
 		return nil
 	end,
 	["~="] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" then
-			local literal = AstLiteral(binary.token)
-			literal.value = (l.value ~= r.value)
-			return literal
+			return AstLiteral(dummyTokens, binary.token, (l.value ~= r.value))
 		end
 		return nil
 	end,
@@ -2592,23 +2670,37 @@ local binaryFolders = {
 	end,
 }
 
-local function maybeReplace(parent, container, key, replacement)
-	if not replacement then  return  end
+local function replace(node, replacement, parent, container, key)
+	container[key] = replacement
 
-	container[key]        = replacement
+	replacement.sourcePath   = node.sourcePath
+	replacement.sourceString = node.sourceString
+
+	replacement.token    = node.token
+	replacement.line     = node.line
+	replacement.position = node.position
+
 	replacement.parent    = parent
 	replacement.container = container
 	replacement.key       = key
 end
 
-local function foldTree(node) -- @Incomplete: Expose in API.
+local function foldNodes(node) -- @Incomplete: Expose in API.
 	traverseTree(node, true, function(node, parent, container, key)
 		if not parent then
 			-- void
+
 		elseif node.type == "unary" then
-			maybeReplace(parent, container, key, unaryFolders[node.operator](node, node.expression))
+			-- Note: We don't fold e.g. '- - -expr' into '-expr' because metamethods may
+			-- be called, and folding '- -expr' into 'expr' would remove what could be a
+			-- runtime error if 'expr' didn't contain a number.
+			local replacement = unaryFolders[node.operator](node, node.expression)
+			if replacement then  replace(node, replacement, parent, container, key)  end
+
 		elseif node.type == "binary" then
-			maybeReplace(parent, container, key, binaryFolders[node.operator](node, node.left, node.right))
+			-- @Incomplete: Fold 'expr - -n' into 'expr + n' etc.
+			local replacement = binaryFolders[node.operator](node, node.left, node.right)
+			if replacement then  replace(node, replacement, parent, container, key)  end
 		end
 	end)
 end
@@ -2642,13 +2734,13 @@ local function lookForDeclarationLikesAndRegisterWatchers(declLikeWatchers, iden
 		if statement.type == "declaration" or statement.type == "for" then
 			local declLike = statement
 
-			-- Note: Identifiers in declaration-likes also watch their own declaration-like. :DeclarationIdentifiersWatchTheirParent
+			-- Note: Identifiers in declaration-likes also watch their own declaration-like. (Is this good?) :DeclarationIdentifiersWatchTheirParent
 			declLikeWatchers[declLike] = declLikeWatchers[declLike] or {}
-			table.insert(declLikeWatchers[declLike], identInfo.ident)
+			insert(declLikeWatchers[declLike], identInfo.ident)
 
 			if declLike == currentDeclLike then  return true  end
 
-			-- table.insert(identInfo.visibleDeclLikes, declLike)
+			-- insert(identInfo.visibleDeclLikes, declLike)
 		end
 	end
 
@@ -2664,7 +2756,7 @@ local function getInformationAboutIdentifiers(node)
 			local ident = node
 
 			local identInfo = {ident=ident--[[, visibleDeclLikes={}]]}
-			table.insert(identInfos, identInfo)
+			insert(identInfos, identInfo)
 			identInfos[ident] = identInfo
 		end
 	end)
@@ -2702,7 +2794,7 @@ local function getInformationAboutIdentifiers(node)
 
 				-- :DeclarationIdentifiersWatchTheirParent
 				declLikeWatchers[declLike] = declLikeWatchers[declLike] or {}
-				table.insert(declLikeWatchers[declLike], identInfo.ident)
+				insert(declLikeWatchers[declLike], identInfo.ident)
 
 				if declLike == currentDeclLike then  break  end
 
@@ -2717,6 +2809,11 @@ local function getInformationAboutIdentifiers(node)
 			else
 				local declLike = statementOrInterest
 				assert(declLike == currentDeclLike)
+
+				-- :DeclarationIdentifiersWatchTheirParent
+				declLikeWatchers[declLike] = declLikeWatchers[declLike] or {}
+				insert(declLikeWatchers[declLike], identInfo.ident)
+
 				break
 			end
 		end
@@ -2727,15 +2824,305 @@ end
 
 
 
-local function optimizeTree(node) -- @Incomplete: Expose in API.
-	-- @Incomplete
+local MAY_JUMP_NEVER  = newSet{ "function", "label", "literal", "vararg" }
+local MAY_JUMP_ALWAYS = newSet{ "break", "call", "goto", "lookup", "return" }
+
+function mayNodeCauseJump(node, treeHasBeenFolded)
+	if MAY_JUMP_NEVER[node.type] then
+		return false
+
+	elseif MAY_JUMP_ALWAYS[node.type] then
+		return true
+
+	elseif node.type == "identifier" then
+		return (node.declaration == nil) -- Globals may invoke a metamethod.
+
+	elseif node.type == "binary" then
+		return --[[treeHasBeenFolded or]] mayNodeCauseJump(node.left, treeHasBeenFolded) or mayNodeCauseJump(node.right, treeHasBeenFolded)
+	elseif node.type == "unary" then
+		return --[[treeHasBeenFolded or]] mayNodeCauseJump(node.expression, treeHasBeenFolded)
+
+	elseif node.type == "block" then
+		return mayAnyNodeCauseJump(node.statements, treeHasBeenFolded)
+
+	elseif node.type == "if" then
+		return mayNodeCauseJump(node.condition, treeHasBeenFolded) or mayNodeCauseJump(node.bodyTrue, treeHasBeenFolded) or (node.bodyFalse ~= nil and mayNodeCauseJump(node.bodyFalse, treeHasBeenFolded))
+
+	elseif node.type == "for" then
+		return mayAnyNodeCauseJump(node.values, treeHasBeenFolded) or mayNodeCauseJump(node.body, treeHasBeenFolded)
+	elseif node.type == "repeat" or node.type == "while" then
+		return mayNodeCauseJump(node.condition, treeHasBeenFolded) or mayNodeCauseJump(node.body, treeHasBeenFolded)
+
+	elseif node.type == "declaration" then
+		return mayAnyNodeCauseJump(node.values, treeHasBeenFolded)
+	elseif node.type == "assignment" then
+		return mayAnyNodeCauseJump(node.targets, treeHasBeenFolded) or mayAnyNodeCauseJump(node.values, treeHasBeenFolded) -- Targets may be identifiers or lookups.
+
+	elseif node.type == "table" then
+		for i, field in ipairs(node.fields) do
+			if mayNodeCauseJump(field.key,   treeHasBeenFolded) then  return true  end
+			if mayNodeCauseJump(field.value, treeHasBeenFolded) then  return true  end
+		end
+		return false
+
+	else
+		errorf("Invalid/unhandled node type '%s'.", tostring(node.type))
+	end
+end
+
+function mayAnyNodeCauseJump(nodes, treeHasBeenFolded)
+	for _, node in ipairs(nodes) do
+		if mayNodeCauseJump(node, treeHasBeenFolded) then  return true  end
+	end
+	return false
 end
 
 
 
-local function getNamesFromDeclarationLike(declLike)
+local function hasFunction(theNode)
+	local _hasFunction = false
+
+	traverseTree(theNode, function(node)
+		if node.type == "function" then
+			_hasFunction = true
+			return "stop"
+		end
+	end)
+
+	return _hasFunction
+end
+
+local function isDeclaredIdentifierReferenced(declLikeWatchers, declLike, declIdent)
+	for _, watcherIdent in ipairs(declLikeWatchers[declLike]) do
+		if
+			watcherIdent.declaration == declLike
+			and watcherIdent.name == declIdent.name
+			and watcherIdent ~= declIdent
+		then
+			return true
+		end
+	end
+	return false
+end
+local function isIdentifierReferencedAfter(declLikeWatchers, declLike, ident, startSearchAtNode)
+	for _, watcherIdent in ipairs(declLikeWatchers[declLike]) do
+		if
+			watcherIdent.declaration == declLike
+			and watcherIdent.name == ident.name
+			and watcherIdent.id   >= startSearchAtNode.id -- Note: The IDs must be ordered.
+		then
+			return true
+		end
+	end
+	return false
+end
+
+local function isAnyDeclaredIdentifierReferenced(declLikeWatchers, declLike)
+	for _, watcherIdent in ipairs(declLikeWatchers[declLike] --[[or EMPTY_TABLE]]) do
+		if
+			watcherIdent.declaration == declLike
+			and watcherIdent.parent ~= declLike -- We look at the parent because :DeclarationIdentifiersWatchTheirParent.
+		then
+			return true
+		end
+	end
+	return false
+end
+local function isAnyIdentifierInAssignmentReferencedLater(declLikeWatchers, assignment)
+	for _, targetExpr in ipairs(assignment.targets) do
+		if targetExpr.type == "identifier" and targetExpr.declaration then
+			local targetIdent = targetExpr
+			local declLike    = targetIdent.declaration
+
+			-- @Incomplete: I think declLikeWatchers ought to include assignments too (where later watching identifiers should stop looking further, maybe).
+			for _, watcherIdent in ipairs(declLikeWatchers[declLike] --[[or EMPTY_TABLE]]) do
+				if
+					watcherIdent.declaration == declLike
+					and watcherIdent        ~= targetIdent
+					and watcherIdent.parent ~= declLike -- We look at the parent because :DeclarationIdentifiersWatchTheirParent.
+					-- and watcherIdent.id >= assignment.values[1].id -- Note: The IDs must be ordered.
+				then
+					return true
+				end
+			end
+		end
+	end
+	return false
+end
+
+local function unregisterWatchers(declLikeWatchers, theNode)
+	-- ioWrite("unregister ") ; printNode(theNode) -- DEBUG
+
+	traverseTree(theNode, true, function(node)
+		if node.type == "identifier" then
+			local currentIdent = node
+
+			for _, watcherIdents in pairs(declLikeWatchers) do -- @Speed
+				for i, watcherIdent in ipairs(watcherIdents) do
+					if watcherIdent == currentIdent then
+						remove(watcherIdents, i)
+						break
+					end
+				end--for watcherIdents
+			end--for declLikeWatchers
+
+		else
+			declLikeWatchers[node] = nil -- In case it's a declLike. This does nothing otherwise, which is OK.
+		end
+	end)
+end
+
+local function removeUselessNodes(theNode, treeHasBeenFolded) -- @Incomplete: Expose in API.
+	local _, declLikeWatchers = getInformationAboutIdentifiers(theNode)
+
+	traverseTreeReverse(theNode, true, function(node)
+		----------------------------------------------------------------
+
+		if node.type == "declaration" or node.type == "function" or node.type == "for" then
+			if node.type == "function" and node.vararg then
+				local func               = node
+				local varargIsReferenced = false
+
+				traverseTree(func.body, function(nodeInFuncBody)
+					if nodeInFuncBody.type == "vararg" then
+						varargIsReferenced = true
+						return "stop"
+					elseif nodeInFuncBody.type == "function" then
+						return "ignorechildren"
+					end
+				end)
+
+				if not varargIsReferenced then
+					func.vararg = nil
+				end
+			end
+
+			if not (node.type == "function" and node.vararg) then
+				local declLike  = node
+				local declNames = getNameArrayOfDeclarationLike(declLike)
+
+				for i = #declNames, 2, -1 do
+					local declIdent = declNames[i]
+					if isDeclaredIdentifierReferenced(declLikeWatchers, declLike, declIdent) then  break  end
+
+					unregisterWatchers(declLikeWatchers, declIdent)
+					declNames[i] = nil
+				end
+			end
+
+		----------------------------------------------------------------
+
+		elseif node.type == "assignment" then
+			local assignment = node
+			local targets    = assignment.targets
+
+			for i = #targets, 2, -1 do
+				local targetExpr = targets[i]
+				if targetExpr.type ~= "identifier" then  break  end
+
+				local targetIdent = targetExpr
+				local decl        = targetIdent.declaration
+
+				if not decl or isIdentifierReferencedAfter(declLikeWatchers, decl, targetIdent, assignment.values[1]) then
+					break
+				end
+
+				unregisterWatchers(declLikeWatchers, targetIdent)
+				targets[i] = nil
+			end
+
+		----------------------------------------------------------------
+
+		elseif node.type == "block" then
+			local block = node
+
+			for i = #block.statements, 1, -1 do
+				local statement = block.statements[i]
+
+				local mustKeep = (
+					mayNodeCauseJump(statement, treeHasBeenFolded) -- I feel like this is insufficient...
+					or hasFunction(statement) -- Should this be hasAssignmentWithFunctionValue(statement)? We should probably also check if anyone calls the assignment target that may hold the function, if the target is an identifier.
+					or statement.type == "declaration" and isAnyDeclaredIdentifierReferenced(declLikeWatchers, statement)
+					or statement.type == "assignment"  and isAnyIdentifierInAssignmentReferencedLater(declLikeWatchers, statement)
+				)
+
+				-- if statement.line == 1804 then  print("mustKeep", mustKeep) ; printTree(statement)  end -- DEBUG
+
+				if not mustKeep then
+					-- if statement.line == 1804 then  ioWrite(">>>>>>> ") ; printNode(theNode)  end -- DEBUG
+
+					unregisterWatchers(declLikeWatchers, statement)
+					remove(block.statements, i)
+
+				elseif statement.type == "declaration" then
+					local decl = statement
+
+					-- Replace 'local unused = func()' with just 'func()'. This is a unique case as call expressions can also be statements.
+					if
+						not decl.names[2]
+						and #decl.values == 1
+						and decl.values[1].type == "call"
+						and not isDeclaredIdentifierReferenced(declLikeWatchers, decl, decl.names[1])
+					then
+						unregisterWatchers(declLikeWatchers, decl.names[1])
+						declLikeWatchers[decl] = nil
+						block.statements[i]    = decl.values[1]
+					end
+
+				elseif statement.type == "assignment" then
+					local assignment  = statement
+					local targetExpr1 = assignment.targets[1]
+					local valueExpr1  = assignment.values[1]
+
+					-- Replace 'finalReference = func()' with just 'func()'. This is a unique case as call expressions can also be statements.
+					if
+						not assignment.targets[2]
+						and targetExpr1.type == "identifier"
+						and targetExpr1.declaration
+						and not assignment.values[2]
+						and valueExpr1.type == "call"
+						and not isIdentifierReferencedAfter(declLikeWatchers, targetExpr1.declaration, targetExpr1, valueExpr1)
+					then
+						unregisterWatchers(declLikeWatchers, targetExpr1)
+						block.statements[i] = valueExpr1
+					end
+
+				elseif statement.type == "block" then
+					local subBlock        = statement
+					local hasDeclarations = false
+
+					for _, subStatement in ipairs(subBlock.statements) do
+						if subStatement.type == "declaration" then
+							hasDeclarations = true
+							break
+						end
+					end
+
+					if not hasDeclarations then
+						-- Blocks without declarations don't need a scope.
+						remove(block.statements, i)
+
+						for subIndex, subStatement in ipairs(subBlock.statements) do
+							insert(block.statements, i+subIndex-1, subStatement)
+						end
+					end
+				end
+			end--for statements
+
+		----------------------------------------------------------------
+		end
+	end)
+
+	updateReferences(theNode, true) -- @Speed: Maybe it's better to update references during the traverseTree() call above.
+end
+
+
+
+function getNameArrayOfDeclarationLike(declLike)
 	return declLike.names or declLike.parameters
 end
+
+
 
 local generateName
 do
@@ -2769,8 +3156,10 @@ do
 end
 
 local function minify(node)
-	foldTree(node)
-	optimizeTree(node)
+	updateReferences(node, true)
+
+	foldNodes(node)
+	removeUselessNodes(node, true)
 
 	local identInfos, declLikeWatchers = getInformationAboutIdentifiers(node)
 
@@ -2786,7 +3175,7 @@ local function minify(node)
 			local oldNameToIdent               = {}
 			declLikes_oldNameToIdent[declLike] = oldNameToIdent
 
-			for _, ident in ipairs(getNamesFromDeclarationLike(declLike)) do
+			for _, ident in ipairs(getNameArrayOfDeclarationLike(declLike)) do
 				oldNameToIdent[ident.name] = ident
 			end
 		end
@@ -2796,7 +3185,7 @@ local function minify(node)
 	-- Make sure frequencies affect who gets shorter names first. @Incomplete
 	--
 	--[[
-	table.sort(identInfos, function(a, b)
+	sort(identInfos, function(a, b)
 		if #a.visibleDeclLikes ~= #b.visibleDeclLikes then
 			-- I feel this is kinda reversed - it should be how many can see you, not how many you can see. Does this matter? This sure is confusing!
 			return #a.visibleDeclLikes < #b.visibleDeclLikes
@@ -2828,11 +3217,11 @@ local function minify(node)
 					newName         = generateName(nameGeneration)
 					local collision = false
 
-					for _, watcherIdent in ipairs(declLikeWatchers[declLike] or EMPTY_TABLE) do
+					for _, watcherIdent in ipairs(declLikeWatchers[declLike] --[[or EMPTY_TABLE]]) do
 						local watcherDeclLike = watcherIdent.declaration
 
 						if watcherDeclLike then
-							for _, watcherDeclIdent in ipairs(getNamesFromDeclarationLike(watcherDeclLike)) do
+							for _, watcherDeclIdent in ipairs(getNameArrayOfDeclarationLike(watcherDeclLike)) do
 								if renamed[watcherDeclIdent] and watcherDeclIdent.name == newName then
 									collision = true
 									break
@@ -2889,12 +3278,12 @@ do
 	-- ensureSpaceIfNotPretty( buffer, pretty, lastOutput, value [, value2 ] )
 	local function ensureSpaceIfNotPretty(buffer, pretty, lastOutput, value, value2)
 		if not pretty and (lastOutput == value or lastOutput == value2) then
-			table.insert(buffer, " ")
+			insert(buffer, " ")
 		end
 	end
 
 	local function writeLua(buffer, lua, lastOutput)
-		table.insert(buffer, lua)
+		insert(buffer, lua)
 		return lastOutput
 	end
 
@@ -3120,29 +3509,33 @@ do
 				lastOutput = writeNumber(buffer, pretty, node.value, lastOutput)
 
 			elseif type(node.value) == "string" then
-				local s = node.value
+				local s            = node.value
+				local quote        = s:find('"', 1, true) and not s:find("'", 1, true) and "'" or '"'
+				local quoteEscaped = "\\"..quote
 
 				s = s:gsub("(.)()", function(c, nextPos)
 					-- Note: We assume the string is UTF-8, but nothing should
 					-- break if it isn't - we should still get valid Lua code.
 					local b = getByte(c)
-					if     c == "\a" then  return [[\a]]
-					elseif c == "\b" then  return [[\b]]
-					elseif c == "\f" then  return [[\f]]
-					elseif c == "\n" then  return [[\n]]
-					elseif c == "\r" then  return [[\r]]
-					elseif c == "\t" then  return [[\t]]
-					elseif c == "\v" then  return [[\v]]
-					elseif c == "\\" then  return [[\\]]
-					elseif c == "\"" then  return [[\"]]
-					elseif b == 127  then  return [[\127]]
-					elseif b <= 31   then
+					if     c == "\a"  then  return [[\a]]
+					elseif c == "\b"  then  return [[\b]]
+					elseif c == "\f"  then  return [[\f]]
+					elseif c == "\n"  then  return [[\n]]
+					elseif c == "\r"  then  return [[\r]]
+					elseif c == "\t"  then  return [[\t]]
+					elseif c == "\v"  then  return [[\v]]
+					elseif c == "\\"  then  return [[\\]]
+					elseif c == quote then  return quoteEscaped
+					elseif b == 127   then  return [[\127]]
+					elseif b <= 31    then
 						local nextByte = getByte(s, nextPos) or 0
 						return nextByte >= 48 and nextByte <= 57 and F([[\%03d]], b) or F([[\%d]], b)
 					end
 				end)
 
-				lastOutput = writeLua(buffer, F('"%s"', s), "")
+				lastOutput = writeLua(buffer, quote, "")
+				lastOutput = writeLua(buffer, s,     "")
+				lastOutput = writeLua(buffer, quote, "")
 
 			else
 				printfError("Error: Failed outputting value '%s'.", node.value)
@@ -3502,7 +3895,7 @@ do
 			ok = writeNode(buffer, pretty, 0, "", node, true)
 		end
 
-		return ok and table.concat(buffer) or nil
+		return ok and concat(buffer) or nil
 	end
 end
 
@@ -3518,20 +3911,18 @@ end
 
 
 
-do
-	local lastId = 0
-
-	function newId()
-		lastId = lastId+1
-		return lastId
-	end
-end
-
-
-
 function assertArg(funcName, argNum, v, expectedType)
 	if type(v) == expectedType then  return  end
-	error(F("bad argument #%d to '%s' (%s expected, got %s)", argNum, funcName, expectedType, type(v)), 3)
+	errorf(3, "bad argument #%d to '%s' (%s expected, got %s)", argNum, funcName, expectedType, type(v))
+end
+
+-- errorf( [ level=1, ] format, ... )
+function errorf(level, s, ...)
+	if type(level) == "number" then
+		error(F(s, ...), (level == 0 and 0 or (1+level)))
+	else
+		error(F(level, s, ...), 2)
+	end
 end
 
 
@@ -3541,6 +3932,19 @@ function formatNumber(n)
 		:gsub("(e[-+])0+(%d+)$", "%1%2") -- Remove unnecessary zeroes after 'e'.
 		:gsub("e%+",             "e"   ) -- Remove plus after 'e'.
 	)
+end
+
+
+
+local function iprev(t, i)
+	i       = i-1
+	local v = t[i]
+
+	if v ~= nil then  return i, v  end
+end
+
+function ipairsr(t)
+	return iprev, t, #t+1
 end
 
 
