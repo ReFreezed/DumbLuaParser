@@ -64,9 +64,9 @@
 		Create a new AST node. (Search for 'NodeCreation' for more info.)
 
 	traverseTree()
-		didBreak = parser.traverseTree( astNode, [ leavesFirst=false, ] callback [, topNodeParent=nil, topNodeContainer=nil, topNodeKey=nil ] )
-		action   = callback( astNode, parent, container, key )
-		action   = "stop"|"ignorechildren"|nil  -- Returning nil (or nothing) means continue traversal.
+		didStop = parser.traverseTree( astNode, [ leavesFirst=false, ] callback [, topNodeParent=nil, topNodeContainer=nil, topNodeKey=nil ] )
+		action  = callback( astNode, parent, container, key )
+		action  = "stop"|"ignorechildren"|nil  -- Returning nil (or nothing) means continue traversal.
 		Call a function on all nodes in an AST, going from astNode out to the leaf nodes (or from leaf nodes and inwards if leavesFirst is set).
 		container[key] is the position of the current node in the tree and can be used to replace the node.
 
@@ -193,12 +193,13 @@ local getNameArrayOfDeclarationLike
 local ipairsr
 local isToken, isTokenType, isTokenAnyValue
 local itemWith1
-local mayNodeCauseJump, mayAnyNodeCauseJump
+local mayNodeBeInvolvedInJump, mayAnyNodeBeInvolvedInJump
 local newTokenStream, dummyTokens
 local parse
 local printError, printfError, reportErrorInFile, reportErrorAtToken, reportErrorAtNode
 local printNode, printTree
 local printTokens
+local removeUnordered
 local tokenizeString, tokenizeFile
 local toLua
 local traverseTree, traverseTreeReverse
@@ -282,8 +283,8 @@ local function populateCommonNodeFields(tokens, tok, node)
 
 	-- These fields are set by updateReferences():
 	-- node.parent    = nil -- Refers to the node's parent in the tree.
-	-- node.container = nil -- Refers to the specific table that the node is in, which could be the parent or a member of the parent.
-	-- node.key       = nil -- Refers to the specific field in the container that the node is in, which is either a string or an integer.
+	-- node.container = nil -- Refers to the specific table that the node is in, which could be the parent itself or a field in the parent.
+	-- node.key       = nil -- Refers to the specific field in the container that the node is in (which is either a string or an integer).
 
 	return node
 end
@@ -2005,17 +2006,19 @@ do
 		local nodeType = node.type
 
 		ioWrite(nodeType)
+
 		if parser.printIds then  ioWrite("#", node.id)  end
 
-		-- if mayNodeCauseJump(node) then  ioWrite("[MAYJUMP]")  end -- DEBUG
+		-- if mayNodeBeInvolvedInJump(node) then  ioWrite("[MAYJUMP]")  end -- DEBUG
 
 		if nodeType == "identifier" then
-			ioWrite(" (", node.name)
+			ioWrite(" (", node.name, ")")
+
 			if node.declaration then
-				ioWrite(" local:", node.declaration.type)
+				ioWrite(" (decl=", node.declaration.type)
 				if parser.printIds then  ioWrite("#", node.declaration.id)  end
+				ioWrite(")")
 			end
-			ioWrite(")")
 
 		elseif nodeType == "vararg" then
 			if node.adjustToOne then  ioWrite(" (adjustToOne)")  end
@@ -2046,11 +2049,13 @@ do
 			ioWrite(" (", node.kind, ")")
 		end
 
+		if parser.printLocations then  ioWrite(" @ ", node.sourcePath, ":", node.line)  end
+
 		ioWrite("\n")
 	end
 
 	local function _printTree(node, indent, key)
-		for i = 1, indent do  ioWrite("    ")  end
+		for i = 1, indent do  ioWrite(parser.indentation)  end
 		indent = indent+1
 
 		if key ~= nil then
@@ -2064,8 +2069,8 @@ do
 
 		if nodeType == "table" then
 			for i, field in ipairs(node.fields) do
-				if field.key   then  _printTree(field.key,   indent, i..(field.generatedKey and "KEYGEN" or "KEY   "))  end
-				if field.value then  _printTree(field.value, indent, i..(                                   "VALUE "))  end
+				if field.key   then  _printTree(field.key,   indent, i..(field.generatedKey and "KEYGEN" or "KEY  "))  end
+				if field.value then  _printTree(field.value, indent, i..(                                   "VALUE"))  end
 				local a =  {1, 5, g=6}
 			end
 
@@ -2078,7 +2083,7 @@ do
 
 		elseif nodeType == "binary" then
 			if node.left  then  _printTree(node.left,  indent, nil)  end
-			ioWrite(repeatString("    ", indent), node.operator, "\n")
+			for i = 1, indent do  ioWrite(parser.indentation)  end ; ioWrite(node.operator, "\n")
 			if node.right then  _printTree(node.right, indent, nil)  end
 
 		elseif nodeType == "call" then
@@ -2156,9 +2161,9 @@ end
 
 
 
--- didBreak = traverseTree( astNode, [ leavesFirst=false, ] callback [, topNodeParent=nil, topNodeContainer=nil, topNodeKey=nil ] )
--- action   = callback( astNode, parent, container, key )
--- action   = "stop"|"ignorechildren"|nil  -- Returning nil (or nothing) means continue traversal.
+-- didStop = traverseTree( astNode, [ leavesFirst=false, ] callback [, topNodeParent=nil, topNodeContainer=nil, topNodeKey=nil ] )
+-- action  = callback( astNode, parent, container, key )
+-- action  = "stop"|"ignorechildren"|nil  -- Returning nil (or nothing) means continue traversal.
 function traverseTree(node, leavesFirst, cb, parent, container, k)
 	assertArg("traverseTree", 1, node, "table")
 
@@ -2279,9 +2284,9 @@ function traverseTree(node, leavesFirst, cb, parent, container, k)
 	return false
 end
 
--- didBreak = traverseTreeReverse( astNode, [ leavesFirst=false, ] callback [, topNodeParent=nil, topNodeContainer=nil, topNodeKey=nil ] )
--- action   = callback( astNode, parent, container, key )
--- action   = "stop"|"ignorechildren"|nil  -- Returning nil (or nothing) means continue traversal.
+-- didStop = traverseTreeReverse( astNode, [ leavesFirst=false, ] callback [, topNodeParent=nil, topNodeContainer=nil, topNodeKey=nil ] )
+-- action  = callback( astNode, parent, container, key )
+-- action  = "stop"|"ignorechildren"|nil  -- Returning nil (or nothing) means continue traversal.
 function traverseTreeReverse(node, leavesFirst, cb, parent, container, k) -- @Incomplete: Expose in API? Yeah.
 	assertArg("traverseTreeReverse", 1, node, "table")
 
@@ -2404,8 +2409,69 @@ end
 
 
 
+-- decl|func|forLoop|nil = findDeclaration(ident)
+local function findDeclaration(ident)
+	local name   = ident.name
+	local parent = ident
+
+	while true do
+		local lastChild = parent
+		parent          = parent.parent
+
+		if not parent then  return nil  end
+
+		if parent.type == "declaration" then
+			local decl = parent
+			if lastChild.container == decl.names and itemWith1(decl.names, "name", name) then
+				return decl
+			end
+
+		elseif parent.type == "function" then
+			local func = parent
+			if itemWith1(func.parameters, "name", name) then
+				return func
+			end
+
+		elseif parent.type == "for" then
+			local forLoop = parent
+			if itemWith1(forLoop.names, "name", name) then
+				return forLoop
+			end
+
+		elseif parent.type == "block" then
+			local block = parent
+
+			for i = lastChild.key-1, 1, -1 do
+				local statement = block.statements[i]
+
+				if statement.type == "declaration" then
+					local decl = statement
+					if itemWith1(decl.names, "name", name) then
+						return decl
+					end
+				end
+			end
+
+		elseif parent.type == "repeat" then
+			local repeatLoop = parent
+
+			if lastChild == repeatLoop.condition then
+				local block = repeatLoop.body
+
+				for i = #block.statements, 1, -1 do
+					local statement = block.statements[i]
+
+					if statement.type == "declaration" then
+						local decl = statement
+						if itemWith1(decl.names, "name", name) then  return decl  end
+					end
+				end
+			end
+		end
+	end
+end
+
 function updateReferences(node, updateTopNodePosition)
-	local idents           = {}
 	local topNodeParent    = nil
 	local topNodeContainer = nil
 	local topNodeKey       = nil
@@ -2422,91 +2488,19 @@ function updateReferences(node, updateTopNodePosition)
 		node.key       = key
 
 		if node.type == "identifier" then
-			insert(idents, node)
+			local ident       = node
+			ident.declaration = findDeclaration(ident) -- We can call this because all parents and previous nodes already have their references updated at this point.
+
+			--[[ DEBUG
+			print(F(
+				"%-10s  %-12s  %s",
+				ident.name,
+				(        ident.declaration and ident.declaration.type or ""),
+				tostring(ident.declaration and ident.declaration.id   or "")
+			))
+			--]]
 		end
 	end, topNodeParent, topNodeContainer, topNodeKey)
-
-	for _, ident in ipairs(idents) do
-		local name   = ident.name
-		local parent = ident
-		local lastChild
-
-		while true do
-			lastChild = parent
-			parent    = parent.parent
-
-			if not parent then  break  end
-
-			if parent.type == "declaration" then
-				local decl = parent
-				if lastChild.container == decl.names and itemWith1(decl.names, "name", name) then
-					ident.declaration = decl
-					break
-				end
-
-			elseif parent.type == "function" then
-				local func = parent
-				if itemWith1(func.parameters, "name", name) then
-					ident.declaration = func
-					break
-				end
-
-			elseif parent.type == "for" then
-				local forLoop = parent
-				if itemWith1(forLoop.names, "name", name) then
-					ident.declaration = forLoop
-					break
-				end
-
-			elseif parent.type == "block" then
-				local block = parent
-
-				for i = lastChild.key-1, 1, -1 do
-					local statement = block.statements[i]
-
-					if statement.type == "declaration" then
-						local decl = statement
-						if itemWith1(decl.names, "name", name) then
-							ident.declaration = decl
-							break
-						end
-					end
-				end
-
-				if ident.declaration then  break  end
-
-			elseif parent.type == "repeat" then
-				local repeatLoop = parent
-
-				if lastChild == repeatLoop.condition then
-					local block = repeatLoop.body
-
-					for i = #block.statements, 1, -1 do
-						local statement = block.statements[i]
-
-						if statement.type == "declaration" then
-							local decl = statement
-							if itemWith1(decl.names, "name", name) then
-								ident.declaration = decl
-								break
-							end
-						end
-					end
-
-					if ident.declaration then  break  end
-				end
-			end
-		end--while true
-
-		--[[ DEBUG
-		print(F(
-			"%-10s  %-12s  %s",
-			name,
-			(ident.declaration and ident.declaration.type or ""),
-			tostring(ident.declaration and ident.declaration.id or "")
-		))
-		--]]
-	end--for idents
 end
 
 
@@ -2747,121 +2741,134 @@ local function lookForDeclarationLikesAndRegisterWatchers(declLikeWatchers, iden
 	return false
 end
 
-local function getInformationAboutIdentifiers(node)
-	-- Collect identifiers.
-	local identInfos = {--[[ [ident1]=identInfo1, identInfo1, ... ]]} -- identInfo = {ident=ident, visibleDeclLikes=declLikes}
-
-	traverseTree(node, function(node, parent, container, key)
-		if node.type == "identifier" then
-			local ident = node
-
-			local identInfo = {ident=ident--[[, visibleDeclLikes={}]]}
-			insert(identInfos, identInfo)
-			identInfos[ident] = identInfo
-		end
-	end)
-
-	-- Determine visible declarations for each identifier.
+local function getInformationAboutIdentifiersAndUpdateMostReferences(node)
+	local identInfos       = {--[[ [ident1]=identInfo1, identInfo1, ... ]]} -- identInfo = {ident=ident, visibleDeclLikes=declLikes}
 	local declLikeWatchers = {--[[ [declLike1]={ident1,...}, ... ]]}
 
-	for _, identInfo in ipairs(identInfos) do
-		local currentIdent    = identInfo.ident
-		local currentDeclLike = currentIdent.declaration
-		local block           = currentIdent -- Start node for while loop.
+	traverseTree(node, function(node, parent, container, key)
+		node.parent    = parent
+		node.container = container
+		node.key       = key
 
-		while true do
-			local statementOrInterest
-			statementOrInterest, block = findParentStatementAndBlockOrExpressionOfInterest(block, currentDeclLike)
+		if node.type == "identifier" then
+			local currentIdent       = node
+			local currentDeclLike    = findDeclaration(currentIdent) -- We can call this because all parents and previous nodes already have their references updated at this point.
+			currentIdent.declaration = currentDeclLike
 
-			if not statementOrInterest then
-				assert(currentDeclLike == nil)
-				break
-			end
+			local identType = (
+				(parent and (
+					(parent.type == "declaration" and container == parent.names     ) or
+					(parent.type == "assignment"  and container == parent.targets   ) or
+					(parent.type == "function"    and container == parent.parameters) or
+					(parent.type == "for"         and container == parent.names     )
+				))
+				and "lvalue"
+				or  "rvalue"
+			)
 
-			if block then
-				local statement = statementOrInterest
+			-- if currentDeclLike then  print(F("%s:%d: %s '%s'", currentIdent.sourcePath, currentIdent.line, identType, currentIdent.name))  end -- DEBUG
 
-				assert(type(statement.key) == "number")
-				assert(statement.container == block.statements)
+			local identInfo = {ident=currentIdent, type=identType--[[, visibleDeclLikes={}]]}
+			insert(identInfos, identInfo)
+			identInfos[currentIdent] = identInfo
 
-				if lookForDeclarationLikesAndRegisterWatchers(declLikeWatchers, identInfo, block, statement.key-1) then
+			-- Determine visible declarations for the identifier.
+			local block = currentIdent -- Start node for while loop.
+
+			while true do
+				local statementOrInterest
+				statementOrInterest, block = findParentStatementAndBlockOrExpressionOfInterest(block, currentDeclLike)
+
+				if not statementOrInterest then
+					assert(not currentDeclLike)
 					break
 				end
 
-			elseif statementOrInterest.type == "function" or statementOrInterest.type == "for" then
-				local declLike = statementOrInterest
-				block          = declLike -- Start node for while loop.
+				if block then
+					local statement = statementOrInterest
 
-				-- :DeclarationIdentifiersWatchTheirParent
-				declLikeWatchers[declLike] = declLikeWatchers[declLike] or {}
-				insert(declLikeWatchers[declLike], identInfo.ident)
+					assert(type(statement.key) == "number")
+					assert(statement.container == block.statements)
 
-				if declLike == currentDeclLike then  break  end
+					if lookForDeclarationLikesAndRegisterWatchers(declLikeWatchers, identInfo, block, statement.key-1) then
+						break
+					end
 
-			elseif statementOrInterest.type == "repeat" then
-				local repeatLoop = statementOrInterest
-				block            = repeatLoop.body
+				elseif statementOrInterest.type == "function" or statementOrInterest.type == "for" then
+					local declLike = statementOrInterest
+					block          = declLike -- Start node for while loop.
 
-				if lookForDeclarationLikesAndRegisterWatchers(declLikeWatchers, identInfo, block, #block.statements) then
+					-- :DeclarationIdentifiersWatchTheirParent
+					declLikeWatchers[declLike] = declLikeWatchers[declLike] or {}
+					insert(declLikeWatchers[declLike], currentIdent)
+
+					if declLike == currentDeclLike then  break  end
+
+				elseif statementOrInterest.type == "repeat" then
+					local repeatLoop = statementOrInterest
+					block            = repeatLoop.body
+
+					if lookForDeclarationLikesAndRegisterWatchers(declLikeWatchers, identInfo, block, #block.statements) then
+						break
+					end
+
+				else
+					local declLike = statementOrInterest
+					assert(declLike == currentDeclLike)
+
+					-- :DeclarationIdentifiersWatchTheirParent
+					declLikeWatchers[declLike] = declLikeWatchers[declLike] or {}
+					insert(declLikeWatchers[declLike], currentIdent)
+
 					break
 				end
-
-			else
-				local declLike = statementOrInterest
-				assert(declLike == currentDeclLike)
-
-				-- :DeclarationIdentifiersWatchTheirParent
-				declLikeWatchers[declLike] = declLikeWatchers[declLike] or {}
-				insert(declLikeWatchers[declLike], identInfo.ident)
-
-				break
 			end
 		end
-	end
+	end, node.parent, node.container, node.key)
 
 	return identInfos, declLikeWatchers
 end
 
 
 
-local MAY_JUMP_NEVER  = newSet{ "function", "label", "literal", "vararg" }
-local MAY_JUMP_ALWAYS = newSet{ "break", "call", "goto", "lookup", "return" }
+local INVOLVED_NEVER  = newSet{ "function", "literal", "vararg" }
+local INVOLVED_ALWAYS = newSet{ "break", "call", "goto", "label", "lookup", "return" }
 
-function mayNodeCauseJump(node, treeHasBeenFolded)
-	if MAY_JUMP_NEVER[node.type] then
+function mayNodeBeInvolvedInJump(node)
+	if INVOLVED_NEVER[node.type] then
 		return false
 
-	elseif MAY_JUMP_ALWAYS[node.type] then
+	elseif INVOLVED_ALWAYS[node.type] then
 		return true
 
 	elseif node.type == "identifier" then
 		return (node.declaration == nil) -- Globals may invoke a metamethod.
 
 	elseif node.type == "binary" then
-		return --[[treeHasBeenFolded or]] mayNodeCauseJump(node.left, treeHasBeenFolded) or mayNodeCauseJump(node.right, treeHasBeenFolded)
+		return mayNodeBeInvolvedInJump(node.left) or mayNodeBeInvolvedInJump(node.right)
 	elseif node.type == "unary" then
-		return --[[treeHasBeenFolded or]] mayNodeCauseJump(node.expression, treeHasBeenFolded)
+		return mayNodeBeInvolvedInJump(node.expression)
 
 	elseif node.type == "block" then
-		return mayAnyNodeCauseJump(node.statements, treeHasBeenFolded)
+		return mayAnyNodeBeInvolvedInJump(node.statements)
 
 	elseif node.type == "if" then
-		return mayNodeCauseJump(node.condition, treeHasBeenFolded) or mayNodeCauseJump(node.bodyTrue, treeHasBeenFolded) or (node.bodyFalse ~= nil and mayNodeCauseJump(node.bodyFalse, treeHasBeenFolded))
+		return mayNodeBeInvolvedInJump(node.condition) or mayNodeBeInvolvedInJump(node.bodyTrue) or (node.bodyFalse ~= nil and mayNodeBeInvolvedInJump(node.bodyFalse))
 
 	elseif node.type == "for" then
-		return mayAnyNodeCauseJump(node.values, treeHasBeenFolded) or mayNodeCauseJump(node.body, treeHasBeenFolded)
+		return mayAnyNodeBeInvolvedInJump(node.values) or mayNodeBeInvolvedInJump(node.body)
 	elseif node.type == "repeat" or node.type == "while" then
-		return mayNodeCauseJump(node.condition, treeHasBeenFolded) or mayNodeCauseJump(node.body, treeHasBeenFolded)
+		return mayNodeBeInvolvedInJump(node.condition) or mayNodeBeInvolvedInJump(node.body)
 
 	elseif node.type == "declaration" then
-		return mayAnyNodeCauseJump(node.values, treeHasBeenFolded)
+		return mayAnyNodeBeInvolvedInJump(node.values)
 	elseif node.type == "assignment" then
-		return mayAnyNodeCauseJump(node.targets, treeHasBeenFolded) or mayAnyNodeCauseJump(node.values, treeHasBeenFolded) -- Targets may be identifiers or lookups.
+		return mayAnyNodeBeInvolvedInJump(node.targets) or mayAnyNodeBeInvolvedInJump(node.values) -- Targets may be identifiers or lookups.
 
 	elseif node.type == "table" then
 		for i, field in ipairs(node.fields) do
-			if mayNodeCauseJump(field.key,   treeHasBeenFolded) then  return true  end
-			if mayNodeCauseJump(field.value, treeHasBeenFolded) then  return true  end
+			if mayNodeBeInvolvedInJump(field.key)   then  return true  end
+			if mayNodeBeInvolvedInJump(field.value) then  return true  end
 		end
 		return false
 
@@ -2870,26 +2877,19 @@ function mayNodeCauseJump(node, treeHasBeenFolded)
 	end
 end
 
-function mayAnyNodeCauseJump(nodes, treeHasBeenFolded)
+function mayAnyNodeBeInvolvedInJump(nodes)
 	for _, node in ipairs(nodes) do
-		if mayNodeCauseJump(node, treeHasBeenFolded) then  return true  end
+		if mayNodeBeInvolvedInJump(node) then  return true  end
 	end
 	return false
 end
 
 
 
-local function hasFunction(theNode)
-	local _hasFunction = false
-
-	traverseTree(theNode, function(node)
-		if node.type == "function" then
-			_hasFunction = true
-			return "stop"
-		end
-	end)
-
-	return _hasFunction
+local function hasNodeType(theNode, nodeType)
+	return (traverseTree(theNode, function(node)
+		if node.type == nodeType then  return "stop"  end
+	end))
 end
 
 local function isDeclaredIdentifierReferenced(declLikeWatchers, declLike, declIdent)
@@ -2904,20 +2904,20 @@ local function isDeclaredIdentifierReferenced(declLikeWatchers, declLike, declId
 	end
 	return false
 end
-local function isIdentifierReferencedAfter(declLikeWatchers, declLike, ident, startSearchAtNode)
-	for _, watcherIdent in ipairs(declLikeWatchers[declLike]) do
-		if
-			watcherIdent.declaration == declLike
-			and watcherIdent.name == ident.name
-			and watcherIdent.id   >= startSearchAtNode.id -- Note: The IDs must be ordered.
-		then
+local function isDeclaredIdentifierLookedUp(identInfos, declLikeWatchers, ident)
+	local decl = ident.declaration
+	if not decl then  return false  end -- We don't care about globals.
+
+	for _, identInfo in ipairs(identInfos) do -- @Speed: Use declLikeWatchers.
+		if identInfo.ident.declaration == decl and identInfo.type == "rvalue" then
 			return true
 		end
 	end
+
 	return false
 end
 
-local function isAnyDeclaredIdentifierReferenced(declLikeWatchers, declLike)
+local function isAnyDeclaredIdentifierReferenced(identInfos, declLikeWatchers, declLike)
 	for _, watcherIdent in ipairs(declLikeWatchers[declLike] --[[or EMPTY_TABLE]]) do
 		if
 			watcherIdent.declaration == declLike
@@ -2928,43 +2928,42 @@ local function isAnyDeclaredIdentifierReferenced(declLikeWatchers, declLike)
 	end
 	return false
 end
-local function isAnyIdentifierInAssignmentReferencedLater(declLikeWatchers, assignment)
-	for _, targetExpr in ipairs(assignment.targets) do
-		if targetExpr.type == "identifier" and targetExpr.declaration then
-			local targetIdent = targetExpr
-			local declLike    = targetIdent.declaration
 
-			-- @Incomplete: I think declLikeWatchers ought to include assignments too (where later watching identifiers should stop looking further, maybe).
-			for _, watcherIdent in ipairs(declLikeWatchers[declLike] --[[or EMPTY_TABLE]]) do
-				if
-					watcherIdent.declaration == declLike
-					and watcherIdent        ~= targetIdent
-					and watcherIdent.parent ~= declLike -- We look at the parent because :DeclarationIdentifiersWatchTheirParent.
-					-- and watcherIdent.id >= assignment.values[1].id -- Note: The IDs must be ordered.
-				then
-					return true
-				end
-			end
+local function isAssignmentSignificant(identInfos, declLikeWatchers, assignment)
+	if hasNodeType(assignment, "function") then  return true  end -- This isn't smart enough.
+
+	for _, targetExpr in ipairs(assignment.targets) do
+		if not (targetExpr.type == "identifier" and targetExpr.declaration and not isDeclaredIdentifierLookedUp(identInfos, declLikeWatchers, targetExpr)) then
+			return true
 		end
 	end
+
 	return false
 end
 
-local function unregisterWatchers(declLikeWatchers, theNode)
+local function unregisterWatchers(identInfos, declLikeWatchers, theNode)
 	-- ioWrite("unregister ") ; printNode(theNode) -- DEBUG
 
-	traverseTree(theNode, true, function(node)
+	traverseTree(theNode, true, function(node) -- @Speed
 		if node.type == "identifier" then
 			local currentIdent = node
 
 			for _, watcherIdents in pairs(declLikeWatchers) do -- @Speed
 				for i, watcherIdent in ipairs(watcherIdents) do
 					if watcherIdent == currentIdent then
-						remove(watcherIdents, i)
+						removeUnordered(watcherIdents, i)
 						break
 					end
-				end--for watcherIdents
-			end--for declLikeWatchers
+				end
+			end
+
+			for i, identInfo in ipairs(identInfos) do
+				if identInfo.ident == currentIdent then
+					removeUnordered(identInfos, i)
+					break
+				end
+			end
+			identInfos[currentIdent] = nil
 
 		else
 			declLikeWatchers[node] = nil -- In case it's a declLike. This does nothing otherwise, which is OK.
@@ -2972,8 +2971,9 @@ local function unregisterWatchers(declLikeWatchers, theNode)
 	end)
 end
 
-local function removeUselessNodes(theNode, treeHasBeenFolded) -- @Incomplete: Expose in API.
-	local _, declLikeWatchers = getInformationAboutIdentifiers(theNode)
+-- Note: References need to be updated after calling this!
+local function removeUselessNodes(theNode) -- @Incomplete: Expose in API.
+	local identInfos, declLikeWatchers = getInformationAboutIdentifiersAndUpdateMostReferences(theNode)
 
 	traverseTreeReverse(theNode, true, function(node)
 		----------------------------------------------------------------
@@ -3005,7 +3005,7 @@ local function removeUselessNodes(theNode, treeHasBeenFolded) -- @Incomplete: Ex
 					local declIdent = declNames[i]
 					if isDeclaredIdentifierReferenced(declLikeWatchers, declLike, declIdent) then  break  end
 
-					unregisterWatchers(declLikeWatchers, declIdent)
+					unregisterWatchers(identInfos, declLikeWatchers, declIdent)
 					declNames[i] = nil
 				end
 			end
@@ -3021,13 +3021,11 @@ local function removeUselessNodes(theNode, treeHasBeenFolded) -- @Incomplete: Ex
 				if targetExpr.type ~= "identifier" then  break  end
 
 				local targetIdent = targetExpr
-				local decl        = targetIdent.declaration
-
-				if not decl or isIdentifierReferencedAfter(declLikeWatchers, decl, targetIdent, assignment.values[1]) then
+				if not targetIdent.declaration or isDeclaredIdentifierLookedUp(identInfos, declLikeWatchers, targetIdent) then
 					break
 				end
 
-				unregisterWatchers(declLikeWatchers, targetIdent)
+				unregisterWatchers(identInfos, declLikeWatchers, targetIdent)
 				targets[i] = nil
 			end
 
@@ -3040,10 +3038,10 @@ local function removeUselessNodes(theNode, treeHasBeenFolded) -- @Incomplete: Ex
 				local statement = block.statements[i]
 
 				local mustKeep = (
-					mayNodeCauseJump(statement, treeHasBeenFolded) -- I feel like this is insufficient...
-					or hasFunction(statement) -- Should this be hasAssignmentWithFunctionValue(statement)? We should probably also check if anyone calls the assignment target that may hold the function, if the target is an identifier.
-					or statement.type == "declaration" and isAnyDeclaredIdentifierReferenced(declLikeWatchers, statement)
-					or statement.type == "assignment"  and isAnyIdentifierInAssignmentReferencedLater(declLikeWatchers, statement)
+					mayNodeBeInvolvedInJump(statement) -- I feel like this is insufficient...
+					or hasNodeType(statement, "function") -- This is overkill, but we currently need it, otherwise too much is removed. We need to propagate upwards to some extent what's significant.
+					or statement.type == "declaration" and (isAnyDeclaredIdentifierReferenced(identInfos, declLikeWatchers, statement) or hasNodeType(statement, "function")) -- @Incomplete: Unsure about the hasNodeType(). Look at assignments!
+					or statement.type == "assignment"  and isAssignmentSignificant(identInfos, declLikeWatchers, statement)
 				)
 
 				-- if statement.line == 1804 then  print("mustKeep", mustKeep) ; printTree(statement)  end -- DEBUG
@@ -3051,7 +3049,7 @@ local function removeUselessNodes(theNode, treeHasBeenFolded) -- @Incomplete: Ex
 				if not mustKeep then
 					-- if statement.line == 1804 then  ioWrite(">>>>>>> ") ; printNode(theNode)  end -- DEBUG
 
-					unregisterWatchers(declLikeWatchers, statement)
+					unregisterWatchers(identInfos, declLikeWatchers, statement)
 					remove(block.statements, i)
 
 				elseif statement.type == "declaration" then
@@ -3064,7 +3062,7 @@ local function removeUselessNodes(theNode, treeHasBeenFolded) -- @Incomplete: Ex
 						and decl.values[1].type == "call"
 						and not isDeclaredIdentifierReferenced(declLikeWatchers, decl, decl.names[1])
 					then
-						unregisterWatchers(declLikeWatchers, decl.names[1])
+						unregisterWatchers(identInfos, declLikeWatchers, decl.names[1])
 						declLikeWatchers[decl] = nil
 						block.statements[i]    = decl.values[1]
 					end
@@ -3081,9 +3079,9 @@ local function removeUselessNodes(theNode, treeHasBeenFolded) -- @Incomplete: Ex
 						and targetExpr1.declaration
 						and not assignment.values[2]
 						and valueExpr1.type == "call"
-						and not isIdentifierReferencedAfter(declLikeWatchers, targetExpr1.declaration, targetExpr1, valueExpr1)
+						and not isDeclaredIdentifierLookedUp(identInfos, declLikeWatchers, targetExpr1)
 					then
-						unregisterWatchers(declLikeWatchers, targetExpr1)
+						unregisterWatchers(identInfos, declLikeWatchers, targetExpr1)
 						block.statements[i] = valueExpr1
 					end
 
@@ -3112,8 +3110,6 @@ local function removeUselessNodes(theNode, treeHasBeenFolded) -- @Incomplete: Ex
 		----------------------------------------------------------------
 		end
 	end)
-
-	updateReferences(theNode, true) -- @Speed: Maybe it's better to update references during the traverseTree() call above.
 end
 
 
@@ -3156,12 +3152,10 @@ do
 end
 
 local function minify(node)
-	updateReferences(node, true)
-
 	foldNodes(node)
-	removeUselessNodes(node, true)
+	removeUselessNodes(node)
 
-	local identInfos, declLikeWatchers = getInformationAboutIdentifiers(node)
+	local identInfos, declLikeWatchers = getInformationAboutIdentifiersAndUpdateMostReferences(node)
 
 	--
 	-- Remember old declaration info before we start modifying things.
@@ -3253,15 +3247,20 @@ end
 
 
 function printTokens(tokens)
-	local tokTypes  = tokens.type
-	local tokValues = tokens.value
+	local printLocs  = parser.printLocations
+	local sourcePath = tokens.sourcePath
+	local tokLine    = tokens.lineStart
+	local tokTypes   = tokens.type
+	local tokValues  = tokens.value
 
 	for tok = 1, tokens.n do
 		local v = tostring(tokValues[tok])
 		if #v > 200 then  v = getSubstring(v, 1, 200-3).."..."  end
 
 		v = gsub(v, "\n", "\\n")
-		print(F("%d. %-11s '%s'", tok, tokTypes[tok], v))
+
+		if printLocs then  ioWrite(sourcePath, ":", tokLine[tok], ": ")  end
+		ioWrite(tok, ". ", F("%-11s", tokTypes[tok]), " '", v, "'\n")
 	end
 end
 
@@ -3949,6 +3948,15 @@ end
 
 
 
+function removeUnordered(t, i)
+	local len = #t
+	if i > len or i < 1 then  return  end
+
+	t[len], t[i] = nil, t[len]
+end
+
+
+
 parser = {
 	-- Constants.
 	VERSION          = PARSER_VERSION,
@@ -3973,7 +3981,9 @@ parser = {
 	printTree        = printTree,
 
 	-- Settings.
-	printIds = false, -- @Undocumented
+	printIds         = false,  -- @Undocumented
+	printLocations   = false,  -- @Undocumented
+	indentation      = "    ", -- @Undocumented
 }
 
 return parser

@@ -1,13 +1,15 @@
 -- Parsing tests.
-local PRETTY    = 1==1
-local PRINT_IDS = 1==1
+local PRETTY          = 1==1
+local PRINT_IDS       = 1==1
+local PRINT_LOCATIONS = 1==1
 
 io.stdout:setvbuf("no")
 io.stderr:setvbuf("no")
 
-local loadLuaString = loadstring or load
-local parser        = require"dumbParser"
-parser.printIds     = PRINT_IDS
+local loadLuaString   = loadstring or load
+local parser          = require"dumbParser"
+parser.printIds       = PRINT_IDS
+parser.printLocations = PRINT_LOCATIONS
 
 do
 	local path = "test.lua"
@@ -18,7 +20,9 @@ do
 	local tokens = assert(parser.tokenizeFile(path))
 	local ast    = assert(parser.parse(tokens))
 
+	-- parser.printTokens(tokens)
 	-- parser.printTree(ast)
+	-- error("DEBUG")
 
 	--[[
 	parser.traverseTree(ast, function(node, parent, container, k)
