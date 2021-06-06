@@ -180,6 +180,7 @@ local F             = string.format
 local find          = string.find
 local getByte       = string.byte
 local getSubstring  = string.sub
+local gmatch        = string.gmatch
 local gsub          = string.gsub
 local match         = string.match
 local repeatString  = string.rep
@@ -270,6 +271,10 @@ local NUM_DEC_FRAC_EXP = gsub("^(        %d*          %.%d+           [Ee][-+]?%
 local NUM_DEC_FRAC     = gsub("^(        %d*          %.%d+                                  )", " +", "")
 local NUM_DEC_EXP      = gsub("^(        %d+          %.?             [Ee][-+]?%d+           )", " +", "")
 local NUM_DEC          = gsub("^(        %d+          %.?                                    )", " +", "")
+
+local INT_SIZE = #F("%x", -1) * 4 -- This should generally be 64 for Lua 5.3+ and 32 for earlier.
+local MAX_INT  = math.maxinteger or tonumber(F("%x", -1):gsub("f", "7", 1), 16)
+local MIN_INT  = math.mininteger or -MAX_INT-1
 
 local EMPTY_TABLE = {}
 
@@ -2515,6 +2520,46 @@ end
 
 
 
+local PATTERN_INT_TO_HEX = F("%%0%dx", INT_SIZE/4)
+
+local HEX_DIGIT_TO_BITS = {
+	["0"]={0,0,0,0}, ["1"]={0,0,0,1}, ["2"]={0,0,1,0}, ["3"]={0,0,1,1}, ["4"]={0,1,0,0}, ["5"]={0,1,0,1}, ["6"]={0,1,1,0}, ["7"]={0,1,1,1},
+	["8"]={1,0,0,0}, ["9"]={1,0,0,1}, ["a"]={1,0,1,0}, ["b"]={1,0,1,1}, ["c"]={1,1,0,0}, ["d"]={1,1,0,1}, ["e"]={1,1,1,0}, ["f"]={1,1,1,1},
+}
+
+local function intToBits(n, bitsOut)
+	local hexNumber = getSubstring(F(PATTERN_INT_TO_HEX, n), -INT_SIZE/4) -- The getSubstring() call is probably not needed, but just to be safe.
+	local i         = 1
+
+	for hexDigit in gmatch(hexNumber, ".") do
+		local bits = HEX_DIGIT_TO_BITS[hexDigit]
+
+		for iOffset = 1, 4 do
+			bitsOut[i] = bits[iOffset]
+			i          = i + 1
+		end
+	end
+end
+
+local function bitsToInt(bits)
+	local n     = 0
+	local multi = 1
+
+	for i = INT_SIZE, 2, -1 do
+		n     = n + multi * bits[i]
+		multi = multi * 2
+	end
+
+	return (bits[1] == 1 and MIN_INT+n or n)
+end
+
+local function isFiniteNumber(v)
+	return type(v) == "number" and v == v and v ~= 1/0 and v ~= -1/0
+end
+
+local bits1 = {}
+local bits2 = {}
+
 local unaryFolders = {
 	["-"] = function(unary, expr)
 		if expr.type == "literal" and type(expr.value) == "number" then
@@ -2533,13 +2578,18 @@ local unaryFolders = {
 		return nil
 	end,
 	["~"] = function(unary, expr)
-		-- @Incomplete
+		if expr.type == "literal" and isFiniteNumber(expr.value) then
+			intToBits(expr.value, bits1)
+			for i = 1, INT_SIZE do
+				bits1[i] = 1 - bits1[i]
+			end
+			return AstLiteral(dummyTokens, unary.token, bitsToInt(bits1))
+		end
 		return nil
 	end,
 }
 
 local binaryFolders = {
-	-- @Robustness: The bitwise operations are probably not very robust.
 	["+"] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and type(l.value) == "number" then
 			return AstLiteral(dummyTokens, binary.token, l.value+r.value)
@@ -2583,43 +2633,82 @@ local binaryFolders = {
 		return nil
 	end,
 	["&"] = function(binary, l, r)
-		-- @Incomplete
+		if l.type == "literal" and r.type == "literal" and isFiniteNumber(l.value) and isFiniteNumber(r.value) then
+			intToBits(l.value, bits1)
+			intToBits(r.value, bits2)
+			for i = 1, INT_SIZE do
+				bits1[i] = (bits1[i] == 1 and bits2[i] == 1) and 1 or 0
+			end
+			return AstLiteral(dummyTokens, binary.token, bitsToInt(bits1))
+		end
 		return nil
 	end,
 	["~"] = function(binary, l, r)
-		-- @Incomplete
+		if l.type == "literal" and r.type == "literal" and isFiniteNumber(l.value) and isFiniteNumber(r.value) then
+			intToBits(l.value, bits1)
+			intToBits(r.value, bits2)
+			for i = 1, INT_SIZE do
+				bits1[i] = (bits1[i] == 1) == (bits2[i] ~= 1) and 1 or 0
+			end
+			return AstLiteral(dummyTokens, binary.token, bitsToInt(bits1))
+		end
 		return nil
 	end,
 	["|"] = function(binary, l, r)
-		-- @Incomplete
+		if l.type == "literal" and r.type == "literal" and isFiniteNumber(l.value) and isFiniteNumber(r.value) then
+			intToBits(l.value, bits1)
+			intToBits(r.value, bits2)
+			for i = 1, INT_SIZE do
+				if bits1[i] == 0 then  bits1[i] = bits2[i]  end
+			end
+			return AstLiteral(dummyTokens, binary.token, bitsToInt(bits1))
+		end
 		return nil
 	end,
 	[">>"] = function(binary, l, r)
-		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and type(l.value) == "number" and l.value >= 0 then
-			local n = floor(l.value)
+		if l.type == "literal" and r.type == "literal" and isFiniteNumber(l.value) and type(r.value) == "number" then
+			intToBits(l.value, bits1)
 
-			if r.value > 0 then
-				for _ = 1,  r.value do  n = floor(n*.5)  end
-			else
-				for _ = 1, -r.value do  n = n*2          end
+			local shift = math.floor(r.value)
+			local i1    = INT_SIZE
+			local i2    = 1
+			local step  = -1
+
+			if shift < 0 then
+				i1, i2  = i2, i1
+				step    = -step
 			end
 
-			return AstLiteral(dummyTokens, binary.token, n)
+			for i = i1, i2, step do
+				bits1[i] = bits1[i-shift] or 0
+			end
+
+			return AstLiteral(dummyTokens, binary.token, bitsToInt(bits1))
 		end
+
 		return nil
 	end,
 	["<<"] = function(binary, l, r)
-		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and type(l.value) == "number" and l.value >= 0 then
-			local n = floor(l.value)
+		if l.type == "literal" and r.type == "literal" and isFiniteNumber(l.value) and type(r.value) == "number" then
+			intToBits(l.value, bits1)
 
-			if r.value > 0 then
-				for _ = 1,  r.value do  n = n*2          end
-			else
-				for _ = 1, -r.value do  n = floor(n*.5)  end
+			local shift = math.floor(r.value)
+			local i1    = 1
+			local i2    = INT_SIZE
+			local step  = 1
+
+			if shift < 0 then
+				i1, i2 = i2, i1
+				step   = -step
 			end
 
-			return AstLiteral(dummyTokens, binary.token, n)
+			for i = i1, i2, step do
+				bits1[i] = bits1[i+shift] or 0
+			end
+
+			return AstLiteral(dummyTokens, binary.token, bitsToInt(bits1))
 		end
+
 		return nil
 	end,
 	[".."] = function(binary, l, r)
@@ -4276,6 +4365,10 @@ end
 parser = {
 	-- Constants.
 	VERSION          = PARSER_VERSION,
+
+	INT_SIZE         = INT_SIZE, -- @Undocumented
+	MAX_INT          = MAX_INT,  -- @Undocumented
+	MIN_INT          = MIN_INT,  -- @Undocumented
 
 	-- Functions.
 	tokenizeString   = tokenizeString,

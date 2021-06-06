@@ -108,11 +108,30 @@ do
 	end
 end
 
--- Folding.
+-- Simplifying/folding.
 do
-	local n = 1 << 8     -- 256
-	local n = 2^99999    -- huge
-	local n = 5 - - - -5 -- 10
+	local n1 = 1 << 8     -- 256
+	local n1 = 2^99999    -- huge
+	local n1 = 5 - - - -5 -- 10
+
+	local n2 = 2779          -- 2779
+	local n2 = ~2779         -- -2780
+	local n2 = 2779 & 0x1011 -- 17
+	local n2 = 2779 ~ 0x1011 -- 6858
+	local n2 = 2779 | 0x1011 -- 6875
+
+	local n3 =  2       -- 2
+	local n3 =  2 >>  1 -- 1
+	local n3 =  2 <<  1 -- 4
+	local n3 = -2       -- -2
+	local n3 = -2 >>  1 -- 32bit:2147483647, 64bit:9223372036854775807
+	local n3 = -2 <<  1 -- -4
+	local n3 =  2 >>  0 -- 2
+	local n3 =  2 <<  0 -- 2
+	local n3 = -2 << -1 -- 32bit:2147483647, 64bit:9223372036854775807
+	local n3 = -2 >> -1 -- -4
+
+	local n4 = 1/0 & 2 -- Should not fold.
 
 	local b = "yes" == "no"
 	local b = 5     ~= nil
