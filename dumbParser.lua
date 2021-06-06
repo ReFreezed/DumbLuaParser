@@ -8,7 +8,7 @@
 --=  License: MIT (see the bottom of this file)
 --=  Website: https://github.com/ReFreezed/DumbLuaParser
 --=
---=  Supported Lua versions: 5.1, 5.2, 5.3
+--=  Supported Lua versions: 5.1, 5.2, 5.3, 5.4
 --=
 --==============================================================
 
@@ -196,6 +196,7 @@ local sort          = table.sort
 local unpack        = table.unpack or unpack
 
 local loadLuaString = loadstring or load
+local maybeWrapInt  = (_VERSION == "Lua 5.2") and bit32.band or function(n)return(n)end
 
 local assertArg, errorf
 local countString
@@ -272,9 +273,13 @@ local NUM_DEC_FRAC     = gsub("^(        %d*          %.%d+                     
 local NUM_DEC_EXP      = gsub("^(        %d+          %.?             [Ee][-+]?%d+           )", " +", "")
 local NUM_DEC          = gsub("^(        %d+          %.?                                    )", " +", "")
 
-local INT_SIZE = #F("%x", -1) * 4 -- This should generally be 64 for Lua 5.3+ and 32 for earlier.
-local MAX_INT  = math.maxinteger or tonumber(F("%x", -1):gsub("f", "7", 1), 16)
-local MIN_INT  = math.mininteger or -MAX_INT-1
+local INT_SIZE, MAX_INT, MIN_INT
+do
+	local hex = F("%x", maybeWrapInt(-1))
+	INT_SIZE  = #hex * 4 -- This should generally be 64 for Lua 5.3+ and 32 for earlier.
+	MAX_INT   = math.maxinteger or tonumber(hex:gsub("f", "7", 1), 16)
+	MIN_INT   = math.mininteger or -MAX_INT-1
+end
 
 local EMPTY_TABLE = {}
 
@@ -308,7 +313,8 @@ end
 local function AstIdentifier (tokens,tok,name)return populateCommonNodeFields(tokens,tok,{
 	type        = "identifier",
 	name        = name, -- String.
-	declaration = nil, -- AstDeclaration, AstFunction or AstFor. Updated by updateReferences(). This is nil for globals.
+	attribute   = "",   -- "" | "close" | "const"
+	declaration = nil,  -- AstDeclaration, AstFunction or AstFor. Updated by updateReferences(). This is nil for globals.
 })end
 local function AstVararg (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "vararg",
@@ -362,11 +368,12 @@ local function AstReturn (tokens,tok)return populateCommonNodeFields(tokens,tok,
 })end
 local function AstLabel (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "label",
-	name        = nil, -- AstIdentifier
+	name        = "",
 })end
 local function AstGoto (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "goto",
-	name        = nil, -- AstIdentifier
+	name        = "",
+	label       = nil, -- AstLabel. Updated by updateReferences().
 })end
 local function AstBlock (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "block",
@@ -387,7 +394,7 @@ local function AstIf (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "if",
 	condition   = nil, -- Expression.
 	bodyTrue    = nil, -- AstBlock.
-	bodyFalse   = nil, -- AstBlock. May be nil.
+	bodyFalse   = nil, -- AstBlock or nil.
 })end
 local function AstWhile (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "while",
@@ -692,7 +699,7 @@ function tokenizeString(s, path)
 			tokType  = "punctuation"
 			tokRepr  = getSubstring(s, ptrStart, ptr-1)
 			tokValue = tokRepr
-		elseif find(s, "^[+%-*/%%^#<>=(){}[%];:,.&~|]", ptr) then
+		elseif find(s, "^[-+*/%%^#<>=(){}[%];:,.&~|]", ptr) then
 			ptr      = ptr + 1
 			tokType  = "punctuation"
 			tokRepr  = getSubstring(s, ptrStart, ptr-1)
@@ -910,7 +917,7 @@ local function parseIdentifier(tokens, tok) --> ident, token
 	return ident, tok
 end
 
-local function parseNameList(tokens, tok, names, allowVararg) --> success, token, vararg|nil
+local function parseNameList(tokens, tok, names, allowVararg, allowAttributes) --> success, token, vararg|nil
 	while true do
 		if allowVararg and isToken(tokens, tok, "punctuation", "...") then
 			local vararg = AstVararg(tokens, tok)
@@ -921,6 +928,27 @@ local function parseNameList(tokens, tok, names, allowVararg) --> success, token
 		local ident, tokNext = parseIdentifier(tokens, tok)
 		if not ident then  return false, tok  end
 		tok = tokNext
+
+		if allowAttributes and isToken(tokens, tok, "punctuation", "<") then
+			tok = tok + 1 -- '<'
+
+			local attrIdent, tokNext = parseIdentifier(tokens, tok)
+			if not attrIdent then
+				return false, tok
+			elseif not (attrIdent.name == "close" or attrIdent.name == "const") then
+				reportErrorAtToken(tokens, tok, "Parser", "Expected 'close' or 'const' for attribute name.")
+				return nil, tok
+			end
+			tok = tokNext
+
+			ident.attribute = attrIdent.name
+
+			if not isToken(tokens, tok, "punctuation", ">") then
+				reportErrorAtToken(tokens, tok, "Parser", "Expected '>' after attribute name.")
+				return nil, tok
+			end
+			tok = tok + 1 -- '>'
+		end
 
 		insert(names, ident)
 
@@ -952,13 +980,13 @@ local function parseTable(tokens, tok) --> tableNode, token
 			tok = tokNext
 
 			if not isToken(tokens, tok, "punctuation", "]") then
-				reportErrorAtToken(tokens, tok, "Parser", "Expected ']'.")
+				reportErrorAtToken(tokens, tok, "Parser", "Expected ']' after key value.")
 				return nil, tok
 			end
 			tok = tok + 1 -- ']'
 
 			if not isToken(tokens, tok, "punctuation", "=") then
-				reportErrorAtToken(tokens, tok, "Parser", "Expected '='.")
+				reportErrorAtToken(tokens, tok, "Parser", "Expected '=' after key.")
 				return nil, tok
 			end
 			tok = tok + 1 -- '='
@@ -975,7 +1003,7 @@ local function parseTable(tokens, tok) --> tableNode, token
 			tok           = tok + 1 -- identifier
 
 			if not isToken(tokens, tok, "punctuation", "=") then
-				reportErrorAtToken(tokens, tok, "Parser", "Expected '='.")
+				reportErrorAtToken(tokens, tok, "Parser", "Expected '=' after key name.")
 				return nil, tok
 			end
 			tok = tok + 1 -- '='
@@ -1008,7 +1036,7 @@ local function parseTable(tokens, tok) --> tableNode, token
 			break
 
 		else
-			reportErrorAtToken(tokens, tok, "Parser", "Expected ',' or '}'.")
+			reportErrorAtToken(tokens, tok, "Parser", "Expected ',' or '}' in table constructor.")
 			return nil, tok
 		end
 	end
@@ -1108,7 +1136,7 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 		end
 
 		if not isToken(tokens, tok, "punctuation", ")") then
-			reportErrorAtToken(tokens, tok, "Parser", "Expected ')'.")
+			reportErrorAtToken(tokens, tok, "Parser", "Expected ')' at the end of the parenthesis expression.")
 			return false, tok
 		end
 		tok = tok + 1 -- ')'
@@ -1195,7 +1223,7 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 			tok = tokNext
 
 			if not isToken(tokens, tok, "punctuation", "]") then
-				reportErrorAtToken(tokens, tok, "Parser", "Expected ']'.")
+				reportErrorAtToken(tokens, tok, "Parser", "Expected ']' after lookup key value.")
 				return false, tok
 			end
 			tok = tok + 1 -- ']'
@@ -1245,7 +1273,7 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 			end
 
 			if not isToken(tokens, tok, "punctuation", ")") then
-				reportErrorAtToken(tokens, tok, "Parser", "Expected ')'.")
+				reportErrorAtToken(tokens, tok, "Parser", "Expected ')' after argument list for call.")
 				return false, tok
 			end
 			tok = tok + 1 -- ')'
@@ -1301,13 +1329,13 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token
 					end
 
 					if not isToken(tokens, tok, "punctuation", ")") then
-						reportErrorAtToken(tokens, tok, "Parser", "Expected ')'.")
+						reportErrorAtToken(tokens, tok, "Parser", "Expected ')' after argument list for method call.")
 						return false, tok
 					end
 					tok = tok + 1 -- ')'
 
 				else
-					reportErrorAtToken(tokens, tok, "Parser", "Expected '('.")
+					reportErrorAtToken(tokens, tok, "Parser", "Expected '(' to start argument list for method call.")
 					return false, tok
 				end
 
@@ -1344,13 +1372,13 @@ function parseFunctionParametersAndBody(tokens, tok)
 	local func = AstFunction(tokens, tok)
 
 	if not isToken(tokens, tok, "punctuation", "(") then
-		reportErrorAtToken(tokens, tok, "Parser", "Expected '('.")
+		reportErrorAtToken(tokens, tok, "Parser", "Expected '(' to start parameter list for function.")
 		return nil, tok
 	end
 	tok = tok + 1 -- '('
 
 	if not isToken(tokens, tok, "punctuation", ")") then
-		local ok, tokNext, vararg = parseNameList(tokens, tok, func.parameters, true)
+		local ok, tokNext, vararg = parseNameList(tokens, tok, func.parameters, true, false)
 		if not ok then  return nil, tok  end
 		tok = tokNext
 
@@ -1358,7 +1386,7 @@ function parseFunctionParametersAndBody(tokens, tok)
 	end
 
 	if not isToken(tokens, tok, "punctuation", ")") then
-		reportErrorAtToken(tokens, tok, "Parser", "Expected ')'.")
+		reportErrorAtToken(tokens, tok, "Parser", "Expected ')' after parameter list for function.")
 		return nil, tok
 	end
 	tok = tok + 1 -- ')'
@@ -1369,7 +1397,7 @@ function parseFunctionParametersAndBody(tokens, tok)
 	tok       = tokNext
 
 	if not isToken(tokens, tok, "keyword", "end") then
-		reportErrorAtToken(tokens, tok, "Parser", "Expected 'end'.")
+		reportErrorAtToken(tokens, tok, "Parser", "Expected 'end' to end function.")
 		return nil, tok
 	end
 	tok = tok + 1 -- 'end'
@@ -1381,8 +1409,12 @@ local BLOCK_END_TOKEN_TYPES = newSet{ "end", "else", "elseif", "until" }
 
 local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> success, token
 	--[[
-	stat ::= varlist '=' explist |
+	stat ::= ';'
+	         varlist '=' explist |
 	         functioncall |
+	         label |
+	         break |
+	         goto Name |
 	         do block end |
 	         while exp do block end |
 	         repeat block until exp |
@@ -1391,9 +1423,9 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 	         for namelist in explist do block end |
 	         function funcname funcbody |
 	         local function Name funcbody |
-	         local namelist ['=' explist]
+	         local attnamelist ['=' explist]
 
-	laststat ::= return [explist] | break
+	retstat ::= return [explist] [';']
 	]]
 
 	-- do
@@ -1406,7 +1438,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		tok         = tokNext
 
 		if not isToken(tokens, tok, "keyword", "end") then
-			reportErrorAtToken(tokens, tok, "Parser", "Expected 'end'.")
+			reportErrorAtToken(tokens, tok, "Parser", "Expected 'end' to end 'do' block.")
 			return false, tok
 		end
 		tok = tok + 1 -- 'end'
@@ -1425,7 +1457,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		tok                 = tokNext
 
 		if not isToken(tokens, tok, "keyword", "do") then
-			reportErrorAtToken(tokens, tok, "Parser", "Expected 'do'.")
+			reportErrorAtToken(tokens, tok, "Parser", "Expected 'do' to start body for 'while' loop.")
 			return false, tok
 		end
 		tok = tok + 1 -- 'do'
@@ -1437,7 +1469,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		tok            = tokNext
 
 		if not isToken(tokens, tok, "keyword", "end") then
-			reportErrorAtToken(tokens, tok, "Parser", "Expected 'end'.")
+			reportErrorAtToken(tokens, tok, "Parser", "Expected 'end' to end 'while' loop.")
 			return false, tok
 		end
 		tok = tok + 1 -- 'end'
@@ -1456,7 +1488,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		tok             = tokNext
 
 		if not isToken(tokens, tok, "keyword", "until") then
-			reportErrorAtToken(tokens, tok, "Parser", "Expected 'until'.")
+			reportErrorAtToken(tokens, tok, "Parser", "Expected 'until' at the end of 'repeat' loop.")
 			return false, tok
 		end
 		tok = tok + 1 -- 'until'
@@ -1480,7 +1512,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		tok              = tokNext
 
 		if not isToken(tokens, tok, "keyword", "then") then
-			reportErrorAtToken(tokens, tok, "Parser", "Expected 'then'.")
+			reportErrorAtToken(tokens, tok, "Parser", "Expected 'then' after 'if' condition.")
 			return false, tok
 		end
 		tok = tok + 1 -- 'then'
@@ -1505,7 +1537,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 			tok                  = tokNext
 
 			if not isToken(tokens, tok, "keyword", "then") then
-				reportErrorAtToken(tokens, tok, "Parser", "Expected 'then'.")
+				reportErrorAtToken(tokens, tok, "Parser", "Expected 'then' after 'elseif' condition.")
 				return false, tok
 			end
 			tok = tok + 1 -- 'then'
@@ -1526,7 +1558,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		end
 
 		if not isToken(tokens, tok, "keyword", "end") then
-			reportErrorAtToken(tokens, tok, "Parser", "Expected 'end'.")
+			reportErrorAtToken(tokens, tok, "Parser", "Expected 'end' to end 'if' statement.")
 			return false, tok
 		end
 		tok = tok + 1 -- 'end'
@@ -1539,7 +1571,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		local forLoop = AstFor(tokens, tok)
 		tok           = tok + 1 -- 'for'
 
-		local ok, tokNext = parseNameList(tokens, tok, forLoop.names, false)
+		local ok, tokNext = parseNameList(tokens, tok, forLoop.names, false, false)
 		if not ok then  return false, tok  end
 		tok = tokNext
 
@@ -1549,7 +1581,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 
 		elseif isToken(tokens, tok, "punctuation", "=") then
 			if forLoop.names[2] then
-				reportErrorAtToken(tokens, tok, "Parser", "Expected 'in'.")
+				reportErrorAtToken(tokens, tok, "Parser", "Expected 'in' for generic loop.")
 				return false, tok
 			end
 
@@ -1557,7 +1589,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 			tok          = tok + 1 -- '='
 
 		else
-			reportErrorAtToken(tokens, tok, "Parser", "Expected '=' or 'in'.")
+			reportErrorAtToken(tokens, tok, "Parser", "Expected '=' or 'in' for 'for' loop.")
 			return false, tok
 		end
 
@@ -1576,7 +1608,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		end
 
 		if not isToken(tokens, tok, "keyword", "do") then
-			reportErrorAtToken(tokens, tok, "Parser", "Expected 'do'.")
+			reportErrorAtToken(tokens, tok, "Parser", "Expected 'do' to start body for 'for' loop.")
 			return false, tok
 		end
 		tok = tok + 1 -- 'do'
@@ -1587,7 +1619,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		tok          = tokNext
 
 		if not isToken(tokens, tok, "keyword", "end") then
-			reportErrorAtToken(tokens, tok, "Parser", "Expected 'end'.")
+			reportErrorAtToken(tokens, tok, "Parser", "Expected 'end' to end 'for' loop.")
 			return false, tok
 		end
 		tok = tok + 1 -- 'end'
@@ -1662,7 +1694,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		tok              = tok + 2 -- 'local' & 'function'
 
 		local ident, tokNext = parseIdentifier(tokens, tok)
-		local identCopy   = parseIdentifier(tokens, tok)
+		local identCopy      = parseIdentifier(tokens, tok)
 		if not ident then  return false, tok  end
 		tok = tokNext
 
@@ -1683,7 +1715,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		local decl = AstDeclaration(tokens, tok)
 		tok        = tok + 1 -- 'local'
 
-		local ok, tokNext = parseNameList(tokens, tok, decl.names, false)
+		local ok, tokNext = parseNameList(tokens, tok, decl.names, false, true)
 		if not ok then  return false, tok  end
 		tok = tokNext
 
@@ -1703,13 +1735,14 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		local label = AstLabel(tokens, tok)
 		tok         = tok + 1 -- '::'
 
-		local tokNext
-		label.name, tokNext = parseIdentifier(tokens, tok)
-		if not label.name then  return false, tok  end
+		local labelIdent, tokNext = parseIdentifier(tokens, tok)
+		if not labelIdent then  return false, tok  end
 		tok = tokNext
 
+		label.name = labelIdent.name
+
 		if not isToken(tokens, tok, "punctuation", "::") then
-			reportErrorAtToken(tokens, tok, "Parser", "Expected '::'.")
+			reportErrorAtToken(tokens, tok, "Parser", "Expected '::' after label name.")
 			return false, tok
 		end
 		tok = tok + 1 -- '::'
@@ -1722,10 +1755,11 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		local gotoNode = AstGoto(tokens, tok)
 		tok            = tok + 1 -- 'goto'
 
-		local tokNext
-		gotoNode.name, tokNext = parseIdentifier(tokens, tok)
-		if not gotoNode.name then  return false, tok  end
+		local labelIdent, tokNext = parseIdentifier(tokens, tok)
+		if not labelIdent then  return false, tok  end
 		tok = tokNext
+
+		gotoNode.name = labelIdent.name
 
 		insert(statements, gotoNode)
 		return true, tok
@@ -1774,7 +1808,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 			tok = tokNext
 
 			if not isToken(tokens, tok, "punctuation", "=") then
-				reportErrorAtToken(tokens, tok, "Parser", "Expected '='.")
+				reportErrorAtToken(tokens, tok, "Parser", "Expected '=' for an assignment.")
 				return false, tok
 			end
 			tok = tok + 1 -- '='
@@ -1899,9 +1933,9 @@ end
 --
 -- :NodeCreation
 --
--- identifier   = newNode( "identifier", name )
+-- identifier   = newNode( "identifier", name [, attributeName="" ] )
 -- vararg       = newNode( "vararg" )
--- literal      = newNode( "literal", value )
+-- literal      = newNode( "literal", value ) -- 'value' must be a number, a string, a boolean or nil.
 -- tableNode    = newNode( "table" )
 -- lookup       = newNode( "lookup" )
 -- unary        = newNode( "unary",  unaryOperator  )
@@ -1910,8 +1944,8 @@ end
 -- functionNode = newNode( "function" )
 -- breakNode    = newNode( "break" )
 -- returnNode   = newNode( "return" )
--- label        = newNode( "label" )
--- gotoNode     = newNode( "goto" )
+-- label        = newNode( "label", labelName )
+-- gotoNode     = newNode( "goto",  labelName )
 -- block        = newNode( "block" )
 -- declaration  = newNode( "declaration" )
 -- assignment   = newNode( "assignment" )
@@ -1932,8 +1966,6 @@ local function newNode(nodeType, ...)
 	elseif nodeType == "function"    then  node = AstFunction   (dummyTokens, 0)
 	elseif nodeType == "break"       then  node = AstBreak      (dummyTokens, 0)
 	elseif nodeType == "return"      then  node = AstReturn     (dummyTokens, 0)
-	elseif nodeType == "label"       then  node = AstLabel      (dummyTokens, 0)
-	elseif nodeType == "goto"        then  node = AstGoto       (dummyTokens, 0)
 	elseif nodeType == "block"       then  node = AstBlock      (dummyTokens, 0)
 	elseif nodeType == "declaration" then  node = AstDeclaration(dummyTokens, 0)
 	elseif nodeType == "assignment"  then  node = AstAssignment (dummyTokens, 0)
@@ -1946,16 +1978,54 @@ local function newNode(nodeType, ...)
 			errorf(2, "Missing name argument for identifier.")
 		end
 
-		local name = ...
+		local name, attribute = ...
+
 		if type(name) ~= "string" then
 			errorf(2, "Invalid name argument value type '%s'. (Expected string)", type(name))
-		elseif not find(name, "^[%a_][%w_]*$") then
-			errorf(2, "Invalid identifier name '%s'.", name)
-		elseif KEYWORDS[name] then
+		elseif not find(name, "^[%a_][%w_]*$") or KEYWORDS[name] then
 			errorf(2, "Invalid identifier name '%s'.", name)
 		end
 
-		node = AstIdentifier(dummyTokens, 0, name)
+		if attribute == nil or attribute == "" then
+			-- void
+		elseif type(attribute) ~= "string" then
+			errorf(2, "Invalid attribute argument value type '%s'. (Expected string)", type(attribute))
+		elseif not (attribute == "close" or attribute == "const") then
+			errorf(2, "Invalid attribute name '%s'. (Must be 'close' or 'const'.)", attribute)
+		end
+
+		node           = AstIdentifier(dummyTokens, 0, name)
+		node.attribute = attribute or ""
+
+	elseif nodeType == "label" then
+		if select("#", ...) == 0 then
+			errorf(2, "Missing name argument for label.")
+		end
+
+		local name = ...
+		if type(name) ~= "string" then
+			errorf(2, "Invalid name argument value type '%s'. (Expected string)", type(name))
+		elseif not find(name, "^[%a_][%w_]*$") or KEYWORDS[name] then
+			errorf(2, "Invalid label name '%s'.", name)
+		end
+
+		node      = AstLabel(dummyTokens, 0)
+		node.name = name
+
+	elseif nodeType == "goto" then
+		if select("#", ...) == 0 then
+			errorf(2, "Missing label name argument for goto.")
+		end
+
+		local name = ...
+		if type(name) ~= "string" then
+			errorf(2, "Invalid label name argument value type '%s'. (Expected string)", type(name))
+		elseif not find(name, "^[%a_][%w_]*$") or KEYWORDS[name] then
+			errorf(2, "Invalid label name '%s'.", name)
+		end
+
+		node      = AstGoto(dummyTokens, 0)
+		node.name = name
 
 	elseif nodeType == "literal" then
 		if select("#", ...) == 0 then
@@ -2062,6 +2132,18 @@ do
 
 		elseif nodeType == "for" then
 			ioWrite(" (", node.kind, ")")
+
+		elseif nodeType == "label" then
+			ioWrite(" (", node.name, ")")
+
+		elseif nodeType == "goto" then
+			ioWrite(" (", node.name, ")")
+
+			if node.label then
+				ioWrite(" (label")
+				if parser.printIds then  ioWrite("#", node.label.id)  end
+				ioWrite(")")
+			end
 		end
 
 		if parser.printLocations then  ioWrite(" @ ", node.sourcePath, ":", node.line)  end
@@ -2111,12 +2193,6 @@ do
 
 		elseif nodeType == "return" then
 			for i, expr in ipairs(node.values) do  _printTree(expr, indent, tostring(i))  end
-
-		elseif nodeType == "label" then
-			if node.name then  _printTree(node.name, indent, nil)  end
-
-		elseif nodeType == "goto" then
-			if node.name then  _printTree(node.name, indent, nil)  end
 
 		elseif nodeType == "block" then
 			for i, statement in ipairs(node.statements) do  _printTree(statement, indent, tostring(i))  end
@@ -2198,7 +2274,7 @@ function traverseTree(node, leavesFirst, cb, parent, container, k)
 
 	local nodeType = node.type
 
-	if nodeType == "identifier" or nodeType == "vararg" or nodeType == "literal" or nodeType == "break" then
+	if nodeType == "identifier" or nodeType == "vararg" or nodeType == "literal" or nodeType == "break" or nodeType == "label" or nodeType == "goto" then
 		-- void  No child nodes.
 
 	elseif nodeType == "table" then
@@ -2235,12 +2311,6 @@ function traverseTree(node, leavesFirst, cb, parent, container, k)
 		for i, expr in ipairs(node.values) do
 			if traverseTree(expr, leavesFirst, cb, node, node.values, i) then  return true  end
 		end
-
-	elseif nodeType == "label" then
-		if node.name and traverseTree(node.name, leavesFirst, cb, node, node, "name") then  return true  end
-
-	elseif nodeType == "goto" then
-		if node.name and traverseTree(node.name, leavesFirst, cb, node, node, "name") then  return true  end
 
 	elseif nodeType == "block" then
 		for i, statement in ipairs(node.statements) do
@@ -2321,7 +2391,7 @@ function traverseTreeReverse(node, leavesFirst, cb, parent, container, k) -- @In
 
 	local nodeType = node.type
 
-	if nodeType == "identifier" or nodeType == "vararg" or nodeType == "literal" or nodeType == "break" then
+	if nodeType == "identifier" or nodeType == "vararg" or nodeType == "literal" or nodeType == "break" or nodeType == "label" or nodeType == "goto" then
 		-- void  No child nodes.
 
 	elseif nodeType == "table" then
@@ -2358,12 +2428,6 @@ function traverseTreeReverse(node, leavesFirst, cb, parent, container, k) -- @In
 		for i, expr in ipairsr(node.values) do
 			if traverseTreeReverse(expr, leavesFirst, cb, node, node.values, i) then  return true  end
 		end
-
-	elseif nodeType == "label" then
-		if node.name and traverseTreeReverse(node.name, leavesFirst, cb, node, node, "name") then  return true  end
-
-	elseif nodeType == "goto" then
-		if node.name and traverseTreeReverse(node.name, leavesFirst, cb, node, node, "name") then  return true  end
 
 	elseif nodeType == "block" then
 		for i, statement in ipairsr(node.statements) do
@@ -2486,6 +2550,31 @@ local function findDeclaration(ident)
 	end
 end
 
+local function findLabel(gotoNode)
+	local name   = gotoNode.name
+	local parent = gotoNode
+
+	while true do
+		local lastChild = parent
+		parent          = parent.parent
+
+		if not parent then  return nil  end
+
+		if parent.type == "block" then
+			local block = parent
+
+			for _, statement in ipairs(block.statements) do
+				if statement.type == "label" and statement.name == name then
+					return statement
+				end
+			end
+
+		elseif parent.type == "function" then
+			return nil
+		end
+	end
+end
+
 function updateReferences(node, updateTopNodePosition)
 	local topNodeParent    = nil
 	local topNodeContainer = nil
@@ -2514,6 +2603,10 @@ function updateReferences(node, updateTopNodePosition)
 				tostring(ident.declaration and ident.declaration.id   or "")
 			))
 			--]]
+
+		elseif node.type == "goto" then
+			local gotoNode = node
+			gotoNode.label = findLabel(gotoNode) -- We can call this because all relevant 'parent' references have been updated at this point.
 		end
 	end, topNodeParent, topNodeContainer, topNodeKey)
 end
@@ -2528,7 +2621,7 @@ local HEX_DIGIT_TO_BITS = {
 }
 
 local function intToBits(n, bitsOut)
-	local hexNumber = getSubstring(F(PATTERN_INT_TO_HEX, n), -INT_SIZE/4) -- The getSubstring() call is probably not needed, but just to be safe.
+	local hexNumber = getSubstring(F(PATTERN_INT_TO_HEX, maybeWrapInt(n)), -INT_SIZE/4) -- The getSubstring() call is probably not needed, but just to be safe.
 	local i         = 1
 
 	for hexDigit in gmatch(hexNumber, ".") do
@@ -2983,6 +3076,10 @@ local function getInformationAboutIdentifiersAndUpdateMostReferences(node)
 					break
 				end
 			end
+
+		elseif node.type == "goto" then
+			local gotoNode = node
+			gotoNode.label = findLabel(gotoNode) -- We can call this because all relevant 'parent' references have been updated at this point.
 		end
 	end, node.parent, node.container, node.key)
 
@@ -3675,6 +3772,8 @@ do
 	local writeNode
 	local writeStatements
 
+	-- lastOutput = "alpha"|"alphanum"|""
+
 	local function canNodeBeName(node)
 		return node.type == "literal" and type(node.value) == "string" and node.value:find"^[%a_][%w_]*$" and not KEYWORDS[node.value]
 	end
@@ -3702,7 +3801,7 @@ do
 		return "number"
 	end
 
-	local function writeCommaSeparatedList(buffer, pretty, indent, lastOutput, expressions)
+	local function writeCommaSeparatedList(buffer, pretty, indent, lastOutput, expressions, writeAttributes)
 		for i, expr in ipairs(expressions) do
 			if i > 1 then
 				lastOutput = writeLua(buffer, ",", "")
@@ -3711,6 +3810,12 @@ do
 
 			local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, expr, true)
 			if not ok then  return false, lastOutput  end
+
+			if writeAttributes and expr.type == "identifier" and expr.attribute ~= "" then
+				lastOutput = writeLua(buffer, "<", "")
+				lastOutput = writeAlphanum(buffer, pretty, expr.attribute, lastOutput)
+				lastOutput = writeLua(buffer, ">", "")
+			end
 		end
 
 		return true, lastOutput
@@ -3735,7 +3840,7 @@ do
 	local function writeFunctionParametersAndBody(buffer, pretty, indent, lastOutput, func, explicitParams)
 		lastOutput = writeLua(buffer, "(", "")
 
-		local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, explicitParams)
+		local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, explicitParams, false)
 		if not ok then  return false, lastOutput  end
 
 		if func.vararg then
@@ -4044,7 +4149,7 @@ do
 
 			lastOutput = writeLua(buffer, "(", "")
 
-			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.arguments)
+			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.arguments, false)
 			if not ok then  return false, lastOutput  end
 
 			lastOutput = writeLua(buffer, ")", "")
@@ -4068,14 +4173,14 @@ do
 			if node.values[1] then
 				if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
-				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.values)
+				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.values, false)
 				if not ok then  return false, lastOutput  end
 			end
 
 			lastOutput = writeLua(buffer, ";", "")
 
 		elseif nodeType == "label" then
-			local name = node.name.name
+			local name = node.name
 			if not (name:find"^[%a_][%w_]*$" and not KEYWORDS[name]) then
 				printfError("Error: AST: Invalid label '%s'.", name)
 				return false, lastOutput
@@ -4086,7 +4191,7 @@ do
 			lastOutput = writeLua(buffer, ";", "")
 
 		elseif nodeType == "goto" then
-			local name = node.name.name
+			local name = node.name
 			if not (name:find"^[%a_][%w_]*$" and not KEYWORDS[name]) then
 				printfError("Error: AST: Invalid label '%s'.", name)
 				return false, lastOutput
@@ -4110,7 +4215,9 @@ do
 			lastOutput = writeAlphanum(buffer, pretty, "local", lastOutput)
 			lastOutput = writeLua(buffer, " ", "")
 
-			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.names)
+			if not node.names[1] then  return false, lastOutput  end
+
+			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.names, true)
 			if not ok then  return false, lastOutput  end
 
 			if node.values[1] then
@@ -4118,13 +4225,16 @@ do
 				lastOutput = writeLua(buffer, "=", "")
 				if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
-				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.values)
+				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.values, false)
 				if not ok then  return false, lastOutput  end
 			end
 
 			lastOutput = writeLua(buffer, ";", "")
 
 		elseif nodeType == "assignment" then
+			if not node.targets[1] then  return false, lastOutput  end
+			if not node.values[1]  then  return false, lastOutput  end
+
 			if isAssignmentFunctionAssignment(node) then
 				local func = node.values[1]
 				lastOutput = writeAlphanum(buffer, pretty, "function", lastOutput)
@@ -4151,14 +4261,14 @@ do
 				if not ok then  return false, lastOutput  end
 
 			else
-				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.targets)
+				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.targets, false)
 				if not ok then  return false, lastOutput  end
 
 				if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 				lastOutput = writeLua(buffer, "=", "")
 				if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
-				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.values)
+				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.values, false)
 				if not ok then  return false, lastOutput  end
 
 				lastOutput = writeLua(buffer, ";", "")
@@ -4244,10 +4354,13 @@ do
 			if not ok then  return false, lastOutput  end
 
 		elseif nodeType == "for" then
+			if not node.names[1]  then  return false, lastOutput  end
+			if not node.values[1] then  return false, lastOutput  end
+
 			lastOutput = writeAlphanum(buffer, pretty, "for", lastOutput)
 			lastOutput = writeLua(buffer, " ", "")
 
-			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.names)
+			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.names, false)
 			if not ok then  return false, lastOutput  end
 
 			if pretty then  lastOutput = writeLua(buffer, " ", "")  end
@@ -4265,7 +4378,7 @@ do
 
 			if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
-			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.values)
+			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.values, false)
 			if not ok then  return false, lastOutput  end
 
 			if pretty then  lastOutput = writeLua(buffer, " ", "")  end

@@ -64,8 +64,9 @@ do
 	local n = - - (-0)
 
 	--[[ Lua 5.2+
-	goto label
-	::label::
+	goto foo
+	do goto foo end
+	::foo::
 
 	local a = x & y
 	local b = x ~ y
@@ -76,6 +77,11 @@ do
 	local g = ~x
 
 	local foo = ((y & 0x7) << 4) | 0xFF00
+	--]]
+
+	--[[ Lua 5.4+
+	local x<close>
+	local y<close>, z<const> = 1, 2
 	--]]
 end
 

@@ -112,17 +112,25 @@ end
 
 -- AST manipulations.
 do
-	local identifier   = parser.newNode("identifier", "foo")
+	local identifier1  = parser.newNode("identifier", "foo")
+	local identifier2  = parser.newNode("identifier", "foo", "const")
 	local vararg       = parser.newNode("vararg")
-	local literal      = parser.newNode("literal", 8.125)
+	local literal1     = parser.newNode("literal", 8.125)
+	local literal2     = parser.newNode("literal", "foo")
+	local literal3     = parser.newNode("literal", true)
+	local literal4     = parser.newNode("literal", nil)
 	local tableNode    = parser.newNode("table")
 	local lookup       = parser.newNode("lookup")
-	local unary        = parser.newNode("unary",  "not")
-	local binary       = parser.newNode("binary", "/")
+	local unary1       = parser.newNode("unary",  "#")
+	local unary2       = parser.newNode("unary",  "not")
+	local binary1      = parser.newNode("binary", "/")
+	local binary2      = parser.newNode("binary", "<<")
 	local call         = parser.newNode("call")
 	local functionNode = parser.newNode("function")
 	local breakNode    = parser.newNode("break")
 	local returnNode   = parser.newNode("return")
+	local label        = parser.newNode("label", "foo")
+	local gotoNode     = parser.newNode("goto",  "foo")
 	local block        = parser.newNode("block")
 	local declaration  = parser.newNode("declaration")
 	local assignment   = parser.newNode("assignment")
@@ -145,8 +153,8 @@ do
 	assert(block.statements[1].values[1].type  == "literal")
 	assert(block.statements[1].values[1].value == 49)
 
-	block.statements[1].names[1]  = identifier
-	block.statements[1].values[1] = literal
+	block.statements[1].names[1]  = identifier1
+	block.statements[1].values[1] = literal1
 
 	local lua = assert(parser.toLua(block, PRETTY))
 	print(lua)
