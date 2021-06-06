@@ -3,7 +3,7 @@
 --=  Dumb Lua Parser - Lua parsing library
 --=  by Marcus 'ReFreezed' Thunström
 --=
---=  v1.2.1 (2021-06-01)
+--=  v1.3-dev
 --=
 --=  License: MIT (see the bottom of this file)
 --=  Website: https://github.com/ReFreezed/DumbLuaParser
@@ -76,10 +76,20 @@
 		This function sets 'parent', 'container' and 'key' for all nodes and 'declaration' for identifiers.
 		If 'updateTopNodePosition' is false then 'parent', 'container' and 'key' will remain as-it for 'astNode' specifically.
 
+	simplify()
+		simplify( astNode )
+		Simplify/fold expressions and statements involving constants ('1+2' becomes '3', 'false and func()' becomes 'false' etc.).
+
+	clean()
+		clean( astNode )
+		Attempt to remove nodes that aren't useful, like unused variables.
+		This function can be quite slow!
+
 	minify()
-		parser.minify( astNode )
-		Remove useless nodes from the tree and replace local variable names with short names.
+		parser.minify( astNode [, optimize=false ] )
+		Replace local variable names with short names.
 		This function can be used to obfuscate the code to some extent.
+		If 'optimize' is set then simplify() and clean() is also called automatically.
 
 	toLua()
 		lua = parser.toLua( astNode [, prettyOuput=false ] )
@@ -160,7 +170,7 @@
 
 --============================================================]]
 
-local PARSER_VERSION = "1.2.1"
+local PARSER_VERSION = "1.3.0-dev"
 
 local io            = io
 local ioWrite       = io.write
@@ -1348,7 +1358,7 @@ function parseFunctionParametersAndBody(tokens, tok)
 	end
 	tok = tok + 1 -- ')'
 
-	local block, tokNext = parseBlock(tokens, tok, true)
+	local block, tokNext = parseBlock(tokens, tok, tok-1, true)
 	if not block then  return nil, tok  end
 	func.body = block
 	tok       = tokNext
@@ -1385,7 +1395,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 	if isToken(tokens, tok, "keyword", "do") then
 		tok = tok + 1 -- 'do'
 
-		local block, tokNext = parseBlock(tokens, tok, true)
+		local block, tokNext = parseBlock(tokens, tok, tok-1, true)
 		if not block then  return false, tok  end
 		block.token = tok - 1
 		tok         = tokNext
@@ -1415,7 +1425,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		end
 		tok = tok + 1 -- 'do'
 
-		local block, tokNext = parseBlock(tokens, tok, true)
+		local block, tokNext = parseBlock(tokens, tok, tok-1, true)
 		if not block then  return false, tok  end
 		block.token    = tok - 1
 		whileLoop.body = block
@@ -1435,7 +1445,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		local repeatLoop = AstRepeat(tokens, tok)
 		tok              = tok + 1 -- 'repeat'
 
-		local block, tokNext = parseBlock(tokens, tok, true)
+		local block, tokNext = parseBlock(tokens, tok, tok-1, true)
 		if not block then  return false, tok  end
 		repeatLoop.body = block
 		tok             = tokNext
@@ -1470,7 +1480,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		end
 		tok = tok + 1 -- 'then'
 
-		local block, tokNext = parseBlock(tokens, tok, true)
+		local block, tokNext = parseBlock(tokens, tok, tok-1, true)
 		if not block then  return false, tok  end
 		ifNode.bodyTrue = block
 		tok             = tokNext
@@ -1495,7 +1505,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 			end
 			tok = tok + 1 -- 'then'
 
-			local block, tokNext = parseBlock(tokens, tok, true)
+			local block, tokNext = parseBlock(tokens, tok, tok-1, true)
 			if not block then  return false, tok  end
 			ifNodeLeaf.bodyTrue = block
 			tok                 = tokNext
@@ -1504,7 +1514,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		if isToken(tokens, tok, "keyword", "else") then
 			tok = tok + 1 -- 'else'
 
-			local block, tokNext = parseBlock(tokens, tok, true)
+			local block, tokNext = parseBlock(tokens, tok, tok-1, true)
 			if not block then  return false, tok  end
 			ifNodeLeaf.bodyFalse = block
 			tok                  = tokNext
@@ -1566,7 +1576,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		end
 		tok = tok + 1 -- 'do'
 
-		local block, tokNext = parseBlock(tokens, tok, true)
+		local block, tokNext = parseBlock(tokens, tok, tok-1, true)
 		if not block then  return false, tok  end
 		forLoop.body = block
 		tok          = tokNext
@@ -1786,8 +1796,8 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 	assert(false)
 end
 
-function parseBlock(tokens, tok, stopAtEndKeyword) --> block, token
-	local block      = AstBlock(tokens, tok)
+function parseBlock(tokens, tok, blockTok, stopAtEndKeyword) --> block, token
+	local block      = AstBlock(tokens, blockTok)
 	local statements = block.statements
 
 	while tok <= tokens.n do
@@ -1873,7 +1883,7 @@ function parse(tokens, path)
 		end
 	end
 
-	local block = parseBlock(tokensPurged, 1, false)
+	local block = parseBlock(tokensPurged, 1, 1, false)
 	if not block then  return nil, "Failed parsing."  end
 
 	return block
@@ -2679,24 +2689,85 @@ local function replace(node, replacement, parent, container, key)
 	replacement.key       = key
 end
 
-local function foldNodes(node) -- @Incomplete: Expose in API.
-	traverseTree(node, true, function(node, parent, container, key)
-		if not parent then
-			-- void
+local function simplifyNode(node, parent, container, key)
+	if not parent then
+		-- void
 
-		elseif node.type == "unary" then
-			-- Note: We don't fold e.g. '- - -expr' into '-expr' because metamethods may
-			-- be called, and folding '- -expr' into 'expr' would remove what could be a
-			-- runtime error if 'expr' didn't contain a number.
-			local replacement = unaryFolders[node.operator](node, node.expression)
-			if replacement then  replace(node, replacement, parent, container, key)  end
+	elseif node.type == "unary" then
+		-- Note: We don't fold e.g. '- - -expr' into '-expr' because metamethods may
+		-- be called, and folding '- -expr' into 'expr' would remove what could be a
+		-- runtime error if 'expr' didn't contain a number.
+		local replacement = unaryFolders[node.operator](node, node.expression)
+		if replacement then  replace(node, replacement, parent, container, key)  end
 
-		elseif node.type == "binary" then
-			-- @Incomplete: Fold 'expr - -n' into 'expr + n' etc.
-			local replacement = binaryFolders[node.operator](node, node.left, node.right)
-			if replacement then  replace(node, replacement, parent, container, key)  end
+	elseif node.type == "binary" then
+		-- @Incomplete: Fold 'expr - -n' into 'expr + n' etc.
+		local replacement = binaryFolders[node.operator](node, node.left, node.right)
+		if replacement then  replace(node, replacement, parent, container, key)  end
+
+	elseif node.type == "if" then
+		local ifNode = node
+
+		if ifNode.condition.type == "literal" then -- @Incomplete: There are more values that make simplification possible.
+			local replacement = ifNode.condition.value and ifNode.bodyTrue or ifNode.bodyFalse
+
+			if replacement and replacement.statements[1] then
+				replace(ifNode, replacement, parent, container, key)
+				return simplifyNode(replacement, parent, container, key)
+			else
+				table.remove(container, key)
+			end
 		end
-	end)
+
+	elseif node.type == "while" then
+		local whileLoop = node
+
+		if whileLoop.condition.type == "literal" then -- @Incomplete: There are more values that make simplification possible.
+			if whileLoop.condition.value then
+				whileLoop.condition.value = true
+			else
+				table.remove(container, key)
+			end
+		end
+
+	elseif node.type == "repeat" then
+		local repeatLoop = node
+
+		if repeatLoop.condition.type == "literal" then -- @Incomplete: There are more values that make simplification possible.
+			if repeatLoop.condition.value then
+				replace(repeatLoop, repeatLoop.body, parent, container, key)
+				return simplifyNode(repeatLoop.body, parent, container, key)
+			else
+				repeatLoop.condition.value = false
+			end
+		end
+
+	elseif node.type == "block" then
+		if parent.type == "block" then
+			local block           = node
+			local hasDeclarations = false
+
+			for _, statement in ipairs(block.statements) do
+				if statement.type == "declaration" then
+					hasDeclarations = true
+					break
+				end
+			end
+
+			if not hasDeclarations then
+				-- Blocks without declarations don't need a scope.
+				remove(parent.statements, key)
+
+				for i, statement in ipairs(block.statements) do
+					insert(parent.statements, key+i-1, statement)
+				end
+			end
+		end
+	end
+end
+
+local function simplify(node)
+	traverseTreeReverse(node, true, simplifyNode)
 end
 
 
@@ -2972,7 +3043,248 @@ local function unregisterWatchers(identInfos, declLikeWatchers, theNode)
 end
 
 -- Note: References need to be updated after calling this!
-local function removeUselessNodes(theNode) -- @Incomplete: Expose in API.
+local function clean(theNode)
+	local identInfos, declLikeWatchers = getInformationAboutIdentifiersAndUpdateMostReferences(theNode)
+
+	--
+	-- Find functions
+	--
+	local funcInfos = {}
+
+	do
+		-- We assume theNode is a block, but it's fine if it isn't.
+		local funcInfo = {node=theNode, declLikes={}, assignments={}, locals={}, upvalues={}, globals={}}
+		insert(funcInfos, funcInfo)
+	end
+
+	traverseTree(theNode, function(node)
+		if node == theNode then  return  end
+
+		if node.type == "function" then
+			local funcInfo = {node=node, declLikes={node}, assignments={}, locals={}, upvalues={}, globals={}}
+			insert(funcInfos, funcInfo)
+		end
+	end)
+
+	for _, funcInfo in ipairs(funcInfos) do
+		traverseTree(funcInfo.node, function(node)
+			if node      == funcInfo.node then  return                   end
+			if node.type == "function"    then  return "ignorechildren"  end
+
+			if node.type == "identifier" then
+				local ident    = node
+				local declLike = ident.declaration
+
+				if declLike then
+					local isInFunc = true
+					local parent   = ident.parent
+
+					while parent do
+						if parent == declLike then -- declLike may be a function itself.
+							break
+						elseif parent.type == "function" then
+							isInFunc = false
+							break
+						end
+						parent = parent.parent
+					end
+
+					insert((isInFunc and funcInfo.locals or funcInfo.upvalues), ident)
+
+				else
+					insert(funcInfo.globals, ident)
+				end
+
+			elseif node.type == "declaration" or node.type == "for" then
+				insert(funcInfo.declLikes, node)
+
+			elseif node.type == "assignment" then
+				insert(funcInfo.assignments, node)
+			end
+		end)
+
+		--[[ DEBUG
+		print("--------------")
+		printNode(funcInfo.node)
+		for i, ident in ipairs(funcInfo.locals) do
+			ioWrite("local   ", i, "  ") ; printNode(ident)
+		end
+		for i, ident in ipairs(funcInfo.upvalues) do
+			ioWrite("upvalue ", i, "  ") ; printNode(ident)
+		end
+		for i, ident in ipairs(funcInfo.globals) do
+			ioWrite("global  ", i, "  ") ; printNode(ident)
+		end
+	end
+	print("--------------")
+	--[=[]]
+	end
+	--]=]
+
+	--
+	-- Remove useless declaration-likes
+	--
+	for _, funcInfo in ipairs(funcInfos) do
+		for _, declLike in ipairs(funcInfo.declLikes) do
+			if declLike.type == "declaration" then -- @Incomplete: Handle other declaration-likes.
+				local decl                  = declLike
+				local declIdents            = decl.names--getNameArrayOfDeclarationLike(declLike)
+				local usedIdentCount        = 0
+				local significantValueCount = 0
+				local significantCall       = nil
+
+				-- Save some adjustment information.
+				local madeToAdjusted = {}
+
+				for i = 1, #decl.values-1 do -- Skip the last value.
+					local valueExpr = decl.values[i]
+					if (valueExpr.type == "call" or valueExpr.type == "vararg") and not valueExpr.adjustToOne then
+						valueExpr.adjustToOne     = true
+						madeToAdjusted[valueExpr] = true
+					end
+				end
+
+				-- Remove useless extra values.
+				for i = #decl.values, #declIdents+1, -1 do
+					local valueExpr = decl.values[i]
+
+					if mayNodeBeInvolvedInJump(valueExpr) then
+						significantValueCount = significantValueCount + 1
+						significantCall       = significantCall or (valueExpr.type == "call" and valueExpr) or nil
+					else
+						table.remove(decl.values, i)
+					end
+				end
+
+				for i = #declIdents+1, #decl.values do
+					decl.values[i].key = i
+				end
+
+				-- Remove useles declared identifiers.
+				local declIsRemoved = false
+
+				for slot, declIdent in ipairsr(declIdents) do
+					local identIsReadFrom   = false
+					local identIsAssignedTo = false
+
+					for _, watcherIdent in ipairs(declLikeWatchers[decl]) do
+						if watcherIdent.declaration == decl and watcherIdent.name == declIdent.name then
+							local identInfo = identInfos[watcherIdent]
+
+							if identInfo.type == "rvalue" then
+								identIsReadFrom = true
+								if identIsAssignedTo then  break  end
+
+							elseif identInfo.ident.parent.type == "assignment" then
+								identIsAssignedTo = true
+								if identIsReadFrom then  break  end
+							end
+						end
+					end
+
+					if not identIsReadFrom then
+						-- ioWrite("useless ") ; printNode(declIdent) -- DEBUG
+
+						local valueExpr          = decl.values[slot]
+						local valueExprEffective = valueExpr or decl.values[#decl.values]
+
+						local wantToRemoveIdent = not identIsAssignedTo -- :RemoveConnectedAssigments
+						local wantToRemoveValue = not (
+							(valueExpr and mayNodeBeInvolvedInJump(valueExpr))
+							or (
+								valueExprEffective
+								and (valueExprEffective.type == "call" or valueExprEffective.type == "vararg")
+								and not valueExprEffective.adjustToOne
+							)
+						)
+
+						if not wantToRemoveIdent then
+							usedIdentCount = usedIdentCount + 1
+						end
+
+						if not wantToRemoveValue then
+							significantValueCount = significantValueCount + 1
+							significantCall       = significantCall or (valueExpr and valueExpr.type == "call" and valueExpr) or nil
+						end
+
+						-- @Incomplete: Remove connected assigments. Note that if the identifier cannot be removed from some assignment then we cannot remove the slot! :RemoveConnectedAssigments
+						-- @Incomplete: Update funcInfo.locals and whatever else.
+						-- @Incomplete: Replace 'local unused, useless = func()' with 'local useless = func()' etc.
+						local canRemoveSlot = (wantToRemoveIdent and wantToRemoveValue)
+
+						-- Remove the whole declaration.
+						if canRemoveSlot and not (declIdents[2] or decl.values[2]) then
+							unregisterWatchers(identInfos, declLikeWatchers, decl)
+
+							local block = decl.parent
+
+							for i = decl.key, #block.statements do
+								local statement     = block.statements[i+1]
+								block.statements[i] = statement
+
+								if statement then  statement.key = i  end
+							end
+
+							declIsRemoved = true
+
+						-- Replace 'local unused = func()' with just 'func()'. This is a unique case as call expressions can also be statements.
+						elseif slot == 1 and wantToRemoveIdent and not declIdents[2] and significantCall and significantValueCount == 1 then
+							unregisterWatchers(identInfos, declLikeWatchers, declIdent)
+							declLikeWatchers[decl] = nil
+
+							local block                = decl.parent
+							block.statements[decl.key] = significantCall
+							significantCall.parent     = block
+							significantCall.container  = decl.container
+							significantCall.key        = decl.key
+
+							declIsRemoved = true
+
+						-- Remove whatever we can.
+						else
+							if canRemoveSlot and #declIdents > 1 then
+								unregisterWatchers(identInfos, declLikeWatchers, declIdent)
+								table.remove(declIdents, slot)
+								for slot = slot, #declIdents do
+									declIdents[slot].key = slot
+								end
+							end
+
+							if wantToRemoveValue and valueExpr then
+								if canRemoveSlot or not decl.values[slot+1] then
+									unregisterWatchers(identInfos, declLikeWatchers, valueExpr)
+									table.remove(decl.values, slot)
+									for slot = slot, #decl.values do
+										decl.values[slot]. key = slot
+									end
+
+								elseif not (valueExpr.type == "literal" and valueExpr.value == nil) then
+									unregisterWatchers(identInfos, declLikeWatchers, valueExpr)
+									replace(valueExpr, AstLiteral(dummyTokens, valueExpr.token, nil), valueExpr.parent, valueExpr.container, valueExpr.key)
+								end
+							end
+						end
+					end--if not identIsReadFrom
+				end--for names
+
+				-- Restore or remove adjusted flags.
+				for i = 1, #decl.values do
+					local valueExpr = decl.values[i]
+					if (valueExpr.type == "call" or valueExpr.type == "vararg") then
+						if declIsRemoved or decl.values[i+1] or not decl.names[i+1] or not madeToAdjusted[valueExpr] then
+							valueExpr.adjustToOne = false
+						end
+					end
+				end
+			end
+		end--for declLikes
+	end--for funcInfos
+
+	-- @Incomplete: Remove useless return statements etc.
+end
+
+--[[
+local function clean_OLD(theNode)
 	local identInfos, declLikeWatchers = getInformationAboutIdentifiersAndUpdateMostReferences(theNode)
 
 	traverseTreeReverse(theNode, true, function(node)
@@ -2998,15 +3310,15 @@ local function removeUselessNodes(theNode) -- @Incomplete: Expose in API.
 			end
 
 			if not (node.type == "function" and node.vararg) then
-				local declLike  = node
-				local declNames = getNameArrayOfDeclarationLike(declLike)
+				local declLike   = node
+				local declIdents = getNameArrayOfDeclarationLike(declLike)
 
-				for i = #declNames, 2, -1 do
-					local declIdent = declNames[i]
+				for i = #declIdents, 2, -1 do
+					local declIdent = declIdents[i]
 					if isDeclaredIdentifierReferenced(declLikeWatchers, declLike, declIdent) then  break  end
 
 					unregisterWatchers(identInfos, declLikeWatchers, declIdent)
-					declNames[i] = nil
+					declIdents[i] = nil
 				end
 			end
 
@@ -3047,7 +3359,7 @@ local function removeUselessNodes(theNode) -- @Incomplete: Expose in API.
 				-- if statement.line == 1804 then  print("mustKeep", mustKeep) ; printTree(statement)  end -- DEBUG
 
 				if not mustKeep then
-					-- if statement.line == 1804 then  ioWrite(">>>>>>> ") ; printNode(theNode)  end -- DEBUG
+					-- if statement.line == 1804 then  ioWrite(">>>>>>> ") ; printNode(statement)  end -- DEBUG
 
 					unregisterWatchers(identInfos, declLikeWatchers, statement)
 					remove(block.statements, i)
@@ -3111,6 +3423,7 @@ local function removeUselessNodes(theNode) -- @Incomplete: Expose in API.
 		end
 	end)
 end
+--]]
 
 
 
@@ -3151,9 +3464,12 @@ do
 	-- for pow = 0, 32 do  print(generateName(2^pow))  end ; error("TEST")
 end
 
-local function minify(node)
-	foldNodes(node)
-	removeUselessNodes(node)
+local function minify(node, optimize)
+	if optimize then
+		simplify(node)
+		clean(node)
+		simplify(node) -- clean() may have created more situations that can be simplified.
+	end
 
 	local identInfos, declLikeWatchers = getInformationAboutIdentifiersAndUpdateMostReferences(node)
 
@@ -3973,6 +4289,8 @@ parser = {
 	newNode          = newNode,
 	traverseTree     = traverseTree,
 	updateReferences = updateReferences,
+	simplify         = simplify,
+	clean            = clean,
 	minify           = minify,
 	toLua            = toLua,
 

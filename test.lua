@@ -1,3 +1,4 @@
+-- [===[
 local a
 local b, c = true, "f\0o"
 
@@ -127,6 +128,21 @@ do
 	local v = false or  always3()
 	local v = nil   and never4()
 	local v = nil   or  always4()
+
+	yes()
+	if 9 > 1 then
+		ifYes()
+		if 1 == "foo" then  ifNo()  end
+	end
+	while 9 > 1 do
+		whileYes()
+		while 1 == "foo" do  whileNo()  end
+	end
+	repeat
+		repeatYes()
+		repeat  repeatOnce()  until 1 ~= "foo"
+	until 9 <= 1
+	yes()
 end
 
 -- Removal of nodes.
@@ -161,25 +177,15 @@ do
 
 	do
 		local forward
-
-		local function localFunc()
-			forward()
-		end
-
-		function globalFunc()
-			localFunc()
-		end
-
+		local function localFunc()  forward()  end
+		function globalFunc()  localFunc()  end
 		do
 			local n = 0
-			function forward()
-				n = n + 1
-				return n
-			end
+			function forward()  n = n + 1 ; return n  end
 		end
 	end
 
-	-- This should be removed completely.
+	-- This block should be removed completely.
 	do
 		local n = 1 + 2
 
@@ -188,4 +194,34 @@ do
 		end
 		f = nil
 	end
+
+	-- Complex removals.
+	do
+		_"Remove everything."
+		local a       = 1
+		local a       = 1, 2
+		local a, b    = 1
+		local a, b    = 1, 2
+		_"Keep calls."
+		local a       = globalFunc1()
+		local a       = globalFunc1(), 2
+		local a       = 1, globalFunc2()
+		local a       = 1, globalFunc2(), 3
+		local a       = 1, 2, globalFunc3()
+		_"Keep all calls."
+		local a       = globalFunc1(), globalFunc2()
+		_"Keep call."
+		local a, b, c = 1, globalFunc2(), 3, 4 -- @Incomplete: Improve the result of this.
+		c             = 1
+		_"Keep call, c must be 3."
+		local a, b, c = 1, globalFunc2(), 3, 4
+		global1       = c
+		_"C must be third value returned from call."
+		local a, b, c = globalFunc123()
+		global2       = c
+		_"Keep call, c must be nil."
+		local a, b, c = globalFunc1(), 2
+		global3       = c
+	end
 end
+--]===]

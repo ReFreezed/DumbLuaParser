@@ -6,7 +6,8 @@ The library is a [single Lua file](dumbParser.lua) with no dependencies other th
 It works with Lua 5.1, 5.2 and 5.3.
 MIT license.
 
-Download the latest stable release [here](https://github.com/ReFreezed/DumbLuaParser/releases/latest).
+Download the latest stable release [here](https://github.com/ReFreezed/DumbLuaParser/releases/latest)
+or, if you're cloning the repository, checkout the last commit with a version tag.
 
 
 ## Basic usage

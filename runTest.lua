@@ -46,7 +46,13 @@ do
 	-- print(parser.toLua(ast, 1==1))
 	-- error("DEBUG")
 
-	parser.minify(ast)
+	if 1==1 then
+		parser.simplify(ast)
+		parser.clean(ast)
+		parser.simplify(ast)
+	else
+		parser.minify(ast)
+	end
 	-- parser.printTree(ast)
 	-- print(parser.toLua(ast, 1==1))
 	-- error("DEBUG")
