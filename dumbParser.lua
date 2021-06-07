@@ -198,7 +198,7 @@ local unpack        = table.unpack or unpack
 local loadLuaString = loadstring or load
 local maybeWrapInt  = (_VERSION == "Lua 5.2") and bit32.band or function(n)return(n)end
 
-local assertArg, errorf
+local assertArg1, assertArg, errorf
 local countString
 local formatNumber
 local getNameArrayOfDeclarationLike
@@ -208,7 +208,7 @@ local itemWith1
 local mayNodeBeInvolvedInJump, mayAnyNodeBeInvolvedInJump
 local newTokenStream, dummyTokens
 local parse
-local printError, printfError, reportErrorInFile, reportErrorAtToken, reportErrorAtNode
+local printfError, reportErrorInFile, reportErrorAtToken, reportErrorAtNode
 local printNode, printTree
 local printTokens
 local removeUnordered
@@ -430,9 +430,6 @@ function countString(haystack, needle, plain)
 	end
 end
 
-function printError(s)
-	io.stderr:write(s, "\n")
-end
 function printfError(s, ...)
 	io.stderr:write(s:format(...), "\n")
 end
@@ -502,6 +499,9 @@ end
 
 -- tokens, error = tokenizeString( luaString [, pathForErrorMessages="?" ] )
 function tokenizeString(s, path)
+	assertArg1("tokenizeString", 1, s,    "string")
+	assertArg ("tokenizeString", 2, path, "string","nil")
+
 	if find(s, "\r", 1, true) then
 		s = gsub(s, "\r\n?", "\n")
 	end
@@ -733,6 +733,8 @@ end
 
 -- tokens, error = tokenizeFile( path )
 function tokenizeFile(path)
+	assertArg1("tokenizeFile", 1, path, "string")
+
 	local file, err = io.open(path, "r")
 	if not file then  return nil, err  end
 
@@ -1881,13 +1883,26 @@ end
 -- ast, error = parse( luaString, pathForErrorMessages )
 -- ast, error = parse( path )
 function parse(tokens, path)
-	if type(tokens) == "string" then
+	assertArg("parse", 1, tokens, "table","string")
+
+	-- ast, error = parse( tokens )
+	if type(tokens) == "table" then
+		assertArg1("parse", 2, path, "nil")
+
+	else
 		local err
 
-		if path then
+		-- ast, error = parse( luaString, pathForErrorMessages )
+		if path ~= nil then
+			assertArg1("parse", 2, path, "string")
+
 			local lua   = tokens
 			tokens, err = tokenizeString(lua, path)
+
+		-- ast, error = parse( path )
 		else
+			assertArg1("parse", 2, path, "nil")
+
 			path        = tokens
 			tokens, err = tokenizeFile(path)
 		end
@@ -2256,13 +2271,13 @@ end
 -- action  = callback( astNode, parent, container, key )
 -- action  = "stop"|"ignorechildren"|nil  -- Returning nil (or nothing) means continue traversal.
 function traverseTree(node, leavesFirst, cb, parent, container, k)
-	assertArg("traverseTree", 1, node, "table")
+	assertArg1("traverseTree", 1, node, "table")
 
 	if type(leavesFirst) == "boolean" then
-		assertArg("traverseTree", 3, cb, "function")
+		assertArg1("traverseTree", 3, cb, "function")
 	else
 		leavesFirst, cb, parent, container, k = false, leavesFirst, cb, parent, container
-		assertArg("traverseTree", 2, cb, "function")
+		assertArg1("traverseTree", 2, cb, "function")
 	end
 
 	if not leavesFirst then
@@ -2373,13 +2388,13 @@ end
 -- action  = callback( astNode, parent, container, key )
 -- action  = "stop"|"ignorechildren"|nil  -- Returning nil (or nothing) means continue traversal.
 function traverseTreeReverse(node, leavesFirst, cb, parent, container, k) -- @Incomplete: Expose in API? Yeah.
-	assertArg("traverseTreeReverse", 1, node, "table")
+	assertArg1("traverseTreeReverse", 1, node, "table")
 
 	if type(leavesFirst) == "boolean" then
-		assertArg("traverseTreeReverse", 3, cb, "function")
+		assertArg1("traverseTreeReverse", 3, cb, "function")
 	else
 		leavesFirst, cb, parent, container, k = false, leavesFirst, cb, parent, container
-		assertArg("traverseTreeReverse", 2, cb, "function")
+		assertArg1("traverseTreeReverse", 2, cb, "function")
 	end
 
 	if not leavesFirst then
@@ -2762,7 +2777,7 @@ local binaryFolders = {
 		if l.type == "literal" and r.type == "literal" and isFiniteNumber(l.value) and type(r.value) == "number" then
 			intToBits(l.value, bits1)
 
-			local shift = math.floor(r.value)
+			local shift = floor(r.value)
 			local i1    = INT_SIZE
 			local i2    = 1
 			local step  = -1
@@ -2785,7 +2800,7 @@ local binaryFolders = {
 		if l.type == "literal" and r.type == "literal" and isFiniteNumber(l.value) and type(r.value) == "number" then
 			intToBits(l.value, bits1)
 
-			local shift = math.floor(r.value)
+			local shift = floor(r.value)
 			local i1    = 1
 			local i2    = INT_SIZE
 			local step  = 1
@@ -2897,7 +2912,7 @@ local function simplifyNode(node, parent, container, key)
 				replace(ifNode, replacement, parent, container, key)
 				return simplifyNode(replacement, parent, container, key)
 			else
-				table.remove(container, key)
+				remove(container, key)
 			end
 		end
 
@@ -2908,7 +2923,7 @@ local function simplifyNode(node, parent, container, key)
 			if whileLoop.condition.value then
 				whileLoop.condition.value = true
 			else
-				table.remove(container, key)
+				remove(container, key)
 			end
 		end
 
@@ -3338,7 +3353,7 @@ local function clean(theNode)
 						significantValueCount = significantValueCount + 1
 						significantCall       = significantCall or (valueExpr.type == "call" and valueExpr) or nil
 					else
-						table.remove(decl.values, i)
+						remove(decl.values, i)
 					end
 				end
 
@@ -3430,7 +3445,7 @@ local function clean(theNode)
 						else
 							if canRemoveSlot and #declIdents > 1 then
 								unregisterWatchers(identInfos, declLikeWatchers, declIdent)
-								table.remove(declIdents, slot)
+								remove(declIdents, slot)
 								for slot = slot, #declIdents do
 									declIdents[slot].key = slot
 								end
@@ -3439,7 +3454,7 @@ local function clean(theNode)
 							if wantToRemoveValue and valueExpr then
 								if canRemoveSlot or not decl.values[slot+1] then
 									unregisterWatchers(identInfos, declLikeWatchers, valueExpr)
-									table.remove(decl.values, slot)
+									remove(decl.values, slot)
 									for slot = slot, #decl.values do
 										decl.values[slot]. key = slot
 									end
@@ -4422,7 +4437,7 @@ do
 	-- lua = toLua( astNode [, prettyOuput=false ] )
 	-- Returns nil on error.
 	function toLua(node, pretty)
-		assertArg("toLua", 1, node, "table")
+		assertArg1("toLua", 1, node, "table")
 
 		local buffer = {}
 
@@ -4449,9 +4464,18 @@ end
 
 
 
-function assertArg(funcName, argNum, v, expectedType)
+-- assertArg1( functionName, argumentNumber, value, expectedType )
+function assertArg1(funcName, argNum, v, expectedType)
 	if type(v) == expectedType then  return  end
-	errorf(3, "bad argument #%d to '%s' (%s expected, got %s)", argNum, funcName, expectedType, type(v))
+	errorf(3, "bad argument #%d to '%s' (expected %s, got %s)", argNum, funcName, expectedType, type(v))
+end
+
+-- assertArg( functionName, argumentNumber, value, expectedType1, ... )
+function assertArg(funcName, argNum, v, ...)
+	for i = 1, select("#", ...) do
+		if type(v) == select(i, ...) then  return  end
+	end
+	errorf(3, "bad argument #%d to '%s' (expected %s, got %s)", argNum, funcName, concat({...}, " or "), type(v))
 end
 
 -- errorf( [ level=1, ] format, ... )
