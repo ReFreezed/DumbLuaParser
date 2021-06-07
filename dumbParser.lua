@@ -30,8 +30,8 @@
 	API
 	--------------------------------
 
-	tokenizeString()
-		tokens, error = parser.tokenizeString( luaString [, pathForErrorMessages="?" ] )
+	tokenize()
+		tokens, error = parser.tokenize( luaString [, pathForErrorMessages="?" ] )
 		Convert a Lua string into tokens.
 		Returns nil and a message on error.
 
@@ -216,7 +216,7 @@ local parse, parseFile
 local printNode, printTree
 local printTokens
 local removeUnordered
-local tokenizeString, tokenizeFile
+local tokenize, tokenizeFile
 local toLua
 local traverseTree, traverseTreeReverse
 local updateReferences
@@ -496,10 +496,10 @@ local function parseStringlikeToken(s, ptr)
 	return true, equalSignCountIfLong, ptr
 end
 
--- tokens, error = tokenizeString( luaString [, pathForErrorMessages="?" ] )
-function tokenizeString(s, path)
-	assertArg1("tokenizeString", 1, s,    "string")
-	assertArg ("tokenizeString", 2, path, "string","nil")
+-- tokens, error = tokenize( luaString [, pathForErrorMessages="?" ] )
+function tokenize(s, path)
+	assertArg1("tokenize", 1, s,    "string")
+	assertArg ("tokenize", 2, path, "string","nil")
 
 	if find(s, "\r", 1, true) then
 		s = gsub(s, "\r\n?", "\n")
@@ -740,7 +740,7 @@ function tokenizeFile(path)
 	local s = file:read("*a")
 	file:close()
 
-	return tokenizeString(s, path)
+	return tokenize(s, path)
 end
 
 
@@ -1896,7 +1896,7 @@ function parse(luaOrTokens, path)
 	else
 		assertArg1("parse", 2, path, "string")
 
-		local tokens, err = tokenizeString(luaOrTokens, path)
+		local tokens, err = tokenize(luaOrTokens, path)
 		if not tokens then  return nil, err  end
 
 		return tokensToAst(tokens)
@@ -4500,7 +4500,7 @@ parser = {
 	MIN_INT          = MIN_INT,  -- @Undocumented
 
 	-- Functions.
-	tokenizeString   = tokenizeString,
+	tokenize         = tokenize,
 	tokenizeFile     = tokenizeFile,
 
 	newTokenStream   = newTokenStream,

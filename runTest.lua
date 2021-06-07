@@ -76,7 +76,7 @@ do
 	assert(loadLuaString(lua, "@<luastring>"))
 
 	-- Round-trip.
-	local tripTokens = assert(parser.tokenizeString(lua))
+	local tripTokens = assert(parser.tokenize(lua))
 	local tripAst    = assert(parser.parse(tripTokens))
 	local tripLua    = assert(parser.toLua(tripAst, PRETTY))
 
