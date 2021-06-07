@@ -176,34 +176,34 @@
 
 local PARSER_VERSION = "2.0.0-dev"
 
-local io            = io
-local ioWrite       = io.write
+local io           = io
+local ioWrite      = io.write
 
-local bytesToString = string.char
-local F             = string.format
-local find          = string.find
-local getByte       = string.byte
-local getSubstring  = string.sub
-local gmatch        = string.gmatch
-local gsub          = string.gsub
-local match         = string.match
-local repeatString  = string.rep
+local byteToString = string.char
+local F            = string.format
+local find         = string.find
+local getByte      = string.byte
+local getSubstring = string.sub
+local gmatch       = string.gmatch
+local gsub         = string.gsub
+local match        = string.match
+local repeatString = string.rep
 
-local floor         = math.floor
-local getMax        = math.max
-local getMin        = math.min
+local floor        = math.floor
+local getMax       = math.max
+local getMin       = math.min
 
-local concat        = table.concat
-local insert        = table.insert
-local remove        = table.remove
-local sort          = table.sort
-local unpack        = table.unpack or unpack
+local concat       = table.concat
+local insert       = table.insert
+local remove       = table.remove
+local sort         = table.sort
+local unpack       = table.unpack or unpack
 
 local loadLuaString = loadstring or load
 local maybeWrapInt  = (_VERSION == "Lua 5.2") and bit32.band or function(n)return(n)end
 
 local assertArg1, assertArg, errorf
-local countString
+local countString, countSubString
 local formatErrorInFile, formatErrorAtToken, formatErrorAtNode -- @Incomplete: Should we expose these functions?
 local formatNumber
 local getNameArrayOfDeclarationLike
@@ -434,30 +434,89 @@ function countString(haystack, needle, plain)
 	end
 end
 
+-- count = countSubString( haystack, startPosition, endPosition, needle [, plain=false ] )
+function countSubString(haystack, pos, posEnd, needle, plain)
+	local count = 0
+
+	while true do
+		local _, i2 = haystack:find(needle, pos, plain)
+		if not i2 or i2 > posEnd then  return count  end
+
+		count = count + 1
+		pos   = i2    + 1
+	end
+end
 
 
-function formatErrorInFile(contents, path, ptr, agent, s, ...)
-	s = F(s, ...)
 
-	if contents == "" then
-		return F("Error @ %s: [%s] %s", path, agent, s)
+do
+	local function getLineNumber(s, pos)
+		return 1 + countSubString(s, 1, pos-1, "\n", true)
 	end
 
-	local pre       = getSubstring(contents, 1, ptr-1)
+	local function findStartOfLine(s, pos, canBeEmpty)
+		while pos > 1 do
+			if getByte(s, pos-1) == 10--[[\n]] and (canBeEmpty or getByte(s, pos) ~= 10--[[\n]]) then  break  end
+			pos = pos - 1
+		end
+		return math.max(pos, 1)
+	end
+	local function findEndOfLine(s, pos)
+		while pos < #s do
+			if getByte(s, pos+1) == 10--[[\n]] then  break  end
+			pos = pos + 1
+		end
+		return math.min(pos, #s)
+	end
 
-	local lastLine1 = pre:reverse():match"^[^\n]*":reverse():gsub("\t", "    ")
-	local lastLine2 = contents:match("^[^\n]*", ptr):gsub("\t", "    ")
-	local lastLine  = lastLine1..lastLine2
+	local function getSubTextLength(s, pos, posEnd)
+		local len = 0
 
-	local ln        = countString(pre, "\n", true) + 1
-	local col       = #lastLine1 + 1
+		while pos <= posEnd do
+			if getByte(s, pos) == 9 then -- '\t'
+				len = len + 4
+				pos = pos + 1
+			else
+				local _, i2 = find(s, "^[%z\1-\127\194-\253][\128-\191]*", pos)
+				if i2 and i2 <= posEnd then
+					len = len + 1
+					pos = i2  + 1
+				else
+					len = len + 1
+					pos = pos + 1
+				end
+			end
+		end
 
-	-- print(debug.traceback("", 2)) -- DEBUG
+		return len
+	end
 
-	return F(
-		"Error @ %s:%d: [%s] %s\n>\n> %s\n>%s^\n>",
-		path, ln, agent, s, lastLine, repeatString("-", col)
-	)
+	function formatErrorInFile(contents, path, pos, agent, s, ...)
+		s = F(s, ...)
+
+		if contents == "" then
+			return F("Error @ %s: [%s] %s", path, agent, s)
+		end
+
+		pos      = math.min(math.max(pos, 1), #contents+1)
+		local ln = getLineNumber(contents, pos)
+
+		local lineStart     = findStartOfLine(contents, pos, true)
+		local lineEnd       = findEndOfLine  (contents, pos-1)
+		local linePre1Start = findStartOfLine(contents, lineStart-1, false)
+		local linePre1End   = findEndOfLine  (contents, linePre1Start-1)
+		local linePre2Start = findStartOfLine(contents, linePre1Start-1, false)
+		local linePre2End   = findEndOfLine  (contents, linePre2Start-1)
+		-- print(F("pos %d | lines %d..%d, %d..%d, %d..%d", pos, linePre2Start,linePre2End+1, linePre1Start,linePre1End+1, lineStart,lineEnd+1)) -- DEBUG
+
+		return F("Error @ %s:%d: [%s] %s\n>\n%s%s%s>-%s^",
+			path, ln, agent, s,
+			(linePre2Start < linePre1Start and linePre2Start <= linePre2End) and F("> %s\n", (gsub(getSubstring(contents, linePre2Start, linePre2End), "\t", "    "))) or "",
+			(linePre1Start < lineStart     and linePre1Start <= linePre1End) and F("> %s\n", (gsub(getSubstring(contents, linePre1Start, linePre1End), "\t", "    "))) or "",
+			(                                  lineStart     <= lineEnd    ) and F("> %s\n", (gsub(getSubstring(contents, lineStart,     lineEnd    ), "\t", "    "))) or ">\n",
+			repeatString("-", getSubTextLength(contents, lineStart, pos-1))
+		)
+	end
 end
 
 function formatErrorAtToken(tokens, tok, agent, s, ...)
@@ -496,6 +555,121 @@ local function parseStringlikeToken(s, ptr)
 	return true, equalSignCountIfLong, ptr
 end
 
+local function codepointToString(cp, buffer)
+	if cp < 0 or cp > 0x10ffff then
+		-- This error is actually incorrect as Lua supports codepoints up to 2^31.
+		-- This is probably an issue that no one will ever encounter!
+		return false, F("Codepoint 0x%X (%.0f) is outside the valid range (0..10FFFF).", cp, cp)
+	end
+
+	if cp < 128 then
+		insert(buffer, byteToString(cp))
+		return true
+	end
+
+	local suffix = cp % 64
+	local c4     = 128 + suffix
+	cp           = (cp - suffix) / 64
+
+	if cp < 32 then
+		insert(buffer, byteToString(192+cp))
+		insert(buffer, byteToString(c4))
+		return true
+	end
+
+	suffix   = cp % 64
+	local c3 = 128 + suffix
+	cp       = (cp - suffix) / 64
+
+	if cp < 16 then
+		insert(buffer, byteToString(224+cp))
+		insert(buffer, byteToString(c3))
+		insert(buffer, byteToString(c4))
+		return true
+	end
+
+	suffix = cp % 64
+	cp     = (cp - suffix) / 64
+
+	insert(buffer, byteToString(240+cp))
+	insert(buffer, byteToString(128+suffix))
+	insert(buffer, byteToString(c3))
+	insert(buffer, byteToString(c4))
+	return true
+end
+
+local function parseStringContents(s, path, ptr, ptrEnd)
+	local buffer = {}
+
+	while ptr <= ptrEnd do
+		local i1 = find(s, "\\", ptr, true)
+		if not i1 or i1 > ptrEnd then  break  end
+
+		if i1 > ptr then
+			table.insert(buffer, getSubstring(s, ptr, i1-1))
+		end
+		ptr = i1 + 1
+
+		-- local b1, b2, b3 = getByte(s, ptr, ptr+2)
+
+		if     find(s, "^a", ptr) then  table.insert(buffer, "\a") ; ptr = ptr + 1
+		elseif find(s, "^b", ptr) then  table.insert(buffer, "\b") ; ptr = ptr + 1
+		elseif find(s, "^t", ptr) then  table.insert(buffer, "\t") ; ptr = ptr + 1
+		elseif find(s, "^n", ptr) then  table.insert(buffer, "\n") ; ptr = ptr + 1
+		elseif find(s, "^v", ptr) then  table.insert(buffer, "\v") ; ptr = ptr + 1
+		elseif find(s, "^f", ptr) then  table.insert(buffer, "\f") ; ptr = ptr + 1
+		elseif find(s, "^r", ptr) then  table.insert(buffer, "\r") ; ptr = ptr + 1
+		elseif find(s, "^\\",ptr) then  table.insert(buffer, "\\") ; ptr = ptr + 1
+		elseif find(s, '^"', ptr) then  table.insert(buffer, "\"") ; ptr = ptr + 1
+		elseif find(s, "^'", ptr) then  table.insert(buffer, "\'") ; ptr = ptr + 1
+		elseif find(s, "^\n",ptr) then  table.insert(buffer, "\n") ; ptr = ptr + 1
+
+		elseif find(s, "^z", ptr) then
+			local i1, i2 = find(s, "^%s*", ptr+1)
+			ptr          = i2 + 1
+
+		elseif find(s, "^%d", ptr) then
+			local nStr = match(s, "^%d%d?%d?", ptr)
+			local byte = tonumber(nStr)
+
+			if byte > 255 then
+				return nil, formatErrorInFile(s, path, ptr, "Tokenizer", "Byte value '%s' is out-of-range in decimal escape sequence.", nStr)
+			end
+
+			table.insert(buffer, byteToString(byte))
+			ptr = ptr + #nStr
+
+		elseif find(s, "^x%x%x", ptr) then
+			local hexStr = getSubstring(s, ptr+1, ptr+2)
+			local byte   = tonumber(hexStr, 16)
+
+			table.insert(buffer, byteToString(byte))
+			ptr = ptr + 3
+
+		elseif find(s, "^u{%x+}", ptr) then
+			local hexStr = match(s, "^%x+", ptr+2)
+			local cp     = tonumber(hexStr, 16)
+
+			local ok, err = codepointToString(cp, buffer)
+			if not ok then
+				return nil, formatErrorInFile(s, path, ptr+2, "Tokenizer", err)
+			end
+
+			ptr = ptr + 3 + #hexStr
+
+		else
+			return nil, formatErrorInFile(s, path, ptr-1, "Tokenizer", "Invalid escape sequence.")
+		end
+
+	end
+
+	if ptr <= ptrEnd then
+		table.insert(buffer, getSubstring(s, ptr, ptrEnd))
+	end
+
+	return concat(buffer)
+end
+
 -- tokens, error = tokenize( luaString [, pathForErrorMessages="?" ] )
 function tokenize(s, path)
 	assertArg1("tokenize", 1, s,    "string")
@@ -523,10 +697,10 @@ function tokenize(s, path)
 	local ln    = 1
 
 	while true do
-		local i1, i2, spaces = find(s, "^(%s+)", ptr)
+		local i1, i2 = find(s, "^%s+", ptr)
 		if i1 then
-			ln  = ln + countString(spaces, "\n", true)
-			ptr = i2+1
+			ln  = ln + countSubString(s, i1, i2, "\n", true)
+			ptr = i2 + 1
 		end
 
 		if ptr > #s then  break  end
@@ -559,7 +733,7 @@ function tokenize(s, path)
 				end
 			end
 
-			-- Check for nesting of [[...]] which is depricated in Lua.
+			-- Check for nesting of [[...]] which is depricated in Lua. Sigh...
 			if equalSignCountIfLong and equalSignCountIfLong == 0 then
 				local pos = find(s, "[[", ptrStart+4, true)
 				if pos and pos < ptr then
@@ -619,48 +793,66 @@ function tokenize(s, path)
 				return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Malformed number.")
 			end
 
-		-- String (short).
+		-- Quoted string.
 		elseif find(s, "^[\"']", ptr) then
-			local quoteChar = getSubstring(s, ptr, ptr)
-			ptr = ptr + 1
+			local quote     = getSubstring(s, ptr, ptr)
+			local quoteByte = getByte(quote)
+			ptr             = ptr + 1
+
+			local pat = "["..quote.."\\\n]"
 
 			while true do
-				local c = getSubstring(s, ptr, ptr)
-
-				if c == "" then
+				local i1 = find(s, pat, ptr)
+				if not i1 then
 					return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Unfinished string.")
+				end
 
-				elseif c == quoteChar then
+				ptr          = i1
+				local b1, b2 = getByte(s, ptr, ptr+1)
+
+				-- '"'
+				if b1 == quoteByte then
 					ptr = ptr + 1
 					break
 
-				elseif c == "\\" then
-					-- Note: We don't have to look for multiple characters after
-					-- the escape, like \nnn - this algorithm works anyway.
-					if ptr+1 > #s then
-						return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Unfinished string after escape character.")
-					end
-					ptr = ptr + 2
+				-- '\'
+				elseif b1 == 92 then
+					ptr = ptr + 1
 
-				elseif c == "\n" then
+					if b2 == 122 then -- 'z'
+						ptr         = ptr + 1
+						local _, i2 = find(s, "^%s*", ptr)
+						ptr         = i2 + 1
+					else
+						-- Note: We don't have to look for multiple characters after the escape, like \nnn - this algorithm works anyway.
+						if ptr > #s then
+							return nil, formatErrorInFile(s, path, ptr, "Tokenizer", "Unfinished string after escape character.")
+						end
+						ptr = ptr + 1 -- Just skip the next character, whatever it might be.
+					end
+
+				-- '\n'
+				elseif b1 == 10 then
 					-- Lua, this is silly!
-					return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Unescaped newline in string.")
+					return nil, formatErrorInFile(s, path, ptr, "Tokenizer", "Unescaped newline in string.")
 
 				else
-					ptr = ptr + 1
+					assert(false)
 				end
 			end
 
 			tokType = "string"
 			tokRepr = getSubstring(s, ptrStart, ptr-1)
 
-			local chunk, err = loadLuaString("return "..tokRepr, "@")
-			if not chunk then
-				err = gsub(err, "^:%d+: ", "")
-				return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Could not convert string token to value. (%s)", err)
+			local chunk = loadLuaString("return "..tokRepr, "@") -- Try to make Lua parse the string value before we fall back to our own parser which is probably slower.
+			if chunk then
+				tokValue = chunk()
+				assert(type(tokValue) == "string")
+			else
+				local stringValue, err = parseStringContents(s, path, ptrStart+1, ptr-2)
+				if not stringValue then  return nil, err  end
+				tokValue = stringValue
 			end
-			tokValue = assert(chunk)()
-			assert(type(tokValue) == "string")
 
 		-- Long string.
 		elseif find(s, "^%[=*%[", ptr) then
@@ -3291,9 +3483,9 @@ local function clean(theNode)
 		end
 	end
 	print("--------------")
-	--[=[]]
+	--[==[]]
 	end
-	--]=]
+	--]==]
 
 	--
 	-- Remove useless declaration-likes
@@ -3628,7 +3820,7 @@ do
 				if nameGeneration == 0 then  break  end
 			end
 
-			cache[nameGeneration] = bytesToString(unpack(charBytes))
+			cache[nameGeneration] = byteToString(unpack(charBytes))
 		end
 
 		return cache[nameGeneration]
@@ -4018,7 +4210,7 @@ do
 				local R         = isNumberInRange
 				local s         = node.value
 				local quote     = find(s, '"', 1, true) and not find(s, "'", 1, true) and "'" or '"'
-				local quoteByte = quote:byte()
+				local quoteByte = getByte(quote)
 				local pos       = 1
 
 				lastOutput = writeLua(buffer, quote, "")
