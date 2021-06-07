@@ -3774,6 +3774,10 @@ do
 
 	-- lastOutput = "alpha"|"alphanum"|""
 
+	local function isNumberInRange(n, min, max)
+		return n ~= nil and n >= min and n <= max
+	end
+
 	local function canNodeBeName(node)
 		return node.type == "literal" and type(node.value) == "string" and node.value:find"^[%a_][%w_]*$" and not KEYWORDS[node.value]
 	end
@@ -4018,36 +4022,53 @@ do
 				lastOutput = writeNumber(buffer, pretty, node.value, lastOutput)
 
 			elseif type(node.value) == "string" then
-				local s            = node.value
-				local quote        = s:find('"', 1, true) and not s:find("'", 1, true) and "'" or '"'
-				local quoteEscaped = "\\"..quote
-
-				s = s:gsub("(.)()", function(c, nextPos)
-					-- Note: We assume the string is UTF-8, but nothing should
-					-- break if it isn't - we should still get valid Lua code.
-					local b = getByte(c)
-					if     c == "\a"  then  return [[\a]]
-					elseif c == "\b"  then  return [[\b]]
-					elseif c == "\f"  then  return [[\f]]
-					elseif c == "\n"  then  return [[\n]]
-					elseif c == "\r"  then  return [[\r]]
-					elseif c == "\t"  then  return [[\t]]
-					elseif c == "\v"  then  return [[\v]]
-					elseif c == "\\"  then  return [[\\]]
-					elseif c == quote then  return quoteEscaped
-					elseif b == 127   then  return [[\127]]
-					elseif b <= 31    then
-						local nextByte = getByte(s, nextPos) or 0
-						return nextByte >= 48 and nextByte <= 57 and F([[\%03d]], b) or F([[\%d]], b)
-					end
-				end)
+				local R         = isNumberInRange
+				local s         = node.value
+				local quote     = find(s, '"', 1, true) and not find(s, "'", 1, true) and "'" or '"'
+				local quoteByte = quote:byte()
+				local pos       = 1
 
 				lastOutput = writeLua(buffer, quote, "")
-				lastOutput = writeLua(buffer, s,     "")
+
+				while pos <= #s do
+					local b1, b2, b3, b4 = getByte(s, pos, pos+3)
+
+					-- Printable ASCII.
+					if R(b1,32,126) and b1 ~= 92 then
+						if     b1 == quoteByte then  insert(buffer, "\\") ; insert(buffer, quote) ; pos = pos + 1
+						elseif b1 == 92        then  insert(buffer, [[\\]])                       ; pos = pos + 1
+						else                         insert(buffer, getSubstring(s, pos, pos))    ; pos = pos + 1
+						end
+
+					-- Multi-byte UTF-8 sequence.
+					elseif b2 and R(b1,194,223) and R(b2,128,191)                                     then  insert(buffer, getSubstring(s, pos, pos+1)) ; pos = pos + 2
+					elseif b3 and b1== 224      and R(b2,160,191) and R(b3,128,191)                   then  insert(buffer, getSubstring(s, pos, pos+2)) ; pos = pos + 3
+					elseif b3 and R(b1,225,236) and R(b2,128,191) and R(b3,128,191)                   then  insert(buffer, getSubstring(s, pos, pos+2)) ; pos = pos + 3
+					elseif b3 and b1== 237      and R(b2,128,159) and R(b3,128,191)                   then  insert(buffer, getSubstring(s, pos, pos+2)) ; pos = pos + 3
+					elseif b3 and R(b1,238,239) and R(b2,128,191) and R(b3,128,191)                   then  insert(buffer, getSubstring(s, pos, pos+2)) ; pos = pos + 3
+					elseif b4 and b1== 240      and R(b2,144,191) and R(b3,128,191) and R(b4,128,191) then  insert(buffer, getSubstring(s, pos, pos+3)) ; pos = pos + 4
+					elseif b4 and R(b1,241,243) and R(b2,128,191) and R(b3,128,191) and R(b4,128,191) then  insert(buffer, getSubstring(s, pos, pos+3)) ; pos = pos + 4
+					elseif b4 and b1== 244      and R(b2,128,143) and R(b3,128,191) and R(b4,128,191) then  insert(buffer, getSubstring(s, pos, pos+3)) ; pos = pos + 4
+
+					-- Escape sequence.
+					elseif b1 == 7  then  insert(buffer, [[\a]]) ; pos = pos + 1
+					elseif b1 == 8  then  insert(buffer, [[\b]]) ; pos = pos + 1
+					elseif b1 == 9  then  insert(buffer, [[\t]]) ; pos = pos + 1
+					elseif b1 == 10 then  insert(buffer, [[\n]]) ; pos = pos + 1
+					elseif b1 == 11 then  insert(buffer, [[\v]]) ; pos = pos + 1
+					elseif b1 == 12 then  insert(buffer, [[\f]]) ; pos = pos + 1
+					elseif b1 == 13 then  insert(buffer, [[\r]]) ; pos = pos + 1
+
+					-- Other control character or anything else.
+					elseif b2 and R(b2,48,57) then  insert(buffer, F([[\%03d]], b1)) ; pos = pos + 1
+					else                            insert(buffer, F([[\%d]],   b1)) ; pos = pos + 1
+					end
+				end
+
 				lastOutput = writeLua(buffer, quote, "")
 
 			else
-				printfError("Error: Failed outputting value '%s'.", node.value)
+				printfError("Error: Failed outputting value '%s'.", tostring(node.value))
 				return false, lastOutput
 			end
 
@@ -4087,7 +4108,7 @@ do
 			if not ok then  return false, lastOutput  end
 
 		elseif nodeType == "unary" then
-			local operatorOutput    = ((node.operator == "-" and "-") or (node.operator:find"%w" and "alphanum") or (""))
+			local operatorOutput    = ((node.operator == "-" and "-") or (find(node.operator, "%w") and "alphanum") or (""))
 			local prettyAndAlphanum = pretty and operatorOutput == "alphanum"
 
 			if prettyAndAlphanum and not maySafelyOmitParens then  lastOutput = writeLua(buffer, "(", "")  end -- @Polish: Only output parentheses around child unaries/binaries if associativity requires it.
@@ -4113,7 +4134,7 @@ do
 				local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, node.left, false)
 				if not ok then  return false, lastOutput  end
 
-				local operatorOutput = ((node.operator == "-" and "-") or (node.operator:find"%w" and "alphanum") or (""))
+				local operatorOutput = ((node.operator == "-" and "-") or (find(node.operator, "%w") and "alphanum") or (""))
 
 				if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
@@ -4181,7 +4202,7 @@ do
 
 		elseif nodeType == "label" then
 			local name = node.name
-			if not (name:find"^[%a_][%w_]*$" and not KEYWORDS[name]) then
+			if not (find(name, "^[%a_][%w_]*$") and not KEYWORDS[name]) then
 				printfError("Error: AST: Invalid label '%s'.", name)
 				return false, lastOutput
 			end
@@ -4192,7 +4213,7 @@ do
 
 		elseif nodeType == "goto" then
 			local name = node.name
-			if not (name:find"^[%a_][%w_]*$" and not KEYWORDS[name]) then
+			if not (find(name, "^[%a_][%w_]*$") and not KEYWORDS[name]) then
 				printfError("Error: AST: Invalid label '%s'.", name)
 				return false, lastOutput
 			end
