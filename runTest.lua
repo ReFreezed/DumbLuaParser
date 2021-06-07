@@ -11,6 +11,12 @@ local parser          = require"dumbParser"
 parser.printIds       = PRINT_IDS
 parser.printLocations = PRINT_LOCATIONS
 
+local function assert(v, err)
+	if v then  return v  end
+	io.stderr:write(debug.traceback(tostring(err or "Assertion failed!"), 2), "\n")
+	os.exit(1)
+end
+
 do
 	local path = "test.lua"
 	-- local path = "dumbParser.lua"
