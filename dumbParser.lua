@@ -1813,6 +1813,8 @@ function parseBlock(tokens, tok, blockTok, stopAtEndKeyword) --> block, token, e
 			tok = tok + 1 -- ';'
 		end
 
+		local statementStartTok = tok
+
 		if stopAtEndKeyword and isTokenType(tokens, tok, "keyword") and isTokenAnyValue(tokens, tok, BLOCK_END_TOKEN_TYPES) then
 			break
 		end
@@ -1831,13 +1833,14 @@ function parseBlock(tokens, tok, blockTok, stopAtEndKeyword) --> block, token, e
 			tok = tok + 1 -- ';'
 		end
 
-		local lastStatement = statements[#statements]
+		local lastAddedStatement = statements[#statements]
 
-		if lastStatement.type == "return" or lastStatement.type == "break" then
+		if lastAddedStatement.type == "return" then -- Note: 'break' statements are allowed in the middle of blocks as of Lua 5.2.
 			break
 
-		elseif lastStatement.type == "call" and lastStatement.adjustToOne then
-			return nil, tok, formatErrorAtToken(tokens, tok, "Parser", "Syntax error.")
+		elseif lastAddedStatement.type == "call" and lastAddedStatement.adjustToOne then
+			statementErrorReported = true
+			return nil, tok, formatErrorAtToken(tokens, statementStartTok, "Parser", "Syntax error.")
 		end
 	end
 

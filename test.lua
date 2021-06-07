@@ -77,6 +77,11 @@ do
 	local g = ~x
 
 	local foo = ((y & 0x7) << 4) | 0xFF00
+
+	while 1 do
+		break
+		unreachable()
+	end
 	--]]
 
 	--[[ Lua 5.4+
