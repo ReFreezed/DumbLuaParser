@@ -250,10 +250,12 @@ local maybeWrapInt  = (_VERSION == "Lua 5.2") and bit32.band or function(n)retur
 
 local assertArg1, assertArg, errorf
 local countString, countSubString
-local formatErrorInFile, formatErrorAtToken, formatErrorAtNode -- @Incomplete: Should we expose these functions?
+local formatErrorInFile, formatErrorAtToken, formatErrorAfterToken, formatErrorAtNode -- @Incomplete: Should we expose these functions?
 local formatNumber
 local getChild, setChild, addChild, removeChild
+local getLineNumber
 local getNameArrayOfDeclarationLike
+local getRelativeLocationText, getRelativeLocationTextForToken, getRelativeLocationTextForNode
 local ipairsr
 local isToken, isTokenType, isTokenAnyValue
 local itemWith1
@@ -521,11 +523,13 @@ end
 
 
 
-do
-	local function getLineNumber(s, pos)
-		return 1 + countSubString(s, 1, pos-1, "\n", true)
-	end
+function getLineNumber(s, pos)
+	return 1 + countSubString(s, 1, pos-1, "\n", true)
+end
 
+
+
+do
 	local function findStartOfLine(s, pos, canBeEmpty)
 		while pos > 1 do
 			if getByte(s, pos-1) == 10--[[\n]] and (canBeEmpty or getByte(s, pos) ~= 10--[[\n]]) then  break  end
@@ -592,10 +596,55 @@ do
 end
 
 function formatErrorAtToken(tokens, tok, agent, s, ...)
-	return (formatErrorInFile(tokens.sourceString, tokens.sourcePath, tokens.positionStart[tok], agent, s, ...))
+	local pos = tokens.positionStart[tok] or (tok == 1 and 1 or #tokens.sourceString+1)
+	return (formatErrorInFile(tokens.sourceString, tokens.sourcePath, pos, agent, s, ...))
 end
+function formatErrorAfterToken(tokens, tok, agent, s, ...)
+	local pos = (tokens.positionStart[tok] and tokens.positionEnd[tok]+1) or (tok == 1 and 1 or #tokens.sourceString+1)
+	return (formatErrorInFile(tokens.sourceString, tokens.sourcePath, pos, agent, s, ...))
+end
+
 function formatErrorAtNode(node, agent, s, ...)
 	return (formatErrorInFile(node.sourceString, node.sourcePath, node.position, agent, s, ...))
+end
+
+
+
+-- text = getRelativeLocationText( sourcePathOfInterest, lineNumberOfInterest, otherSourcePath, otherLineNumber )
+-- text = getRelativeLocationText( lineNumberOfInterest, otherLineNumber )
+function getRelativeLocationText(sourcePath, ln, otherSourcePath, otherLn)
+	if type(sourcePath) ~= "string" then
+		sourcePath, ln, otherSourcePath, otherLn = "", sourcePath, "", ln
+	end
+
+	if not (ln > 0) then
+		return "at <UnknownLocation>"
+	end
+
+	if sourcePath ~= otherSourcePath         then  return F("at %s:%d", sourcePath, ln)  end
+	if ln+1       == otherLn and otherLn > 0 then  return F("on the previous line")  end
+	if ln-1       == otherLn and otherLn > 0 then  return F("on the next line")  end
+	if ln         ~= otherLn                 then  return F("on line %d", ln)  end
+	return "on the same line"
+end
+
+-- text = getRelativeLocationTextForToken( tokens, tokenOfInterest, otherToken )
+function getRelativeLocationTextForToken(tokens, tokOfInterest, otherTok)
+	return getRelativeLocationText((tokens.lineStart[tokOfInterest] or 0), (tokens.lineStart[otherTok] or 0))
+end
+
+-- text = getRelativeLocationTextForNode( nodeOfInterest, otherNode )
+-- text = getRelativeLocationTextForNode( nodeOfInterest, otherSourcePath, otherLineNumber )
+function getRelativeLocationTextForNode(nodeOfInterest, otherSourcePath, otherLn)
+	if type(otherSourcePath) == "table" then
+		return getRelativeLocationTextForNode(nodeOfInterest, otherSourcePath.sourcePath, otherSourcePath.line)
+	end
+
+	if not (nodeOfInterest.sourcePath ~= "?" and nodeOfInterest.line > 0) then
+		return "at <UnknownLocation>"
+	end
+
+	return getRelativeLocationText(nodeOfInterest.sourcePath, nodeOfInterest.line, otherSourcePath, otherLn)
 end
 
 
@@ -670,7 +719,8 @@ local function codepointToString(cp, buffer)
 	return true
 end
 
-local function parseStringContents(s, path, ptr, ptrEnd)
+local function parseStringContents(s, path, ptrStart, ptrEnd)
+	local ptr    = ptrStart
 	local buffer = {}
 
 	while ptr <= ptrEnd do
@@ -705,7 +755,11 @@ local function parseStringContents(s, path, ptr, ptrEnd)
 			local byte = tonumber(nStr)
 
 			if byte > 255 then
-				return nil, formatErrorInFile(s, path, ptr, "Tokenizer", "Byte value '%s' is out-of-range in decimal escape sequence.", nStr)
+				return nil, formatErrorInFile(
+					s, path, ptr, "Tokenizer",
+					"Byte value '%s' is out-of-range in decimal escape sequence. (String starting %s)",
+					nStr, getRelativeLocationText(getLineNumber(s, ptrStart), getLineNumber(s, ptr))
+				)
 			end
 
 			insert(buffer, byteToString(byte))
@@ -724,13 +778,21 @@ local function parseStringContents(s, path, ptr, ptrEnd)
 
 			local ok, err = codepointToString(cp, buffer)
 			if not ok then
-				return nil, formatErrorInFile(s, path, ptr+2, "Tokenizer", err)
+				return nil, formatErrorInFile(
+					s, path, ptr+2, "Tokenizer",
+					"%s (String starting %s)",
+					err, getRelativeLocationText(getLineNumber(s, ptrStart), getLineNumber(s, ptr))
+				)
 			end
 
 			ptr = ptr + 3 + #hexStr
 
 		else
-			return nil, formatErrorInFile(s, path, ptr-1, "Tokenizer", "Invalid escape sequence.")
+			return nil, formatErrorInFile(
+				s, path, ptr-1, "Tokenizer",
+				"Invalid escape sequence. (String starting %s)",
+				getRelativeLocationText(getLineNumber(s, ptrStart), getLineNumber(s, ptr))
+			)
 		end
 
 	end
@@ -809,7 +871,7 @@ function tokenize(s, path)
 			if equalSignCountIfLong and equalSignCountIfLong == 0 then
 				local pos = find(s, "[[", ptrStart+4, true)
 				if pos and pos < ptr then
-					return nil, formatErrorInFile(s, path, pos, "Tokenizer", "Cannot have nested comments.")
+					return nil, formatErrorInFile(s, path, pos, "Tokenizer", "Cannot have nested comments. (Comment starting %s)", getRelativeLocationText(lnStart, getLineNumber(s, pos)))
 				end
 			end
 
@@ -898,7 +960,11 @@ function tokenize(s, path)
 					else
 						-- Note: We don't have to look for multiple characters after the escape, like \nnn - this algorithm works anyway.
 						if ptr > #s then
-							return nil, formatErrorInFile(s, path, ptr, "Tokenizer", "Unfinished string after escape character.")
+							return nil, formatErrorInFile(
+								s, path, ptr, "Tokenizer",
+								"Unfinished string after escape character. (String starting %s)",
+								getRelativeLocationText(lnStart, getLineNumber(s, ptr))
+							)
 						end
 						ptr = ptr + 1 -- Just skip the next character, whatever it might be.
 					end
@@ -906,7 +972,7 @@ function tokenize(s, path)
 				-- '\n'
 				elseif b1 == 10 then
 					-- Lua, this is silly!
-					return nil, formatErrorInFile(s, path, ptr, "Tokenizer", "Unescaped newline in string.")
+					return nil, formatErrorInFile(s, path, ptr, "Tokenizer", "Unescaped newline in string (starting %s).", getRelativeLocationText(lnStart, getLineNumber(s, ptr)))
 
 				else
 					assert(false)
@@ -971,10 +1037,7 @@ function tokenize(s, path)
 		else
 			return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Unknown character.")
 		end
-
-		if not tokType then
-			return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Internal error: Got no token type.")
-		end
+		assert(tokType)
 
 		ln = ln + countString(tokRepr, "\n", true)
 
@@ -1167,6 +1230,16 @@ end
 
 
 
+local function getLeftmostToken(node)
+	if node.type == "binary" then
+		return getLeftmostToken(node.left)
+	else
+		return node.token
+	end
+end
+
+
+
 local parseExpression, parseExpressionList, parseFunctionParametersAndBody, parseBlock
 
 local function parseIdentifier(tokens, tok) --> ident, token, error
@@ -1206,7 +1279,7 @@ local function parseNameList(tokens, tok, names, allowVararg, allowAttributes) -
 			ident.attribute = attrIdent.name
 
 			if not isToken(tokens, tok, "punctuation", ">") then
-				return nil, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected '>' after attribute name.")
+				return nil, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected '>' after attribute name.")
 			end
 			tok = tok + 1 -- '>'
 		end
@@ -1222,7 +1295,8 @@ local function parseNameList(tokens, tok, names, allowVararg, allowAttributes) -
 	return true, tok
 end
 
-local function parseTable(tokens, tok) --> tableNode, token, error
+local function parseTable(tokens, tokStart) --> tableNode, token, error
+	local tok       = tokStart
 	local tableNode = AstTable(tokens, tok)
 	tok             = tok + 1 -- '{'
 
@@ -1241,12 +1315,12 @@ local function parseTable(tokens, tok) --> tableNode, token, error
 			tok = tokNext
 
 			if not isToken(tokens, tok, "punctuation", "]") then
-				return nil, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected ']' after key value.")
+				return nil, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected ']' after key value.")
 			end
 			tok = tok + 1 -- ']'
 
 			if not isToken(tokens, tok, "punctuation", "=") then
-				return nil, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected '=' after key.")
+				return nil, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected '=' after key.")
 			end
 			tok = tok + 1 -- '='
 
@@ -1262,7 +1336,7 @@ local function parseTable(tokens, tok) --> tableNode, token, error
 			tok           = tok + 1 -- identifier
 
 			if not isToken(tokens, tok, "punctuation", "=") then
-				return nil, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected '=' after key name.")
+				return nil, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected '=' after key name.")
 			end
 			tok = tok + 1 -- '='
 
@@ -1294,16 +1368,21 @@ local function parseTable(tokens, tok) --> tableNode, token, error
 			break
 
 		else
-			return nil, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected ',' or '}' in table constructor.")
+			return nil, tok, formatErrorAfterToken(
+				tokens, tok-1, "Parser",
+				"Expected ',' or '}' after value in table constructor (starting %s).",
+				getRelativeLocationTextForToken(tokens, tokStart, tok-1)
+			)
 		end
 	end
 
 	return tableNode, tok
 end
 
-function parseExpression(tokens, tok, lastPrecedence) --> expression, token, error
-	local expr
+function parseExpression(tokens, tokStart, lastPrecedence) --> expression, token, error
+	local tok                  = tokStart
 	local canParseLookupOrCall = false
+	local expr
 
 	-- identifier
 	if isTokenType(tokens, tok, "identifier") then
@@ -1393,7 +1472,7 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token, err
 		end
 
 		if not isToken(tokens, tok, "punctuation", ")") then
-			return nil, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected ')' at the end of the parenthesis expression.")
+			return nil, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected ')' (to end parenthesis expression starting %s).", getRelativeLocationTextForToken(tokens, tokStart, tok-1))
 		end
 		tok = tok + 1 -- ')'
 
@@ -1478,7 +1557,7 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token, err
 			tok = tokNext
 
 			if not isToken(tokens, tok, "punctuation", "]") then
-				return nil, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected ']' after lookup key value.")
+				return nil, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected ']' after lookup key value.")
 			end
 			tok = tok + 1 -- ']'
 
@@ -1526,7 +1605,7 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token, err
 			end
 
 			if not isToken(tokens, tok, "punctuation", ")") then
-				return nil, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected ')' after argument list for call.")
+				return nil, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected ')' to end argument list for call.")
 			end
 			tok = tok + 1 -- ')'
 
@@ -1580,12 +1659,12 @@ function parseExpression(tokens, tok, lastPrecedence) --> expression, token, err
 					end
 
 					if not isToken(tokens, tok, "punctuation", ")") then
-						return nil, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected ')' after argument list for method call.")
+						return nil, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected ')' after argument list for method call.")
 					end
 					tok = tok + 1 -- ')'
 
 				else
-					return nil, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected '(' to start argument list for method call.")
+					return nil, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected '(' to start argument list for method call.")
 				end
 
 				call.callee = expr
@@ -1617,11 +1696,12 @@ function parseExpressionList(tokens, tok, expressions) --> success, token, error
 	end
 end
 
-function parseFunctionParametersAndBody(tokens, tok) --> func, token, error
+function parseFunctionParametersAndBody(tokens, tokStart) --> func, token, error
+	local tok  = tokStart
 	local func = AstFunction(tokens, tok)
 
 	if not isToken(tokens, tok, "punctuation", "(") then
-		return nil, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected '(' to start parameter list for function.")
+		return nil, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected '(' to start parameter list for function.")
 	end
 	tok = tok + 1 -- '('
 
@@ -1634,7 +1714,7 @@ function parseFunctionParametersAndBody(tokens, tok) --> func, token, error
 	end
 
 	if not isToken(tokens, tok, "punctuation", ")") then
-		return nil, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected ')' after parameter list for function.")
+		return nil, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected ')' to end parameter list for function.")
 	end
 	tok = tok + 1 -- ')'
 
@@ -1644,7 +1724,7 @@ function parseFunctionParametersAndBody(tokens, tok) --> func, token, error
 	tok       = tokNext
 
 	if not isToken(tokens, tok, "keyword", "end") then
-		return nil, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected 'end' to end function.")
+		return nil, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected 'end' to end function (starting %s).", getRelativeLocationTextForToken(tokens, tokStart, tok))
 	end
 	tok = tok + 1 -- 'end'
 
@@ -1653,7 +1733,7 @@ end
 
 local BLOCK_END_TOKEN_TYPES = newSet{ "end", "else", "elseif", "until" }
 
-local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> success, token, error  -- The error message may be empty.
+local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --> success, token, error  -- The error message may be empty.
 	--[[
 	stat ::= ';'
 	         varlist '=' explist |
@@ -1673,6 +1753,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 
 	retstat ::= return [explist] [';']
 	]]
+	local tok = tokStart
 
 	-- do
 	if isToken(tokens, tok, "keyword", "do") then
@@ -1684,7 +1765,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		tok         = tokNext
 
 		if not isToken(tokens, tok, "keyword", "end") then
-			return false, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected 'end' to end 'do' block.")
+			return false, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected 'end' to end 'do' block (starting %s).", getRelativeLocationTextForToken(tokens, tokStart, tok))
 		end
 		tok = tok + 1 -- 'end'
 
@@ -1702,7 +1783,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		tok                 = tokNext
 
 		if not isToken(tokens, tok, "keyword", "do") then
-			return false, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected 'do' to start body for 'while' loop.")
+			return false, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected 'do' to start body for 'while' loop.")
 		end
 		tok = tok + 1 -- 'do'
 
@@ -1713,7 +1794,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		tok            = tokNext
 
 		if not isToken(tokens, tok, "keyword", "end") then
-			return false, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected 'end' to end 'while' loop.")
+			return false, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected 'end' to end 'while' loop (starting %s).", getRelativeLocationTextForToken(tokens, tokStart, tok))
 		end
 		tok = tok + 1 -- 'end'
 
@@ -1731,7 +1812,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		tok             = tokNext
 
 		if not isToken(tokens, tok, "keyword", "until") then
-			return false, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected 'until' at the end of 'repeat' loop.")
+			return false, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected 'until' at the end of 'repeat' loop (starting %s).", getRelativeLocationTextForToken(tokens, tokStart, tok))
 		end
 		tok = tok + 1 -- 'until'
 
@@ -1798,7 +1879,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		end
 
 		if not isToken(tokens, tok, "keyword", "end") then
-			return false, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected 'end' to end 'if' statement.")
+			return false, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected 'end' to end 'if' statement (starting %s).", getRelativeLocationTextForToken(tokens, tokStart, tok))
 		end
 		tok = tok + 1 -- 'end'
 
@@ -1827,8 +1908,10 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 			tok          = tok + 1 -- '='
 
 		else
-			return false, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected '=' or 'in' for 'for' loop.")
+			return false, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected '=' or 'in' for 'for' loop.")
 		end
+
+		local valuesStartTok = tok
 
 		local ok, tokNext, err = parseExpressionList(tokens, tok, forLoop.values, 0)
 		if not ok then  return false, tok, err  end
@@ -1837,13 +1920,14 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		if forLoop.kind ~= "numeric" then
 			-- void
 		elseif not forLoop.values[2] then
-			return false, tok, formatErrorAtToken(tokens, forLoop.values[1].token, "Parser", "Numeric loop: Too few values.")
+			return false, tok, formatErrorAtToken(tokens, valuesStartTok, "Parser", "Numeric loop: Too few values.")
 		elseif forLoop.values[4] then
-			return false, tok, formatErrorAtToken(tokens, forLoop.values[4].token, "Parser", "Numeric loop: Too many values.")
+			-- @Cleanup: Instead of using getLeftmostToken(), make parseExpressionList() return a list of expression start tokens.
+			return false, tok, formatErrorAtToken(tokens, getLeftmostToken(forLoop.values[4]), "Parser", "Numeric loop: Too many values.")
 		end
 
 		if not isToken(tokens, tok, "keyword", "do") then
-			return false, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected 'do' to start body for 'for' loop.")
+			return false, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected 'do' to start body for 'for' loop.")
 		end
 		tok = tok + 1 -- 'do'
 
@@ -1853,7 +1937,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		tok          = tokNext
 
 		if not isToken(tokens, tok, "keyword", "end") then
-			return false, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected 'end' to end 'for' loop.")
+			return false, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected 'end' to end 'for' loop (starting %s).", getRelativeLocationTextForToken(tokens, tokStart, tok))
 		end
 		tok = tok + 1 -- 'end'
 
@@ -1975,7 +2059,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 		label.name = labelIdent.name
 
 		if not isToken(tokens, tok, "punctuation", "::") then
-			return false, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected '::' after label name.")
+			return false, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected '::' after label name.")
 		end
 		tok = tok + 1 -- '::'
 
@@ -2040,13 +2124,13 @@ local function parseOneOrPossiblyMoreStatements(tokens, tok, statements) --> suc
 			tok = tokNext
 
 			if not isToken(tokens, tok, "punctuation", "=") then
-				return false, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected '=' for an assignment.")
+				return false, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected '=' for an assignment.")
 			end
 			tok = tok + 1 -- '='
 
 			for _, targetExpr in ipairs(assignment.targets) do
 				if not (targetExpr.type == "identifier" or targetExpr.type == "lookup") then
-					return false, tok, formatErrorAtToken(tokens, targetExpr.token, "Parser", "Invalid assignment target.")
+					return false, tok, formatErrorAtNode(targetExpr, "Parser", "Invalid assignment target.")
 				end
 			end
 

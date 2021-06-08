@@ -48,7 +48,15 @@ do
 
 	if x or y then foo() end
 
-	local t = {x=5, y=(a or b), f=function(...)return"bark"end}
+	if x then
+		foo()
+	elseif y then
+		bar()
+	else
+		baz()
+	end
+
+	local t = {x=5, ["y"]=(a or b), f=function(...)return"bark"end}
 
 	local m = -8
 	local n = not false or false
