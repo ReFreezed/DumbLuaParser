@@ -3,7 +3,10 @@
 --=  Dumb Lua Parser - Lua parsing library
 --=  by Marcus 'ReFreezed' Thunström
 --=
---=  v2.0-dev
+--=  Tokenize Lua code or create ASTs (Abstract Syntax Trees)
+--=  and convert the data back to Lua.
+--=
+--=  Version: 2.0-dev
 --=
 --=  License: MIT (see the bottom of this file)
 --=  Website: https://github.com/ReFreezed/DumbLuaParser
@@ -12,8 +15,13 @@
 --=
 --==============================================================
 
+	1. Usage
+	2. API
+	3. Tokens
+	4. AST
 
-	Usage
+
+	1. Usage
 	--------------------------------
 
 	local parser = require("dumbParser")
@@ -27,8 +35,19 @@
 	print(lua)
 
 
-	API
+	2. API
 	--------------------------------
+
+	tokenize, tokenizeFile
+	newTokenStream, insertToken, removeToken
+	parse, parseFile
+	newNode, getChild, setChild, addChild, removeChild
+	traverseTree
+	updateReferences
+	simplify, clean, minify
+	toLua
+	printTokens, printNode, printTree
+	VERSION
 
 	tokenize()
 		tokens, error = parser.tokenize( luaString [, pathForErrorMessages="?" ] )
@@ -55,17 +74,44 @@
 	parse()
 		astNode, error = parser.parse( tokens )
 		astNode, error = parser.parse( luaString [, pathForErrorMessages="?" ] )
-		Convert tokens or Lua code into an abstract syntax tree.
+		Convert tokens or Lua code into an AST.
 		Returns nil and a message on error.
 
 	parseFile()
 		astNode, error = parser.parseFile( path )
-		Convert a Lua file into an abstract syntax tree.
+		Convert a Lua file into an AST.
 		Returns nil and a message on error.
 
 	newNode()
 		astNode = parser.newNode( nodeType, arguments... )
 		Create a new AST node. (Search for 'NodeCreation' for more info.)
+
+	getChild()
+		node = parser.getChild( node, fieldName )
+		node = parser.getChild( node, fieldName, index )                -- If the node field is an array.
+		node = parser.getChild( node, fieldName, index, tableFieldKey ) -- If the node field is a table field array.
+		tableFieldKey = "key"|"value"
+		Get a child node. (Search for 'NodeFields' for field names.)
+		@Incomplete: Better explanation.
+
+	setChild()
+		parser.setChild( node, fieldName, childNode )
+		parser.setChild( node, fieldName, index, childNode )                -- If the node field is an array.
+		parser.setChild( node, fieldName, index, tableFieldKey, childNode ) -- If the node field is a table field array.
+		tableFieldKey = "key"|"value"
+		Set a child node. (Search for 'NodeFields' for field names.)
+		@Incomplete: Better explanation.
+
+	addChild()
+		parser.addChild( node, fieldName, [ index=atEnd, ] childNode )
+		parser.addChild( node, fieldName, [ index=atEnd, ] keyNode, valueNode ) -- If the node field is a table field array.
+		Add a child node to an array field. (Search for 'NodeFields' for field names.)
+		@Incomplete: Better explanation.
+
+	removeChild()
+		parser.removeChild( node, fieldName [, index=last ] )
+		Remove a child node from an array field. (Search for 'NodeFields' for field names.)
+		@Incomplete: Better explanation.
 
 	traverseTree()
 		didStop = parser.traverseTree( astNode, [ leavesFirst=false, ] callback [, topNodeParent=nil, topNodeContainer=nil, topNodeKey=nil ] )
@@ -116,7 +162,7 @@
 		The parser's version number (e.g. "1.0.2").
 
 
-	Tokens
+	3. Tokens
 	--------------------------------
 
 	Token stream table fields:
@@ -143,7 +189,7 @@
 		"string"      -- String value.
 
 
-	AST (abstract syntax tree)
+	4. AST
 	--------------------------------
 
 	Node types:
@@ -206,6 +252,7 @@ local assertArg1, assertArg, errorf
 local countString, countSubString
 local formatErrorInFile, formatErrorAtToken, formatErrorAtNode -- @Incomplete: Should we expose these functions?
 local formatNumber
+local getChild, setChild, addChild, removeChild
 local getNameArrayOfDeclarationLike
 local ipairsr
 local isToken, isTokenType, isTokenAnyValue
@@ -420,6 +467,31 @@ local function AstFor (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 
 
 
+local CHILD_FIELDS = {
+	["identifier"]  = {declaration="node"},
+	["vararg"]      = {},
+	["literal"]     = {},
+	["table"]       = {fields="tablefields"},
+	["lookup"]      = {object="node", member="node"},
+	["unary"]       = {expressions="node"},
+	["binary"]      = {left="node", right="node"},
+	["call"]        = {callee="node", arguments="nodearray"},
+	["function"]    = {parameters="nodearray", vararg="node", body="node"},
+	["break"]       = {},
+	["return"]      = {values="nodearray"},
+	["label"]       = {},
+	["goto"]        = {},
+	["block"]       = {statements="nodearray"},
+	["declaration"] = {names="nodearray", values="nodearray"},
+	["assignment"]  = {targets="nodearray", values="nodearray"},
+	["if"]          = {condition="node", bodyTrue="node", bodyFalse="node"},
+	["while"]       = {condition="node", body="node"},
+	["repeat"]      = {body="node", condition="node"},
+	["for"]         = {names="nodearray", values="nodearray", body="node"},
+}
+
+
+
 -- count = countString( haystack, needle [, plain=false ] )
 function countString(haystack, needle, plain)
 	local count = 0
@@ -606,23 +678,23 @@ local function parseStringContents(s, path, ptr, ptrEnd)
 		if not i1 or i1 > ptrEnd then  break  end
 
 		if i1 > ptr then
-			table.insert(buffer, getSubstring(s, ptr, i1-1))
+			insert(buffer, getSubstring(s, ptr, i1-1))
 		end
 		ptr = i1 + 1
 
 		-- local b1, b2, b3 = getByte(s, ptr, ptr+2)
 
-		if     find(s, "^a", ptr) then  table.insert(buffer, "\a") ; ptr = ptr + 1
-		elseif find(s, "^b", ptr) then  table.insert(buffer, "\b") ; ptr = ptr + 1
-		elseif find(s, "^t", ptr) then  table.insert(buffer, "\t") ; ptr = ptr + 1
-		elseif find(s, "^n", ptr) then  table.insert(buffer, "\n") ; ptr = ptr + 1
-		elseif find(s, "^v", ptr) then  table.insert(buffer, "\v") ; ptr = ptr + 1
-		elseif find(s, "^f", ptr) then  table.insert(buffer, "\f") ; ptr = ptr + 1
-		elseif find(s, "^r", ptr) then  table.insert(buffer, "\r") ; ptr = ptr + 1
-		elseif find(s, "^\\",ptr) then  table.insert(buffer, "\\") ; ptr = ptr + 1
-		elseif find(s, '^"', ptr) then  table.insert(buffer, "\"") ; ptr = ptr + 1
-		elseif find(s, "^'", ptr) then  table.insert(buffer, "\'") ; ptr = ptr + 1
-		elseif find(s, "^\n",ptr) then  table.insert(buffer, "\n") ; ptr = ptr + 1
+		if     find(s, "^a", ptr) then  insert(buffer, "\a") ; ptr = ptr + 1
+		elseif find(s, "^b", ptr) then  insert(buffer, "\b") ; ptr = ptr + 1
+		elseif find(s, "^t", ptr) then  insert(buffer, "\t") ; ptr = ptr + 1
+		elseif find(s, "^n", ptr) then  insert(buffer, "\n") ; ptr = ptr + 1
+		elseif find(s, "^v", ptr) then  insert(buffer, "\v") ; ptr = ptr + 1
+		elseif find(s, "^f", ptr) then  insert(buffer, "\f") ; ptr = ptr + 1
+		elseif find(s, "^r", ptr) then  insert(buffer, "\r") ; ptr = ptr + 1
+		elseif find(s, "^\\",ptr) then  insert(buffer, "\\") ; ptr = ptr + 1
+		elseif find(s, '^"', ptr) then  insert(buffer, "\"") ; ptr = ptr + 1
+		elseif find(s, "^'", ptr) then  insert(buffer, "\'") ; ptr = ptr + 1
+		elseif find(s, "^\n",ptr) then  insert(buffer, "\n") ; ptr = ptr + 1
 
 		elseif find(s, "^z", ptr) then
 			local i1, i2 = find(s, "^%s*", ptr+1)
@@ -636,14 +708,14 @@ local function parseStringContents(s, path, ptr, ptrEnd)
 				return nil, formatErrorInFile(s, path, ptr, "Tokenizer", "Byte value '%s' is out-of-range in decimal escape sequence.", nStr)
 			end
 
-			table.insert(buffer, byteToString(byte))
+			insert(buffer, byteToString(byte))
 			ptr = ptr + #nStr
 
 		elseif find(s, "^x%x%x", ptr) then
 			local hexStr = getSubstring(s, ptr+1, ptr+2)
 			local byte   = tonumber(hexStr, 16)
 
-			table.insert(buffer, byteToString(byte))
+			insert(buffer, byteToString(byte))
 			ptr = ptr + 3
 
 		elseif find(s, "^u{%x+}", ptr) then
@@ -664,7 +736,7 @@ local function parseStringContents(s, path, ptr, ptrEnd)
 	end
 
 	if ptr <= ptrEnd then
-		table.insert(buffer, getSubstring(s, ptr, ptrEnd))
+		insert(buffer, getSubstring(s, ptr, ptrEnd))
 	end
 
 	return concat(buffer)
@@ -1182,8 +1254,8 @@ local function parseTable(tokens, tok) --> tableNode, token, error
 			if not valueExpr then  return nil, tok, err  end
 			tok = tokNext
 
-			local field = {key=keyExpr, value=valueExpr, generatedKey=false}
-			insert(tableNode.fields, field)
+			local tableField = {key=keyExpr, value=valueExpr, generatedKey=false}
+			insert(tableNode.fields, tableField)
 
 		elseif isTokenType(tokens, tok, "identifier") and isToken(tokens, tok+1, "punctuation", "=") then
 			local keyExpr = AstLiteral(tokens, tok, tokens.value[tok])
@@ -1198,8 +1270,8 @@ local function parseTable(tokens, tok) --> tableNode, token, error
 			if not valueExpr then  return nil, tok, err  end
 			tok = tokNext
 
-			local field = {key=keyExpr, value=valueExpr, generatedKey=false}
-			insert(tableNode.fields, field)
+			local tableField = {key=keyExpr, value=valueExpr, generatedKey=false}
+			insert(tableNode.fields, tableField)
 
 		else
 			generatedIndex = generatedIndex + 1
@@ -1209,8 +1281,8 @@ local function parseTable(tokens, tok) --> tableNode, token, error
 			if not valueExpr then  return nil, tok, err  end
 			tok = tokNext
 
-			local field = {key=keyExpr, value=valueExpr, generatedKey=true}
-			insert(tableNode.fields, field)
+			local tableField = {key=keyExpr, value=valueExpr, generatedKey=true}
+			insert(tableNode.fields, tableField)
 		end
 
 		if isToken(tokens, tok, "punctuation", ",") or isToken(tokens, tok, "punctuation", ";") then
@@ -2345,9 +2417,9 @@ do
 		local nodeType = node.type
 
 		if nodeType == "table" then
-			for i, field in ipairs(node.fields) do
-				if field.key   then  _printTree(field.key,   indent, i..(field.generatedKey and "KEYGEN" or "KEY  "))  end
-				if field.value then  _printTree(field.value, indent, i..(                                   "VALUE"))  end
+			for i, tableField in ipairs(node.fields) do
+				if tableField.key   then  _printTree(tableField.key,   indent, i..(tableField.generatedKey and "KEYGEN" or "KEY  "))  end
+				if tableField.value then  _printTree(tableField.value, indent, i..(                                   "VALUE"))  end
 				local a =  {1, 5, g=6}
 			end
 
@@ -2458,9 +2530,9 @@ function traverseTree(node, leavesFirst, cb, parent, container, k)
 		-- void  No child nodes.
 
 	elseif nodeType == "table" then
-		for _, field in ipairs(node.fields) do
-			if field.key   and traverseTree(field.key,   leavesFirst, cb, node, field, "key")   then  return true  end
-			if field.value and traverseTree(field.value, leavesFirst, cb, node, field, "value") then  return true  end
+		for _, tableField in ipairs(node.fields) do
+			if tableField.key   and traverseTree(tableField.key,   leavesFirst, cb, node, tableField, "key")   then  return true  end
+			if tableField.value and traverseTree(tableField.value, leavesFirst, cb, node, tableField, "value") then  return true  end
 		end
 
 	elseif nodeType == "lookup" then
@@ -2575,9 +2647,9 @@ function traverseTreeReverse(node, leavesFirst, cb, parent, container, k) -- @In
 		-- void  No child nodes.
 
 	elseif nodeType == "table" then
-		for _, field in ipairsr(node.fields) do
-			if field.value and traverseTreeReverse(field.value, leavesFirst, cb, node, field, "value") then  return true  end
-			if field.key   and traverseTreeReverse(field.key,   leavesFirst, cb, node, field, "key")   then  return true  end
+		for _, tableField in ipairsr(node.fields) do
+			if tableField.value and traverseTreeReverse(tableField.value, leavesFirst, cb, node, tableField, "value") then  return true  end
+			if tableField.key   and traverseTreeReverse(tableField.key,   leavesFirst, cb, node, tableField, "key")   then  return true  end
 		end
 
 	elseif nodeType == "lookup" then
@@ -3303,9 +3375,9 @@ function mayNodeBeInvolvedInJump(node)
 		return mayAnyNodeBeInvolvedInJump(node.targets) or mayAnyNodeBeInvolvedInJump(node.values) -- Targets may be identifiers or lookups.
 
 	elseif node.type == "table" then
-		for i, field in ipairs(node.fields) do
-			if mayNodeBeInvolvedInJump(field.key)   then  return true  end
-			if mayNodeBeInvolvedInJump(field.value) then  return true  end
+		for _, tableField in ipairs(node.fields) do
+			if mayNodeBeInvolvedInJump(tableField.key)   then  return true  end
+			if mayNodeBeInvolvedInJump(tableField.value) then  return true  end
 		end
 		return false
 
@@ -4259,20 +4331,20 @@ do
 		elseif nodeType == "table" then
 			lastOutput = writeLua(buffer, "{", "")
 
-			for i, field in ipairs(node.fields) do
+			for i, tableField in ipairs(node.fields) do
 				if i > 1 then
 					lastOutput = writeLua(buffer, ",", "")
 					if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 				end
 
-				if not field.generatedKey then
-					if canNodeBeName(field.key) then
-						lastOutput = writeLua(buffer, field.key.value, "alphanum")
+				if not tableField.generatedKey then
+					if canNodeBeName(tableField.key) then
+						lastOutput = writeLua(buffer, tableField.key.value, "alphanum")
 
 					else
 						lastOutput = writeLua(buffer, "[", "")
 
-						local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, field.key, true)
+						local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, tableField.key, true)
 						if not ok then  return nil, lastOutput  end
 
 						lastOutput = writeLua(buffer, "]", "")
@@ -4281,7 +4353,7 @@ do
 					lastOutput = writeLua(buffer, "=", "")
 				end
 
-				local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, field.value, (not pretty))
+				local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, tableField.value, (not pretty))
 				if not ok then  return nil, lastOutput  end
 			end
 
@@ -4633,7 +4705,7 @@ end
 -- assertArg1( functionName, argumentNumber, value, expectedType )
 function assertArg1(funcName, argNum, v, expectedType)
 	if type(v) == expectedType then  return  end
-	errorf(3, "bad argument #%d to '%s' (expected %s, got %s)", argNum, funcName, expectedType, type(v))
+	errorf(3, "Bad argument #%d to '%s'. (Expected %s, got %s)", argNum, funcName, expectedType, type(v))
 end
 
 -- assertArg( functionName, argumentNumber, value, expectedType1, ... )
@@ -4641,7 +4713,7 @@ function assertArg(funcName, argNum, v, ...)
 	for i = 1, select("#", ...) do
 		if type(v) == select(i, ...) then  return  end
 	end
-	errorf(3, "bad argument #%d to '%s' (expected %s, got %s)", argNum, funcName, concat({...}, " or "), type(v))
+	errorf(3, "Bad argument #%d to '%s'. (Expected %s, got %s)", argNum, funcName, concat({...}, " or "), type(v))
 end
 
 -- errorf( [ level=1, ] format, ... )
@@ -4686,6 +4758,138 @@ end
 
 
 
+-- node = getChild( node, fieldName )
+-- node = getChild( node, fieldName, index )                -- If the node field is an array.
+-- node = getChild( node, fieldName, index, tableFieldKey ) -- If the node field is a table field array.
+function getChild(node, fieldName, i, tableFieldKey)
+	assertArg1("getChild", 1, node,      "table")
+	assertArg1("getChild", 2, fieldName, "string")
+
+	local nodeType       = node.type
+	local childFields    = CHILD_FIELDS[nodeType] or errorf(2, "Unknown node type '%s'.", tostring(nodeType))
+	local childFieldType = childFields[fieldName] or errorf(2, "Unknown node field '%s.%s'.", nodeType, tostring(fieldName))
+
+	if childFieldType == "node" then
+		return node[fieldName]
+
+	elseif childFieldType == "nodearray" then
+		assertArg1("getChild", 3, i, "number")
+
+		return node[fieldName][i]
+
+	elseif childFieldType == "tablefields" then
+		assertArg1("getChild", 3, i,             "number")
+		assertArg1("getChild", 4, tableFieldKey, "string")
+
+		if not (tableFieldKey == "key" or tableFieldKey == "value") then
+			errorf(2, "Bad argument #4 to 'getChild'. (Expected %q or %q, got %q)", "key", "value", tableFieldKey)
+		end
+
+		local field = node[fieldName][i]
+		return field and field[tableFieldKey]
+
+	else
+		error(childFieldType)
+	end
+end
+
+-- setChild( node, fieldName, childNode )
+-- setChild( node, fieldName, index, childNode )                -- If the node field is an array.
+-- setChild( node, fieldName, index, tableFieldKey, childNode ) -- If the node field is a table field array.
+function setChild(node, fieldName, i, tableFieldKey, childNode)
+	assertArg1("setChild", 1, node,      "table")
+	assertArg1("setChild", 2, fieldName, "string")
+
+	local nodeType       = node.type
+	local childFields    = CHILD_FIELDS[nodeType] or errorf(2, "Unknown node type '%s'.", tostring(nodeType))
+	local childFieldType = childFields[fieldName] or errorf(2, "Unknown node field '%s.%s'.", nodeType, tostring(fieldName))
+
+	if childFieldType == "node" then
+		childNode = i
+
+		if childNode ~= nil then  assertArg1("setChild", 3, childNode, "table")  end
+
+		node[fieldName] = childNode
+
+	elseif childFieldType == "nodearray" then
+		childNode = tableFieldKey
+
+		assertArg1("setChild", 3, i,         "number")
+		assertArg1("setChild", 4, childNode, "table")
+
+		node[fieldName][i] = childNode
+
+	elseif childFieldType == "tablefields" then
+		assertArg1("setChild", 3, i,             "number")
+		assertArg1("setChild", 4, tableFieldKey, "string")
+		assertArg1("setChild", 5, childNode,     "table")
+
+		if not (tableFieldKey == "key" or tableFieldKey == "value") then
+			errorf(2, "Bad argument #4 to 'setChild'. (Expected %q or %q, got %q)", "key", "value", tableFieldKey)
+		end
+
+		local field = node[fieldName][i] or errorf(2, "No table field at index %d in %s.%s.", i, nodeType, fieldName)
+		field[tableFieldKey] = childNode
+
+	else
+		error(childFieldType)
+	end
+end
+
+-- addChild( node, fieldName, [ index=atEnd, ] childNode )
+-- addChild( node, fieldName, [ index=atEnd, ] keyNode, valueNode ) -- If the node field is a table field array.
+function addChild(node, fieldName, i, childNode, extraChildNode)
+	assertArg1("addChild", 1, node,      "table")
+	assertArg1("addChild", 2, fieldName, "string")
+
+	if type(i) ~= "number" then
+		i, childNode, extraChildNode = nil, i, childNode
+	end
+	local postIndexArgOffset = i and 0 or -1
+
+	local nodeType       = node.type
+	local childFields    = CHILD_FIELDS[nodeType] or errorf(2, "Unknown node type '%s'.", tostring(nodeType))
+	local childFieldType = childFields[fieldName] or errorf(2, "Unknown node field '%s.%s'.", nodeType, tostring(fieldName))
+
+	if childFieldType == "nodearray" then
+		if i ~= nil then  assertArg1("addChild", 3, i, "number")  end
+		assertArg1("addChild", 4+postIndexArgOffset, childNode, "table")
+
+		i = i or #node[fieldName]+1
+		insert(node[fieldName], i, childNode)
+
+	elseif childFieldType == "tablefields" then
+		if i ~= nil then  assertArg1("addChild", 3, i, "number")  end
+		assertArg1("addChild", 4+postIndexArgOffset, childNode,      "table")
+		assertArg1("addChild", 5+postIndexArgOffset, extraChildNode, "table")
+
+		i = i or #node[fieldName]+1
+		insert(node[fieldName], i, {key=childNode, value=extraChildNode, generatedKey=false})
+
+	else
+		errorf(2, "Node field '%s.%s' is not an array.", nodeType, tostring(fieldName))
+	end
+end
+
+-- removeChild( node, fieldName [, index=last ] )
+function removeChild(node, fieldName, i)
+	assertArg1("removeChild", 1, node,      "table")
+	assertArg1("removeChild", 2, fieldName, "string")
+	assertArg ("removeChild", 3, i,         "number","nil")
+
+	local nodeType       = node.type
+	local childFields    = CHILD_FIELDS[nodeType] or errorf(2, "Unknown node type '%s'.", tostring(nodeType))
+	local childFieldType = childFields[fieldName] or errorf(2, "Unknown node field '%s.%s'.", nodeType, tostring(fieldName))
+
+	if childFieldType == "nodearray" or childFieldType == "tablefields" then
+		remove(node[fieldName], i) -- This also works if i is nil.
+	else
+		errorf(2, "Node field '%s.%s' is not an array.", nodeType, tostring(fieldName))
+	end
+end
+
+
+
 parser = {
 	-- Constants.
 	VERSION          = PARSER_VERSION,
@@ -4704,12 +4908,20 @@ parser = {
 
 	parse            = parse,
 	parseFile        = parseFile,
+
 	newNode          = newNode,
+	getChild         = getChild,
+	setChild         = setChild,
+	addChild         = addChild,
+	removeChild      = removeChild,
+
 	traverseTree     = traverseTree,
 	updateReferences = updateReferences,
+
 	simplify         = simplify,
 	clean            = clean,
 	minify           = minify,
+
 	toLua            = toLua,
 
 	printTokens      = printTokens,

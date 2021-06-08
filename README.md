@@ -3,7 +3,7 @@
 *Dumb Lua Parser* is a library for tokenizing Lua code or creating ASTs (Abstract Syntax Trees) and converting the data back to Lua.
 
 The library is a [single Lua file](dumbParser.lua) with no dependencies other than Lua itself.
-It works with Lua 5.1, 5.2 and 5.3.
+It works with Lua 5.1, 5.2, 5.3 and 5.4.
 MIT license.
 
 Download the latest stable release [here](https://github.com/ReFreezed/DumbLuaParser/releases/latest)

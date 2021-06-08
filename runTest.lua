@@ -145,6 +145,19 @@ do
 	local repeatLoop   = parser.newNode("repeat")
 	local forLoop      = parser.newNode("for", "numeric")
 
+	do
+		parser.setChild(call,        "callee", identifier1)
+		parser.setChild(declaration, "names",  1, identifier2)
+
+		parser.addChild(tableNode, "fields", literal2, literal1)
+
+		parser.printNode(parser.getChild(call,        "callee"))
+		parser.printNode(parser.getChild(declaration, "names", 1))
+		parser.printNode(parser.getChild(tableNode,   "fields", 1, "value"))
+
+		parser.removeChild(tableNode, "fields", 1)
+	end
+
 	local block = assert(parser.parse([[
 		local x = 49
 	]], "<luastring>"))
