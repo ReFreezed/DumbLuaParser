@@ -46,7 +46,7 @@ print(lua)
 ----------------------------------------------------------------
 
 tokenize, tokenizeFile
-newTokenStream, insertToken, removeToken
+newTokenStream, insertToken, removeToken, concatTokens
 parse, parseFile
 newNode, getChild, setChild, addChild, removeChild
 traverseTree, traverseTreeReverse
@@ -74,8 +74,12 @@ insertToken()
 	Insert a new token. (Search for 'TokenInsertion' for more info.)
 
 removeToken()
-	parser.removeToken( tokens [, index=1 ] )
+	parser.removeToken( tokens [, index=tokens.n ] )
 	Remove a token.
+
+concatTokens()
+	parser.concatTokens( tokens )
+	Concatinate tokens.
 
 parse()
 	astNode, error = parser.parse( tokens )
@@ -1275,6 +1279,32 @@ local function removeToken(tokens, i)
 	tokens.n = tokens.n - 1
 end
 
+local function concatTokens(tokens)
+	local tokReprs = tokens.representation
+	local tokTypes = tokens.type
+	local parts    = {}
+
+	for tok = 1, tokens.n do
+		local tokRepr     = tokReprs[tok]
+		local lastTokRepr = tokReprs[tok-1]
+
+		if lastTokRepr and (
+			(tokRepr:find"^[%w_]" and lastTokRepr:find"[%w_]$") or
+			(tokRepr:find"^%."    and lastTokRepr:find"%.$"   ) or
+			(tokRepr:find"^%-"    and lastTokRepr:find"%-$"   ) or
+			(tokRepr:find"^/"     and lastTokRepr:find"/$"    ) or
+
+			(tokTypes[tok-1] == "number" and tokRepr    :find"^%.") or
+			(tokTypes[tok  ] == "number" and lastTokRepr:find"%.$")
+		) then
+			insert(parts, " ")
+		end
+		insert(parts, tokRepr)
+	end
+
+	return concat(parts)
+end
+
 
 
 function isToken(tokens, tok, tokType, tokValue)
@@ -2306,7 +2336,11 @@ function parse(luaOrTokens, path)
 
 	-- ast, error = parse( luaString, pathForErrorMessages )
 	else
-		assertArg1("parse", 2, path, "string")
+		if path == nil then
+			path = "?"
+		else
+			assertArg1("parse", 2, path, "string")
+		end
 
 		local tokens, err = tokenize(luaOrTokens, path)
 		if not tokens then  return nil, err  end
@@ -5050,6 +5084,7 @@ parser = {
 	newTokenStream      = newTokenStream,
 	insertToken         = insertToken,
 	removeToken         = removeToken,
+	concatTokens        = concatTokens,
 
 	parse               = parse,
 	parseFile           = parseFile,

@@ -61,7 +61,25 @@ test("Test file", function()
 	-- assert(loadfile(path))
 
 	local tokens = assert(parser.tokenizeFile(path))
-	local ast    = assert(parser.parse(tokens))
+
+	do
+		local concatted = parser.concatTokens(tokens)
+		-- print(concatted)
+
+		local tripTokens    = assert(parser.tokenize(concatted))
+		local tripConcatted = parser.concatTokens(tripTokens)
+
+		if concatted ~= tripConcatted then
+			print(("-"):rep(64))
+			print((concatted:gsub("\n", "\\n")))
+			print(("-"):rep(64))
+			print((tripConcatted:gsub("\n", "\\n")))
+			print(("-"):rep(64))
+			error("Failed token round-trip.")
+		end
+	end
+
+	local ast = assert(parser.parse(tokens))
 
 	-- parser.printTokens(tokens)
 	-- parser.printTree(ast)
@@ -123,7 +141,7 @@ test("Test file", function()
 		print(("-"):rep(64))
 		print(tripLua)
 		print(("-"):rep(64))
-		error("Failed round-trip.")
+		error("Failed AST round-trip.")
 	end
 end)
 
