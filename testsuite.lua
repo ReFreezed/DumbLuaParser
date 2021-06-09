@@ -1,4 +1,6 @@
--- Parsing tests.
+--
+-- Test suite for Dumb Lua Parser
+--
 local PRETTY_OUTPUT   = 1==1
 local PRINT_IDS       = 1==1
 local PRINT_LOCATIONS = 1==1
