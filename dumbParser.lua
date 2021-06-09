@@ -15,207 +15,268 @@
 --=
 --==============================================================
 
-	1. Usage
-	2. API
-	3. Tokens
-	4. AST
+1 - Usage
+2 - API
+  2.1 - Functions
+  2.2 - Constants
+  2.3 - Settings
+3 - Tokens
+4 - AST
 
 
-	1. Usage
-	--------------------------------
+1 - Usage
+================================================================
 
-	local parser = require("dumbParser")
+local parser = require("dumbParser")
 
-	local tokens = parser.tokenizeFile("cool.lua")
-	local ast    = parser.parse(tokens)
+local tokens = parser.tokenizeFile("cool.lua")
+local ast    = parser.parse(tokens)
 
-	parser.printTree(ast)
+parser.printTree(ast)
 
-	local lua = parser.toLua(ast, true)
-	print(lua)
-
-
-	2. API
-	--------------------------------
-
-	tokenize, tokenizeFile
-	newTokenStream, insertToken, removeToken
-	parse, parseFile
-	newNode, getChild, setChild, addChild, removeChild
-	traverseTree
-	updateReferences
-	simplify, clean, minify
-	toLua
-	printTokens, printNode, printTree
-	VERSION
-
-	tokenize()
-		tokens, error = parser.tokenize( luaString [, pathForErrorMessages="?" ] )
-		Convert a Lua string into tokens.
-		Returns nil and a message on error.
-
-	tokenizeFile()
-		tokens, error = parser.tokenizeFile( path )
-		Convert the contents of a file into tokens. Uses io.open().
-		Returns nil and a message on error.
-
-	newTokenStream()
-		tokens = parser.newTokenStream( )
-		Create a new token stream table. (See more info below.)
-
-	insertToken()
-		parser.insertToken( tokens, [ index=tokens.n+1, ] tokenType, tokenValue )
-		Insert a new token. (Search for 'TokenInsertion' for more info.)
-
-	removeToken()
-		parser.removeToken( tokens [, index=1 ] )
-		Remove a token.
-
-	parse()
-		astNode, error = parser.parse( tokens )
-		astNode, error = parser.parse( luaString [, pathForErrorMessages="?" ] )
-		Convert tokens or Lua code into an AST.
-		Returns nil and a message on error.
-
-	parseFile()
-		astNode, error = parser.parseFile( path )
-		Convert a Lua file into an AST.
-		Returns nil and a message on error.
-
-	newNode()
-		astNode = parser.newNode( nodeType, arguments... )
-		Create a new AST node. (Search for 'NodeCreation' for more info.)
-
-	getChild()
-		node = parser.getChild( node, fieldName )
-		node = parser.getChild( node, fieldName, index )                -- If the node field is an array.
-		node = parser.getChild( node, fieldName, index, tableFieldKey ) -- If the node field is a table field array.
-		tableFieldKey = "key"|"value"
-		Get a child node. (Search for 'NodeFields' for field names.)
-		@Incomplete: Better explanation.
-
-	setChild()
-		parser.setChild( node, fieldName, childNode )
-		parser.setChild( node, fieldName, index, childNode )                -- If the node field is an array.
-		parser.setChild( node, fieldName, index, tableFieldKey, childNode ) -- If the node field is a table field array.
-		tableFieldKey = "key"|"value"
-		Set a child node. (Search for 'NodeFields' for field names.)
-		@Incomplete: Better explanation.
-
-	addChild()
-		parser.addChild( node, fieldName, [ index=atEnd, ] childNode )
-		parser.addChild( node, fieldName, [ index=atEnd, ] keyNode, valueNode ) -- If the node field is a table field array.
-		Add a child node to an array field. (Search for 'NodeFields' for field names.)
-		@Incomplete: Better explanation.
-
-	removeChild()
-		parser.removeChild( node, fieldName [, index=last ] )
-		Remove a child node from an array field. (Search for 'NodeFields' for field names.)
-		@Incomplete: Better explanation.
-
-	traverseTree()
-		didStop = parser.traverseTree( astNode, [ leavesFirst=false, ] callback [, topNodeParent=nil, topNodeContainer=nil, topNodeKey=nil ] )
-		action  = callback( astNode, parent, container, key )
-		action  = "stop"|"ignorechildren"|nil  -- Returning nil (or nothing) means continue traversal.
-		Call a function on all nodes in an AST, going from astNode out to the leaf nodes (or from leaf nodes and inwards if leavesFirst is set).
-		container[key] is the position of the current node in the tree and can be used to replace the node.
-
-	updateReferences()
-		parser.updateReferences( astNode [, updateTopNodePosition=true ] )
-		Update references between nodes in the tree.
-		This function sets 'parent', 'container' and 'key' for all nodes and 'declaration' for identifiers.
-		If 'updateTopNodePosition' is false then 'parent', 'container' and 'key' will remain as-it for 'astNode' specifically.
-
-	simplify()
-		simplify( astNode )
-		Simplify/fold expressions and statements involving constants ('1+2' becomes '3', 'false and func()' becomes 'false' etc.).
-
-	clean()
-		clean( astNode )
-		Attempt to remove nodes that aren't useful, like unused variables.
-		This function can be quite slow!
-
-	minify()
-		parser.minify( astNode [, optimize=false ] )
-		Replace local variable names with short names.
-		This function can be used to obfuscate the code to some extent.
-		If 'optimize' is set then simplify() and clean() is also called automatically.
-
-	toLua()
-		luaString, error = parser.toLua( astNode [, prettyOuput=false ] )
-		Convert an AST to Lua. Returns nil and a message on error.
-
-	printTokens()
-		parser.printTokens( tokens )
-		Print the contents of a token stream to stdout.
-
-	printNode()
-		parser.printNode( astNode )
-		Print information about an AST node to stdout.
-
-	printTree()
-		parser.printTree( astNode )
-		Print the structure of a whole AST to stdout.
-
-	VERSION
-		parser.VERSION
-		The parser's version number (e.g. "1.0.2").
+local lua = parser.toLua(ast, true)
+print(lua)
 
 
-	3. Tokens
-	--------------------------------
-
-	Token stream table fields:
-
-		n              -- Token count.
-		sourceString   -- The original source string.
-		sourcePath     -- Path to the source file.
-
-		type           -- Array of token types.
-		value          -- Array of token values. All token types have string values except "number" tokens.
-		representation -- Array of token representations (i.e. strings have surrounding quotes etc.).
-		lineStart      -- Array of token start line numbers.
-		lineEnd        -- Array of token end line numbers.
-		positionStart  -- Array of token start indices.
-		positionEnd    -- Array of token end indices.
-
-	Token types:
-
-		"comment"     -- A comment.
-		"identifier"  -- Word that is not a keyword.
-		"keyword"     -- Lua keyword.
-		"number"      -- Number literal.
-		"punctuation" -- Any punctuation, like "." or "(".
-		"string"      -- String value.
+2 - API
+================================================================
 
 
-	4. AST
-	--------------------------------
+2.1 - Functions
+----------------------------------------------------------------
 
-	Node types:
+tokenize, tokenizeFile
+newTokenStream, insertToken, removeToken
+parse, parseFile
+newNode, getChild, setChild, addChild, removeChild
+traverseTree, traverseTreeReverse
+updateReferences
+simplify, clean, minify
+toLua
+printTokens, printNode, printTree
 
-		"assignment"  -- Assignment of one or more values to one or more variables.
-		"binary"      -- Binary expression (operation with two operands, e.g. "+" or "and").
-		"block"       -- List of statements. Blocks inside blocks are 'do...end' statements. Can be a chuck.
-		"break"       -- Loop break statement.
-		"call"        -- Function call.
-		"declaration" -- Declaration of one or more local variables, possibly with initial values.
-		"for"         -- A 'for' loop.
-		"function"    -- Anonymous function header and body.
-		"goto"        -- A jump to a label.
-		"identifier"  -- An identifier.
-		"if"          -- If statement with a condition, a body if the condition is true, and possibly another body if the condition is false.
-		"label"       -- Label for goto commands.
-		"literal"     -- Number, string, boolean or nil literal.
-		"lookup"      -- Field lookup on an object.
-		"repeat"      -- A 'repeat' loop.
-		"return"      -- Function/chunk return statement, possibly with values.
-		"table"       -- Table constructor.
-		"unary"       -- Unary expression (operation with one operand, e.g. "-" or "not").
-		"vararg"      -- Vararg expression ("...").
-		"while"       -- A 'while' loop.
+tokenize()
+	tokens, error = parser.tokenize( luaString [, pathForErrorMessages="?" ] )
+	Convert a Lua string into tokens.
+	Returns nil and a message on error.
 
-	Node fields: (Search for 'NodeFields'.)
+tokenizeFile()
+	tokens, error = parser.tokenizeFile( path )
+	Convert the contents of a file into tokens. Uses io.open().
+	Returns nil and a message on error.
+
+newTokenStream()
+	tokens = parser.newTokenStream( )
+	Create a new token stream table. (See more info below.)
+
+insertToken()
+	parser.insertToken( tokens, [ index=tokens.n+1, ] tokenType, tokenValue )
+	Insert a new token. (Search for 'TokenInsertion' for more info.)
+
+removeToken()
+	parser.removeToken( tokens [, index=1 ] )
+	Remove a token.
+
+parse()
+	astNode, error = parser.parse( tokens )
+	astNode, error = parser.parse( luaString [, pathForErrorMessages="?" ] )
+	Convert tokens or Lua code into an AST.
+	Returns nil and a message on error.
+
+parseFile()
+	astNode, error = parser.parseFile( path )
+	Convert a Lua file into an AST.
+	Returns nil and a message on error.
+
+newNode()
+	astNode = parser.newNode( nodeType, arguments... )
+	Create a new AST node. (Search for 'NodeCreation' for more info.)
+
+getChild()
+	node = parser.getChild( node, fieldName )
+	node = parser.getChild( node, fieldName, index )                -- If the node field is an array.
+	node = parser.getChild( node, fieldName, index, tableFieldKey ) -- If the node field is a table field array.
+	tableFieldKey = "key"|"value"
+	Get a child node. (Search for 'NodeFields' for field names.)
+	@Incomplete: Better explanation.
+
+setChild()
+	parser.setChild( node, fieldName, childNode )
+	parser.setChild( node, fieldName, index, childNode )                -- If the node field is an array.
+	parser.setChild( node, fieldName, index, tableFieldKey, childNode ) -- If the node field is a table field array.
+	tableFieldKey = "key"|"value"
+	Set a child node. (Search for 'NodeFields' for field names.)
+	@Incomplete: Better explanation.
+
+addChild()
+	parser.addChild( node, fieldName, [ index=atEnd, ] childNode )
+	parser.addChild( node, fieldName, [ index=atEnd, ] keyNode, valueNode ) -- If the node field is a table field array.
+	Add a child node to an array field. (Search for 'NodeFields' for field names.)
+	@Incomplete: Better explanation.
+
+removeChild()
+	parser.removeChild( node, fieldName [, index=last ] )
+	Remove a child node from an array field. (Search for 'NodeFields' for field names.)
+	@Incomplete: Better explanation.
+
+traverseTree()
+	didStop = parser.traverseTree( astNode, [ leavesFirst=false, ] callback [, topNodeParent=nil, topNodeContainer=nil, topNodeKey=nil ] )
+	action  = callback( astNode, parent, container, key )
+	action  = "stop"|"ignorechildren"|nil  -- Returning nil (or nothing) means continue traversal.
+	Call a function on all nodes in an AST, going from astNode out to the leaf nodes (or from leaf nodes and inwards if leavesFirst is set).
+	container[key] is the position of the current node in the tree and can be used to replace the node.
+
+traverseTreeReverse()
+	didStop = parser.traverseTreeReverse( astNode, [ leavesFirst=false, ] callback [, topNodeParent=nil, topNodeContainer=nil, topNodeKey=nil ] )
+	action  = callback( astNode, parent, container, key )
+	action  = "stop"|"ignorechildren"|nil  -- Returning nil (or nothing) means continue traversal.
+	Call a function on all nodes in reverse order in an AST, going from astNode out to the leaf nodes (or from leaf nodes and inwards if leavesFirst is set).
+	container[key] is the position of the current node in the tree and can be used to replace the node.
+
+updateReferences()
+	parser.updateReferences( astNode [, updateTopNodePosition=true ] )
+	Update references between nodes in the tree.
+	This function sets 'parent', 'container' and 'key' for all nodes and 'declaration' for identifiers.
+	If 'updateTopNodePosition' is false then 'parent', 'container' and 'key' will remain as-it for 'astNode' specifically.
+
+simplify()
+	simplify( astNode )
+	Simplify/fold expressions and statements involving constants ('1+2' becomes '3', 'false and func()' becomes 'false' etc.).
+	See the INT_SIZE constant for notes.
+
+clean()
+	clean( astNode )
+	Attempt to remove nodes that aren't useful, like unused variables.
+	This function can be quite slow!
+
+minify()
+	parser.minify( astNode [, optimize=false ] )
+	Replace local variable names with short names.
+	This function can be used to obfuscate the code to some extent.
+	If 'optimize' is set then simplify() and clean() is also called automatically.
+
+toLua()
+	luaString, error = parser.toLua( astNode [, prettyOuput=false ] )
+	Convert an AST to Lua. Returns nil and a message on error.
+
+printTokens()
+	parser.printTokens( tokens )
+	Print the contents of a token stream to stdout.
+
+printNode()
+	parser.printNode( astNode )
+	Print information about an AST node to stdout.
+
+printTree()
+	parser.printTree( astNode )
+	Print the structure of a whole AST to stdout.
+
+
+2.2 - Constants
+----------------------------------------------------------------
+
+INT_SIZE, MAX_INT, MIN_INT
+VERSION
+
+INT_SIZE
+	parser.INT_SIZE = integer
+	How many bits integers have. In Lua 5.3 and later this is usually 64, and in earlier versions it's 32.
+	The int size may affect how bitwise operations involving only constants get simplified (see simplify()),
+	e.g. the expression '-1>>1' becomes 2147483647 in Lua 5.2 but 9223372036854775807 in Lua 5.3.
+
+MAX_INT
+	parser.MAX_INT = integer
+	The highest representable positive signed integer value, according to INT_SIZE.
+	This is the same value as math.maxinteger in Lua 5.3 and later.
+	This only affects simplification of some bitwise operations.
+
+MIN_INT
+	parser.MIN_INT = integer
+	The highest representable negative signed integer value, according to INT_SIZE.
+	This is the same value as math.mininteger in Lua 5.3 and later.
+	This only affects simplification of some bitwise operations.
+
+VERSION
+	parser.VERSION
+	The parser's version number (e.g. "1.0.2").
+
+
+2.3 - Settings
+----------------------------------------------------------------
+
+printIds, printLocations
+indentation
+
+printIds
+	parser.printIds = bool
+	If AST node IDs should be printed. (All nodes gets assigned a unique ID when created.)
+	Default: false.
+
+printLocations
+	parser.printLocations = bool
+	If the file location (filename and line number) should be printed for each token or AST node.
+	Default: false.
+
+indentation
+	parser.indentation = bool
+	The indentation used when printing ASTs (with printTree()).
+	Default: 4 spaces.
+
+
+3 - Tokens
+================================================================
+
+Token stream table fields:
+
+	n              -- Token count.
+	sourceString   -- The original source string.
+	sourcePath     -- Path to the source file.
+
+	type           -- Array of token types.
+	value          -- Array of token values. All token types have string values except "number" tokens.
+	representation -- Array of token representations (i.e. strings have surrounding quotes etc.).
+	lineStart      -- Array of token start line numbers.
+	lineEnd        -- Array of token end line numbers.
+	positionStart  -- Array of token start indices.
+	positionEnd    -- Array of token end indices.
+
+Token types:
+
+	"comment"     -- A comment.
+	"identifier"  -- Word that is not a keyword.
+	"keyword"     -- Lua keyword.
+	"number"      -- Number literal.
+	"punctuation" -- Any punctuation, like "." or "(".
+	"string"      -- String value.
+
+
+4 - AST
+================================================================
+
+Node types:
+
+	"assignment"  -- Assignment of one or more values to one or more variables.
+	"binary"      -- Binary expression (operation with two operands, e.g. "+" or "and").
+	"block"       -- List of statements. Blocks inside blocks are 'do...end' statements. Can be a chuck.
+	"break"       -- Loop break statement.
+	"call"        -- Function call.
+	"declaration" -- Declaration of one or more local variables, possibly with initial values.
+	"for"         -- A 'for' loop.
+	"function"    -- Anonymous function header and body.
+	"goto"        -- A jump to a label.
+	"identifier"  -- An identifier.
+	"if"          -- If statement with a condition, a body if the condition is true, and possibly another body if the condition is false.
+	"label"       -- Label for goto commands.
+	"literal"     -- Number, string, boolean or nil literal.
+	"lookup"      -- Field lookup on an object.
+	"repeat"      -- A 'repeat' loop.
+	"return"      -- Function/chunk return statement, possibly with values.
+	"table"       -- Table constructor.
+	"unary"       -- Unary expression (operation with one operand, e.g. "-" or "not").
+	"vararg"      -- Vararg expression ("...").
+	"while"       -- A 'while' loop.
+
+Node fields: (Search for 'NodeFields'.)
 
 
 --============================================================]]
@@ -2708,7 +2769,7 @@ end
 -- didStop = traverseTreeReverse( astNode, [ leavesFirst=false, ] callback [, topNodeParent=nil, topNodeContainer=nil, topNodeKey=nil ] )
 -- action  = callback( astNode, parent, container, key )
 -- action  = "stop"|"ignorechildren"|nil  -- Returning nil (or nothing) means continue traversal.
-function traverseTreeReverse(node, leavesFirst, cb, parent, container, k) -- @Incomplete: Expose in API? Yeah.
+function traverseTreeReverse(node, leavesFirst, cb, parent, container, k)
 	assertArg1("traverseTreeReverse", 1, node, "table")
 
 	if type(leavesFirst) == "boolean" then
@@ -3226,7 +3287,7 @@ local function simplifyNode(node, parent, container, key)
 	elseif node.type == "if" then
 		local ifNode = node
 
-		if ifNode.condition.type == "literal" then -- @Incomplete: There are more values that make simplification possible.
+		if ifNode.condition.type == "literal" then -- @Incomplete: There are more values that make simplification possible (e.g. functions, but who would put that here anyway). :SimplifyTruthfulValues
 			local replacement = ifNode.condition.value and ifNode.bodyTrue or ifNode.bodyFalse
 
 			if replacement and replacement.statements[1] then
@@ -3240,7 +3301,7 @@ local function simplifyNode(node, parent, container, key)
 	elseif node.type == "while" then
 		local whileLoop = node
 
-		if whileLoop.condition.type == "literal" then -- @Incomplete: There are more values that make simplification possible.
+		if whileLoop.condition.type == "literal" then -- :SimplifyTruthfulValues
 			if whileLoop.condition.value then
 				whileLoop.condition.value = true
 			else
@@ -3251,7 +3312,7 @@ local function simplifyNode(node, parent, container, key)
 	elseif node.type == "repeat" then
 		local repeatLoop = node
 
-		if repeatLoop.condition.type == "literal" then -- @Incomplete: There are more values that make simplification possible.
+		if repeatLoop.condition.type == "literal" then -- :SimplifyTruthfulValues
 			if repeatLoop.condition.value then
 				replace(repeatLoop, repeatLoop.body, parent, container, key)
 				return simplifyNode(repeatLoop.body, parent, container, key)
@@ -4976,46 +5037,47 @@ end
 
 parser = {
 	-- Constants.
-	VERSION          = PARSER_VERSION,
+	VERSION             = PARSER_VERSION,
 
-	INT_SIZE         = INT_SIZE, -- @Undocumented
-	MAX_INT          = MAX_INT,  -- @Undocumented
-	MIN_INT          = MIN_INT,  -- @Undocumented
+	INT_SIZE            = INT_SIZE,
+	MAX_INT             = MAX_INT,
+	MIN_INT             = MIN_INT,
 
 	-- Functions.
-	tokenize         = tokenize,
-	tokenizeFile     = tokenizeFile,
+	tokenize            = tokenize,
+	tokenizeFile        = tokenizeFile,
 
-	newTokenStream   = newTokenStream,
-	insertToken      = insertToken,
-	removeToken      = removeToken,
+	newTokenStream      = newTokenStream,
+	insertToken         = insertToken,
+	removeToken         = removeToken,
 
-	parse            = parse,
-	parseFile        = parseFile,
+	parse               = parse,
+	parseFile           = parseFile,
 
-	newNode          = newNode,
-	getChild         = getChild,
-	setChild         = setChild,
-	addChild         = addChild,
-	removeChild      = removeChild,
+	newNode             = newNode,
+	getChild            = getChild,
+	setChild            = setChild,
+	addChild            = addChild,
+	removeChild         = removeChild,
 
-	traverseTree     = traverseTree,
-	updateReferences = updateReferences,
+	traverseTree        = traverseTree,
+	traverseTreeReverse = traverseTreeReverse,
+	updateReferences    = updateReferences,
 
-	simplify         = simplify,
-	clean            = clean,
-	minify           = minify,
+	simplify            = simplify,
+	clean               = clean,
+	minify              = minify,
 
-	toLua            = toLua,
+	toLua               = toLua,
 
-	printTokens      = printTokens,
-	printNode        = printNode,
-	printTree        = printTree,
+	printTokens         = printTokens,
+	printNode           = printNode,
+	printTree           = printTree,
 
 	-- Settings.
-	printIds         = false,  -- @Undocumented
-	printLocations   = false,  -- @Undocumented
-	indentation      = "    ", -- @Undocumented
+	printIds            = false,
+	printLocations      = false,
+	indentation         = "    ",
 }
 
 return parser
