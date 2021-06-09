@@ -932,7 +932,7 @@ function tokenize(s, path)
 				end
 			end
 
-			-- Check for nesting of [[...]] which is depricated in Lua. Sigh...
+			-- Check for nesting of [[...]] which is deprecated in Lua. Sigh...
 			if equalSignCountIfLong and equalSignCountIfLong == 0 then
 				local pos = find(s, "[[", ptrStart+4, true)
 				if pos and pos < ptr then
@@ -942,8 +942,8 @@ function tokenize(s, path)
 
 			tokType  = "comment"
 			tokRepr  = getSubstring(s, ptrStart, ptr-1)
+			tokRepr  = equalSignCountIfLong and tokRepr or (tokRepr:find"\n$" and tokRepr or tokRepr.."\n") -- Make sure there's a newline at the end of single-line comments. (It may be missing if we've reached EOF.)
 			tokValue = equalSignCountIfLong and getSubstring(tokRepr, 5+equalSignCountIfLong, -3-equalSignCountIfLong) or getSubstring(tokRepr, 3)
-			tokValue = gsub(gsub(tokValue, "^%s+", ""), "%s+$", "")
 
 		-- Number.
 		elseif find(s, "^%.?%d", ptr) then
