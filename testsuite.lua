@@ -40,9 +40,17 @@ local function assert(v, err)
 	error(debug.traceback(err, 2), (err:find"^Error @" and 0 or 2))
 end
 
-local function assertLua(lua, expectedLua, level)
-	expectedLua = expectedLua:gsub("^%s+", ""):gsub("%s+$", "")
-	if lua == expectedLua then  return  end
+-- assertLua( lua, expectedLua [, expectedLuaAlt ] [, level=1 ] )
+local function assertLua(lua, expectedLua, expectedLuaAlt, level)
+	if type(expectedLuaAlt) ~= "string" then
+		expectedLuaAlt, level = nil, expectedLuaAlt
+	end
+
+	expectedLua    =                    expectedLua   :gsub("^%s+", ""):gsub("%s+$", "")
+	expectedLuaAlt = expectedLuaAlt and expectedLuaAlt:gsub("^%s+", ""):gsub("%s+$", "")
+
+	if lua == expectedLua    then  return  end
+	if lua == expectedLuaAlt then  return  end
 
 	error(string.format(
 		"Unexpected Lua output.\n%s\nExpected:\n%s\n%s\nGot:\n%s\n%s",
@@ -275,14 +283,14 @@ test("Call and lookup parsing", function()
 end)
 
 test("Simplify", function()
-	local function testSimplify(lua, expectedLua)
+	local function testSimplify(lua, expectedLua, expectedLuaAlt)
 		local ast = assert(parser.parse(lua, "<luastring>"))
 		parser.simplify(ast)
-		assertLua(assert(parser.toLua(ast)), expectedLua, 2)
+		assertLua(assert(parser.toLua(ast)), expectedLua, expectedLuaAlt, 2)
 	end
 
 	testSimplify([[ x = 1+2   ]], [[ x=3; ]])
-	testSimplify([[ x = 1+2^3 ]], [[ x=9; ]])
+	testSimplify([[ x = 1+2^3 ]], [[ x=9; ]], [[ x=9.0; ]]) -- In Lua 5.3+ the result of x^y is always a float.
 
 	testSimplify([[ x = 1 << 8     ]], [[ x=256;   ]])
 	testSimplify([[ x = 2^99999    ]], [[ x=(1/0); ]])

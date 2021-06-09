@@ -287,31 +287,32 @@ Node fields: (Search for 'NodeFields'.)
 
 local PARSER_VERSION = "2.0.0-dev"
 
-local io           = io
-local ioWrite      = io.write
+local io            = io
+local ioWrite       = io.write
 
-local byteToString = string.char
-local F            = string.format
-local find         = string.find
-local getByte      = string.byte
-local getSubstring = string.sub
-local gmatch       = string.gmatch
-local gsub         = string.gsub
-local match        = string.match
-local repeatString = string.rep
+local byteToString  = string.char
+local F             = string.format
+local find          = string.find
+local getByte       = string.byte
+local getSubstring  = string.sub
+local gmatch        = string.gmatch
+local gsub          = string.gsub
+local match         = string.match
+local repeatString  = string.rep
 
-local floor        = math.floor
-local getMax       = math.max
-local getMin       = math.min
+local floor         = math.floor
+local getMax        = math.max
+local getMin        = math.min
+local getNumberType = math.type -- May be nil.
 
-local concat       = table.concat
-local insert       = table.insert
-local remove       = table.remove
-local sort         = table.sort
-local unpack       = table.unpack or unpack
+local concat        = table.concat
+local insert        = table.insert
+local remove        = table.remove
+local sort          = table.sort
+local unpack        = table.unpack or unpack
 
 local loadLuaString = loadstring or load
-local maybeWrapInt  = (_VERSION == "Lua 5.2") and bit32.band or function(n)return(n)end
+local maybeWrapInt  = (jit and function(n)return(n%2^32)end) or (_VERSION == "Lua 5.2" and bit32.band) or function(n)return(n)end
 
 local assertArg1, assertArg, errorf
 local countString, countSubString
@@ -4907,6 +4908,10 @@ end
 
 
 function formatNumber(n)
+	if n == math.floor(n) and not (getNumberType and getNumberType(n) == "float") then
+		local nStr = F("%.0f", n)
+		if tonumber(nStr) == n then  return nStr  end
+	end
 	return (tostring(n)
 		:gsub("(e[-+])0+(%d+)$", "%1%2") -- Remove unnecessary zeroes after 'e'.
 		:gsub("e%+",             "e"   ) -- Remove plus after 'e'.
