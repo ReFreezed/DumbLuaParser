@@ -290,28 +290,32 @@ local PARSER_VERSION = "2.0.0-dev"
 local io            = io
 local ioWrite       = io.write
 
-local byteToString  = string.char
 local F             = string.format
-local find          = string.find
-local getByte       = string.byte
-local getSubstring  = string.sub
-local gmatch        = string.gmatch
-local gsub          = string.gsub
-local match         = string.match
-local repeatString  = string.rep
+local stringByte    = string.byte
+local stringChar    = string.char
+local stringFind    = string.find
+local stringGmatch  = string.gmatch
+local stringGsub    = string.gsub
+local stringMatch   = string.match
+local stringRep     = string.rep
+local stringSub     = string.sub
 
-local floor         = math.floor
-local getMax        = math.max
-local getMin        = math.min
-local getNumberType = math.type -- May be nil.
+local mathFloor     = math.floor
+local mathMax       = math.max
+local mathMin       = math.min
+local mathType      = math.type -- May be nil.
 
-local concat        = table.concat
-local insert        = table.insert
-local remove        = table.remove
-local sort          = table.sort
-local unpack        = table.unpack or unpack
+local tableConcat   = table.concat
+local tableInsert   = table.insert
+local tableRemove   = table.remove
+local tableSort     = table.sort
+local tableUnpack   = table.unpack or unpack
 
-local loadLuaString = loadstring or load
+local loadstring    = loadstring or load
+local tonumber      = tonumber
+local tostring      = tostring
+local type          = type
+
 local maybeWrapInt  = (jit and function(n)return(n%2^32)end) or (_VERSION == "Lua 5.2" and bit32.band) or function(n)return(n)end
 
 local assertArg1, assertArg, errorf
@@ -383,20 +387,20 @@ local OPERATOR_PRECEDENCE = {
 	["^"]   = 12,
 }
 
-local NUM_HEX_FRAC_EXP = gsub("^( 0[Xx] ([%dA-Fa-f]*) %.([%dA-Fa-f]+) [Pp]([-+]?[%dA-Fa-f]+) )", " +", "")
-local NUM_HEX_FRAC     = gsub("^( 0[Xx] ([%dA-Fa-f]*) %.([%dA-Fa-f]+)                        )", " +", "")
-local NUM_HEX_EXP      = gsub("^( 0[Xx] ([%dA-Fa-f]+) %.?             [Pp]([-+]?[%dA-Fa-f]+) )", " +", "")
-local NUM_HEX          = gsub("^( 0[Xx]  [%dA-Fa-f]+  %.?                                    )", " +", "")
-local NUM_DEC_FRAC_EXP = gsub("^(        %d*          %.%d+           [Ee][-+]?%d+           )", " +", "")
-local NUM_DEC_FRAC     = gsub("^(        %d*          %.%d+                                  )", " +", "")
-local NUM_DEC_EXP      = gsub("^(        %d+          %.?             [Ee][-+]?%d+           )", " +", "")
-local NUM_DEC          = gsub("^(        %d+          %.?                                    )", " +", "")
+local NUM_HEX_FRAC_EXP = stringGsub("^( 0[Xx] ([%dA-Fa-f]*) %.([%dA-Fa-f]+) [Pp]([-+]?[%dA-Fa-f]+) )", " +", "")
+local NUM_HEX_FRAC     = stringGsub("^( 0[Xx] ([%dA-Fa-f]*) %.([%dA-Fa-f]+)                        )", " +", "")
+local NUM_HEX_EXP      = stringGsub("^( 0[Xx] ([%dA-Fa-f]+) %.?             [Pp]([-+]?[%dA-Fa-f]+) )", " +", "")
+local NUM_HEX          = stringGsub("^( 0[Xx]  [%dA-Fa-f]+  %.?                                    )", " +", "")
+local NUM_DEC_FRAC_EXP = stringGsub("^(        %d*          %.%d+           [Ee][-+]?%d+           )", " +", "")
+local NUM_DEC_FRAC     = stringGsub("^(        %d*          %.%d+                                  )", " +", "")
+local NUM_DEC_EXP      = stringGsub("^(        %d+          %.?             [Ee][-+]?%d+           )", " +", "")
+local NUM_DEC          = stringGsub("^(        %d+          %.?                                    )", " +", "")
 
 local INT_SIZE, MAX_INT, MIN_INT
 do
 	local hex = F("%x", maybeWrapInt(-1))
 	INT_SIZE  = #hex * 4 -- This should generally be 64 for Lua 5.3+ and 32 for earlier.
-	MAX_INT   = math.maxinteger or tonumber(hex:gsub("f", "7", 1), 16)
+	MAX_INT   = math.maxinteger or tonumber(stringGsub(hex, "f", "7", 1), 16)
 	MIN_INT   = math.mininteger or -MAX_INT-1
 end
 
@@ -563,14 +567,14 @@ local CHILD_FIELDS = {
 -- count = countString( haystack, needle [, plain=false ] )
 function countString(haystack, needle, plain)
 	local count = 0
-	local i     = 0
-	local _
+	local pos   = 1
 
 	while true do
-		_, i = find(haystack, needle, i+1, plain)
-		if not i then  return count  end
+		local _, i2 = stringFind(haystack, needle, pos, plain)
+		if not i2 then  return count  end
 
-		count = count+1
+		count = count + 1
+		pos   = i2    + 1
 	end
 end
 
@@ -579,7 +583,7 @@ function countSubString(haystack, pos, posEnd, needle, plain)
 	local count = 0
 
 	while true do
-		local _, i2 = haystack:find(needle, pos, plain)
+		local _, i2 = stringFind(haystack, needle, pos, plain)
 		if not i2 or i2 > posEnd then  return count  end
 
 		count = count + 1
@@ -598,28 +602,28 @@ end
 do
 	local function findStartOfLine(s, pos, canBeEmpty)
 		while pos > 1 do
-			if getByte(s, pos-1) == 10--[[\n]] and (canBeEmpty or getByte(s, pos) ~= 10--[[\n]]) then  break  end
+			if stringByte(s, pos-1) == 10--[[\n]] and (canBeEmpty or stringByte(s, pos) ~= 10--[[\n]]) then  break  end
 			pos = pos - 1
 		end
-		return math.max(pos, 1)
+		return mathMax(pos, 1)
 	end
 	local function findEndOfLine(s, pos)
 		while pos < #s do
-			if getByte(s, pos+1) == 10--[[\n]] then  break  end
+			if stringByte(s, pos+1) == 10--[[\n]] then  break  end
 			pos = pos + 1
 		end
-		return math.min(pos, #s)
+		return mathMin(pos, #s)
 	end
 
 	local function getSubTextLength(s, pos, posEnd)
 		local len = 0
 
 		while pos <= posEnd do
-			if getByte(s, pos) == 9 then -- '\t'
+			if stringByte(s, pos) == 9 then -- '\t'
 				len = len + 4
 				pos = pos + 1
 			else
-				local _, i2 = find(s, "^[%z\1-\127\194-\253][\128-\191]*", pos)
+				local _, i2 = stringFind(s, "^[%z\1-\127\194-\253][\128-\191]*", pos)
 				if i2 and i2 <= posEnd then
 					len = len + 1
 					pos = i2  + 1
@@ -640,7 +644,7 @@ do
 			return F("Error @ %s: [%s] %s", path, agent, s)
 		end
 
-		pos      = math.min(math.max(pos, 1), #contents+1)
+		pos      = mathMin(mathMax(pos, 1), #contents+1)
 		local ln = getLineNumber(contents, pos)
 
 		local lineStart     = findStartOfLine(contents, pos, true)
@@ -653,10 +657,10 @@ do
 
 		return F("Error @ %s:%d: [%s] %s\n>\n%s%s%s>-%s^",
 			path, ln, agent, s,
-			(linePre2Start < linePre1Start and linePre2Start <= linePre2End) and F("> %s\n", (gsub(getSubstring(contents, linePre2Start, linePre2End), "\t", "    "))) or "",
-			(linePre1Start < lineStart     and linePre1Start <= linePre1End) and F("> %s\n", (gsub(getSubstring(contents, linePre1Start, linePre1End), "\t", "    "))) or "",
-			(                                  lineStart     <= lineEnd    ) and F("> %s\n", (gsub(getSubstring(contents, lineStart,     lineEnd    ), "\t", "    "))) or ">\n",
-			repeatString("-", getSubTextLength(contents, lineStart, pos-1))
+			(linePre2Start < linePre1Start and linePre2Start <= linePre2End) and F("> %s\n", (stringGsub(stringSub(contents, linePre2Start, linePre2End), "\t", "    "))) or "",
+			(linePre1Start < lineStart     and linePre1Start <= linePre1End) and F("> %s\n", (stringGsub(stringSub(contents, linePre1Start, linePre1End), "\t", "    "))) or "",
+			(                                  lineStart     <= lineEnd    ) and F("> %s\n", (stringGsub(stringSub(contents, lineStart,     lineEnd    ), "\t", "    "))) or ">\n",
+			stringRep("-", getSubTextLength(contents, lineStart, pos-1))
 		)
 	end
 end
@@ -719,19 +723,19 @@ local ERROR_UNFINISHED_VALUE = {}
 
 -- success, equalSignCountIfLong|errorCode, ptr = parseStringlikeToken( s, ptr )
 local function parseStringlikeToken(s, ptr)
-	local longEqualSigns       = match(s, "^%[(=*)%[", ptr)
+	local longEqualSigns       = stringMatch(s, "^%[(=*)%[", ptr)
 	local equalSignCountIfLong = longEqualSigns and #longEqualSigns
 
 	-- Single line (comment).
 	if not equalSignCountIfLong then
-		local i1, i2 = find(s, "\n", ptr)
+		local i1, i2 = stringFind(s, "\n", ptr)
 		ptr          = i2 and i2 + 1 or #s + 1
 
 	-- Multiline.
 	else
 		ptr = ptr + 1 + #longEqualSigns + 1
 
-		local i1, i2 = find(s, "%]"..longEqualSigns.."%]", ptr)
+		local i1, i2 = stringFind(s, "%]"..longEqualSigns.."%]", ptr)
 		if not i1 then
 			return false, ERROR_UNFINISHED_VALUE, 0
 		end
@@ -750,7 +754,7 @@ local function codepointToString(cp, buffer)
 	end
 
 	if cp < 128 then
-		insert(buffer, byteToString(cp))
+		tableInsert(buffer, stringChar(cp))
 		return true
 	end
 
@@ -759,8 +763,8 @@ local function codepointToString(cp, buffer)
 	cp           = (cp - suffix) / 64
 
 	if cp < 32 then
-		insert(buffer, byteToString(192+cp))
-		insert(buffer, byteToString(c4))
+		tableInsert(buffer, stringChar(192+cp))
+		tableInsert(buffer, stringChar(c4))
 		return true
 	end
 
@@ -769,19 +773,19 @@ local function codepointToString(cp, buffer)
 	cp       = (cp - suffix) / 64
 
 	if cp < 16 then
-		insert(buffer, byteToString(224+cp))
-		insert(buffer, byteToString(c3))
-		insert(buffer, byteToString(c4))
+		tableInsert(buffer, stringChar(224+cp))
+		tableInsert(buffer, stringChar(c3))
+		tableInsert(buffer, stringChar(c4))
 		return true
 	end
 
 	suffix = cp % 64
 	cp     = (cp - suffix) / 64
 
-	insert(buffer, byteToString(240+cp))
-	insert(buffer, byteToString(128+suffix))
-	insert(buffer, byteToString(c3))
-	insert(buffer, byteToString(c4))
+	tableInsert(buffer, stringChar(240+cp))
+	tableInsert(buffer, stringChar(128+suffix))
+	tableInsert(buffer, stringChar(c3))
+	tableInsert(buffer, stringChar(c4))
 	return true
 end
 
@@ -790,34 +794,34 @@ local function parseStringContents(s, path, ptrStart, ptrEnd)
 	local buffer = {}
 
 	while ptr <= ptrEnd do
-		local i1 = find(s, "\\", ptr, true)
+		local i1 = stringFind(s, "\\", ptr, true)
 		if not i1 or i1 > ptrEnd then  break  end
 
 		if i1 > ptr then
-			insert(buffer, getSubstring(s, ptr, i1-1))
+			tableInsert(buffer, stringSub(s, ptr, i1-1))
 		end
 		ptr = i1 + 1
 
-		-- local b1, b2, b3 = getByte(s, ptr, ptr+2)
+		-- local b1, b2, b3 = stringByte(s, ptr, ptr+2)
 
-		if     find(s, "^a", ptr) then  insert(buffer, "\a") ; ptr = ptr + 1
-		elseif find(s, "^b", ptr) then  insert(buffer, "\b") ; ptr = ptr + 1
-		elseif find(s, "^t", ptr) then  insert(buffer, "\t") ; ptr = ptr + 1
-		elseif find(s, "^n", ptr) then  insert(buffer, "\n") ; ptr = ptr + 1
-		elseif find(s, "^v", ptr) then  insert(buffer, "\v") ; ptr = ptr + 1
-		elseif find(s, "^f", ptr) then  insert(buffer, "\f") ; ptr = ptr + 1
-		elseif find(s, "^r", ptr) then  insert(buffer, "\r") ; ptr = ptr + 1
-		elseif find(s, "^\\",ptr) then  insert(buffer, "\\") ; ptr = ptr + 1
-		elseif find(s, '^"', ptr) then  insert(buffer, "\"") ; ptr = ptr + 1
-		elseif find(s, "^'", ptr) then  insert(buffer, "\'") ; ptr = ptr + 1
-		elseif find(s, "^\n",ptr) then  insert(buffer, "\n") ; ptr = ptr + 1
+		if     stringFind(s, "^a", ptr) then  tableInsert(buffer, "\a") ; ptr = ptr + 1
+		elseif stringFind(s, "^b", ptr) then  tableInsert(buffer, "\b") ; ptr = ptr + 1
+		elseif stringFind(s, "^t", ptr) then  tableInsert(buffer, "\t") ; ptr = ptr + 1
+		elseif stringFind(s, "^n", ptr) then  tableInsert(buffer, "\n") ; ptr = ptr + 1
+		elseif stringFind(s, "^v", ptr) then  tableInsert(buffer, "\v") ; ptr = ptr + 1
+		elseif stringFind(s, "^f", ptr) then  tableInsert(buffer, "\f") ; ptr = ptr + 1
+		elseif stringFind(s, "^r", ptr) then  tableInsert(buffer, "\r") ; ptr = ptr + 1
+		elseif stringFind(s, "^\\",ptr) then  tableInsert(buffer, "\\") ; ptr = ptr + 1
+		elseif stringFind(s, '^"', ptr) then  tableInsert(buffer, "\"") ; ptr = ptr + 1
+		elseif stringFind(s, "^'", ptr) then  tableInsert(buffer, "\'") ; ptr = ptr + 1
+		elseif stringFind(s, "^\n",ptr) then  tableInsert(buffer, "\n") ; ptr = ptr + 1
 
-		elseif find(s, "^z", ptr) then
-			local i1, i2 = find(s, "^%s*", ptr+1)
+		elseif stringFind(s, "^z", ptr) then
+			local i1, i2 = stringFind(s, "^%s*", ptr+1)
 			ptr          = i2 + 1
 
-		elseif find(s, "^%d", ptr) then
-			local nStr = match(s, "^%d%d?%d?", ptr)
+		elseif stringFind(s, "^%d", ptr) then
+			local nStr = stringMatch(s, "^%d%d?%d?", ptr)
 			local byte = tonumber(nStr)
 
 			if byte > 255 then
@@ -828,18 +832,18 @@ local function parseStringContents(s, path, ptrStart, ptrEnd)
 				)
 			end
 
-			insert(buffer, byteToString(byte))
+			tableInsert(buffer, stringChar(byte))
 			ptr = ptr + #nStr
 
-		elseif find(s, "^x%x%x", ptr) then
-			local hexStr = getSubstring(s, ptr+1, ptr+2)
+		elseif stringFind(s, "^x%x%x", ptr) then
+			local hexStr = stringSub(s, ptr+1, ptr+2)
 			local byte   = tonumber(hexStr, 16)
 
-			insert(buffer, byteToString(byte))
+			tableInsert(buffer, stringChar(byte))
 			ptr = ptr + 3
 
-		elseif find(s, "^u{%x+}", ptr) then
-			local hexStr = match(s, "^%x+", ptr+2)
+		elseif stringFind(s, "^u{%x+}", ptr) then
+			local hexStr = stringMatch(s, "^%x+", ptr+2)
 			local cp     = tonumber(hexStr, 16)
 
 			local ok, err = codepointToString(cp, buffer)
@@ -864,10 +868,10 @@ local function parseStringContents(s, path, ptrStart, ptrEnd)
 	end
 
 	if ptr <= ptrEnd then
-		insert(buffer, getSubstring(s, ptr, ptrEnd))
+		tableInsert(buffer, stringSub(s, ptr, ptrEnd))
 	end
 
-	return concat(buffer)
+	return tableConcat(buffer)
 end
 
 -- tokens, error = tokenize( luaString [, pathForErrorMessages="?" ] )
@@ -875,8 +879,8 @@ function tokenize(s, path)
 	assertArg1("tokenize", 1, s,    "string")
 	assertArg ("tokenize", 2, path, "string","nil")
 
-	if find(s, "\r", 1, true) then
-		s = gsub(s, "\r\n?", "\n")
+	if stringFind(s, "\r", 1, true) then
+		s = stringGsub(s, "\r\n?", "\n")
 	end
 	path = path or "?"
 
@@ -897,7 +901,7 @@ function tokenize(s, path)
 	local ln    = 1
 
 	while true do
-		local i1, i2 = find(s, "^%s+", ptr)
+		local i1, i2 = stringFind(s, "^%s+", ptr)
 		if i1 then
 			ln  = ln + countSubString(s, i1, i2, "\n", true)
 			ptr = i2 + 1
@@ -910,15 +914,15 @@ function tokenize(s, path)
 		local tokType, tokRepr, tokValue
 
 		-- Identifier/keyword.
-		if find(s, "^[%a_]", ptr) then
-			local i1, i2, word = find(s, "^([%a_][%w_]*)", ptr)
+		if stringFind(s, "^[%a_]", ptr) then
+			local i1, i2, word = stringFind(s, "^([%a_][%w_]*)", ptr)
 			ptr      = i2+1
 			tokType  = KEYWORDS[word] and "keyword" or "identifier"
-			tokRepr  = getSubstring(s, ptrStart, ptr-1)
+			tokRepr  = stringSub(s, ptrStart, ptr-1)
 			tokValue = tokRepr
 
 		-- Comment.
-		elseif find(s, "^%-%-", ptr) then
+		elseif stringFind(s, "^%-%-", ptr) then
 			ptr = ptr + 2
 
 			local ok, equalSignCountIfLong
@@ -935,27 +939,27 @@ function tokenize(s, path)
 
 			-- Check for nesting of [[...]] which is deprecated in Lua. Sigh...
 			if equalSignCountIfLong and equalSignCountIfLong == 0 then
-				local pos = find(s, "[[", ptrStart+4, true)
+				local pos = stringFind(s, "[[", ptrStart+4, true)
 				if pos and pos < ptr then
 					return nil, formatErrorInFile(s, path, pos, "Tokenizer", "Cannot have nested comments. (Comment starting %s)", getRelativeLocationText(lnStart, getLineNumber(s, pos)))
 				end
 			end
 
 			tokType  = "comment"
-			tokRepr  = getSubstring(s, ptrStart, ptr-1)
-			tokRepr  = equalSignCountIfLong and tokRepr or (tokRepr:find"\n$" and tokRepr or tokRepr.."\n") -- Make sure there's a newline at the end of single-line comments. (It may be missing if we've reached EOF.)
-			tokValue = equalSignCountIfLong and getSubstring(tokRepr, 5+equalSignCountIfLong, -3-equalSignCountIfLong) or getSubstring(tokRepr, 3)
+			tokRepr  = stringSub(s, ptrStart, ptr-1)
+			tokRepr  = equalSignCountIfLong and tokRepr or (stringFind(tokRepr, "\n$") and tokRepr or tokRepr.."\n") -- Make sure there's a newline at the end of single-line comments. (It may be missing if we've reached EOF.)
+			tokValue = equalSignCountIfLong and stringSub(tokRepr, 5+equalSignCountIfLong, -3-equalSignCountIfLong) or stringSub(tokRepr, 3)
 
 		-- Number.
-		elseif find(s, "^%.?%d", ptr) then
-			local               lua52Hex, i1, i2, numStr = true,  find(s, NUM_HEX_FRAC_EXP, ptr)
-			if not i1     then  lua52Hex, i1, i2, numStr = true,  find(s, NUM_HEX_FRAC,     ptr)
-			if not i1     then  lua52Hex, i1, i2, numStr = true,  find(s, NUM_HEX_EXP,      ptr)
-			if not i1     then  lua52Hex, i1, i2, numStr = false, find(s, NUM_HEX,          ptr)
-			if not i1     then  lua52Hex, i1, i2, numStr = false, find(s, NUM_DEC_FRAC_EXP, ptr)
-			if not i1     then  lua52Hex, i1, i2, numStr = false, find(s, NUM_DEC_FRAC,     ptr)
-			if not i1     then  lua52Hex, i1, i2, numStr = false, find(s, NUM_DEC_EXP,      ptr)
-			if not i1     then  lua52Hex, i1, i2, numStr = false, find(s, NUM_DEC,          ptr)
+		elseif stringFind(s, "^%.?%d", ptr) then
+			local               lua52Hex, i1, i2, numStr = true,  stringFind(s, NUM_HEX_FRAC_EXP, ptr)
+			if not i1     then  lua52Hex, i1, i2, numStr = true,  stringFind(s, NUM_HEX_FRAC,     ptr)
+			if not i1     then  lua52Hex, i1, i2, numStr = true,  stringFind(s, NUM_HEX_EXP,      ptr)
+			if not i1     then  lua52Hex, i1, i2, numStr = false, stringFind(s, NUM_HEX,          ptr)
+			if not i1     then  lua52Hex, i1, i2, numStr = false, stringFind(s, NUM_DEC_FRAC_EXP, ptr)
+			if not i1     then  lua52Hex, i1, i2, numStr = false, stringFind(s, NUM_DEC_FRAC,     ptr)
+			if not i1     then  lua52Hex, i1, i2, numStr = false, stringFind(s, NUM_DEC_EXP,      ptr)
+			if not i1     then  lua52Hex, i1, i2, numStr = false, stringFind(s, NUM_DEC,          ptr)
 			if not numStr then  return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Malformed number.")
 			end end end end end end end end
 
@@ -963,9 +967,9 @@ function tokenize(s, path)
 
 			-- Support hexadecimal floats if we're running Lua 5.1.
 			if not n and lua52Hex then
-				local               _, intStr, fracStr, expStr = match(numStr, NUM_HEX_FRAC_EXP)
-				if not intStr then  _, intStr, fracStr         = match(numStr, NUM_HEX_FRAC) ; expStr  = "0"
-				if not intStr then  _, intStr,          expStr = match(numStr, NUM_HEX_EXP)  ; fracStr = ""
+				local               _, intStr, fracStr, expStr = stringMatch(numStr, NUM_HEX_FRAC_EXP)
+				if not intStr then  _, intStr, fracStr         = stringMatch(numStr, NUM_HEX_FRAC) ; expStr  = "0"
+				if not intStr then  _, intStr,          expStr = stringMatch(numStr, NUM_HEX_EXP)  ; fracStr = ""
 				if not intStr then  return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Internal error parsing the number '%s'.", numStr)
 				end end end
 
@@ -974,10 +978,10 @@ function tokenize(s, path)
 				local fracValue = 1
 				for i = 1, #fracStr do
 					fracValue = fracValue / 16
-					n         = n + tonumber(getSubstring(fracStr, i, i), 16) * fracValue
+					n         = n + tonumber(stringSub(fracStr, i, i), 16) * fracValue
 				end
 
-				n = n * 2 ^ gsub(expStr, "^+", "")
+				n = n * 2 ^ stringGsub(expStr, "^+", "")
 			end
 
 			if not n then
@@ -989,26 +993,26 @@ function tokenize(s, path)
 			tokRepr  = numStr
 			tokValue = n
 
-			if find(s, "^%.", ptr) then
+			if stringFind(s, "^%.", ptr) then
 				return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Malformed number.")
 			end
 
 		-- Quoted string.
-		elseif find(s, "^[\"']", ptr) then
-			local quote     = getSubstring(s, ptr, ptr)
-			local quoteByte = getByte(quote)
+		elseif stringFind(s, "^[\"']", ptr) then
+			local quote     = stringSub(s, ptr, ptr)
+			local quoteByte = stringByte(quote)
 			ptr             = ptr + 1
 
 			local pat = "["..quote.."\\\n]"
 
 			while true do
-				local i1 = find(s, pat, ptr)
+				local i1 = stringFind(s, pat, ptr)
 				if not i1 then
 					return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Unfinished string.")
 				end
 
 				ptr          = i1
-				local b1, b2 = getByte(s, ptr, ptr+1)
+				local b1, b2 = stringByte(s, ptr, ptr+1)
 
 				-- '"'
 				if b1 == quoteByte then
@@ -1021,7 +1025,7 @@ function tokenize(s, path)
 
 					if b2 == 122 then -- 'z'
 						ptr         = ptr + 1
-						local _, i2 = find(s, "^%s*", ptr)
+						local _, i2 = stringFind(s, "^%s*", ptr)
 						ptr         = i2 + 1
 					else
 						-- Note: We don't have to look for multiple characters after the escape, like \nnn - this algorithm works anyway.
@@ -1046,9 +1050,9 @@ function tokenize(s, path)
 			end
 
 			tokType = "string"
-			tokRepr = getSubstring(s, ptrStart, ptr-1)
+			tokRepr = stringSub(s, ptrStart, ptr-1)
 
-			local chunk = loadLuaString("return "..tokRepr, "@") -- Try to make Lua parse the string value before we fall back to our own parser which is probably slower.
+			local chunk = loadstring("return "..tokRepr, "@") -- Try to make Lua parse the string value before we fall back to our own parser which is probably slower.
 			if chunk then
 				tokValue = chunk()
 				assert(type(tokValue) == "string")
@@ -1059,7 +1063,7 @@ function tokenize(s, path)
 			end
 
 		-- Long string.
-		elseif find(s, "^%[=*%[", ptr) then
+		elseif stringFind(s, "^%[=*%[", ptr) then
 			local ok, equalSignCountIfLong
 			ok, equalSignCountIfLong, ptr = parseStringlikeToken(s, ptr)
 
@@ -1073,31 +1077,31 @@ function tokenize(s, path)
 			end
 
 			tokType = "string"
-			tokRepr = getSubstring(s, ptrStart, ptr-1)
+			tokRepr = stringSub(s, ptrStart, ptr-1)
 
-			local chunk, err = loadLuaString("return "..tokRepr, "@")
+			local chunk, err = loadstring("return "..tokRepr, "@")
 			if not chunk then
-				err = gsub(err, "^:%d+: ", "")
+				err = stringGsub(err, "^:%d+: ", "")
 				return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Could not convert long string token to value. (%s)", err)
 			end
 			tokValue = assert(chunk)()
 			assert(type(tokValue) == "string")
 
 		-- Punctuation.
-		elseif find(s, "^%.%.%.", ptr) then
+		elseif stringFind(s, "^%.%.%.", ptr) then
 			ptr      = ptr + 3
 			tokType  = "punctuation"
-			tokRepr  = getSubstring(s, ptrStart, ptr-1)
+			tokRepr  = stringSub(s, ptrStart, ptr-1)
 			tokValue = tokRepr
-		elseif find(s, "^%.%.", ptr) or find(s, "^[=~<>]=", ptr) or find(s, "^::", ptr) or find(s, "^//", ptr) or find(s, "^<<", ptr) or find(s, "^>>", ptr) then
+		elseif stringFind(s, "^%.%.", ptr) or stringFind(s, "^[=~<>]=", ptr) or stringFind(s, "^::", ptr) or stringFind(s, "^//", ptr) or stringFind(s, "^<<", ptr) or stringFind(s, "^>>", ptr) then
 			ptr      = ptr + 2
 			tokType  = "punctuation"
-			tokRepr  = getSubstring(s, ptrStart, ptr-1)
+			tokRepr  = stringSub(s, ptrStart, ptr-1)
 			tokValue = tokRepr
-		elseif find(s, "^[-+*/%%^#<>=(){}[%];:,.&~|]", ptr) then
+		elseif stringFind(s, "^[-+*/%%^#<>=(){}[%];:,.&~|]", ptr) then
 			ptr      = ptr + 1
 			tokType  = "punctuation"
-			tokRepr  = getSubstring(s, ptrStart, ptr-1)
+			tokRepr  = stringSub(s, ptrStart, ptr-1)
 			tokValue = tokRepr
 
 		else
@@ -1116,7 +1120,7 @@ function tokenize(s, path)
 		tokPos1  [count] = ptrStart
 		tokPos2  [count] = ptr - 1
 
-		-- print(F("%4d %-11s '%s'", count, tokType, (gsub(tokRepr, "\n", "\\n"))))
+		-- print(F("%4d %-11s '%s'", count, tokType, (stringGsub(tokRepr, "\n", "\\n"))))
 	end
 
 	tokens.n = count
@@ -1169,7 +1173,7 @@ local function insertToken(tokens, i, tokType, tokValue)
 	if type(i) == "string" then
 		i, tokType, tokValue = 1/0, i, tokType
 	end
-	i = getMin(getMax(i, 1), tokens.n+1)
+	i = mathMin(mathMax(i, 1), tokens.n+1)
 
 	local tokRepr
 
@@ -1179,9 +1183,9 @@ local function insertToken(tokens, i, tokType, tokValue)
 		tokRepr = tokValue
 
 	elseif tokType == "identifier" then
-		if type(tokValue) ~= "string"          then  errorf(2, "Expected string value for 'identifier' token. (Got %s)", type(tokValue))  end
-		if not find(tokValue, "^[%a_][%w_]*$") then  errorf(2, "Invalid identifier '%s'.", tokValue)  end
-		if KEYWORDS[tokValue]                  then  errorf(2, "Invalid identifier '%s'.", tokValue)  end
+		if type(tokValue) ~= "string"                then  errorf(2, "Expected string value for 'identifier' token. (Got %s)", type(tokValue))  end
+		if not stringFind(tokValue, "^[%a_][%w_]*$") then  errorf(2, "Invalid identifier '%s'.", tokValue)  end
+		if KEYWORDS[tokValue]                        then  errorf(2, "Invalid identifier '%s'.", tokValue)  end
 		tokRepr = tokValue
 
 	elseif tokType == "number" then
@@ -1198,7 +1202,7 @@ local function insertToken(tokens, i, tokType, tokValue)
 
 	elseif tokType == "string" then
 		if type(tokValue) ~= "string" then  errorf(2, "Expected string value for 'string' token. (Got %s)", type(tokValue))  end
-		tokRepr = gsub(F("%q", tokRepr), "\n", "n")
+		tokRepr = stringGsub(F("%q", tokRepr), "\n", "n")
 
 	elseif tokType == "punctuation" then
 		if type(tokValue) ~= "string" then  errorf(2, "Expected string value for 'punctuation' token. (Got %s)", type(tokValue))  end
@@ -1208,10 +1212,10 @@ local function insertToken(tokens, i, tokType, tokValue)
 	elseif tokType == "comment" then
 		if type(tokValue) ~= "string" then  errorf(2, "Expected string value for 'comment' token. (Got %s)", type(tokValue))  end
 
-		if find(tokValue, "\n") then
-			local equalSigns = find(tokValue, "[[", 1, true) and "=" or ""
+		if stringFind(tokValue, "\n") then
+			local equalSigns = stringFind(tokValue, "[[", 1, true) and "=" or ""
 
-			while find(tokValue, "]"..equalSigns.."]", 1, true) do
+			while stringFind(tokValue, "]"..equalSigns.."]", 1, true) do
 				equalSigns = equalSigns.."="
 			end
 
@@ -1290,20 +1294,20 @@ local function concatTokens(tokens)
 		local lastTokRepr = tokReprs[tok-1]
 
 		if lastTokRepr and (
-			(tokRepr:find"^[%w_]" and lastTokRepr:find"[%w_]$") or
-			(tokRepr:find"^%."    and lastTokRepr:find"%.$"   ) or
-			(tokRepr:find"^%-"    and lastTokRepr:find"%-$"   ) or
-			(tokRepr:find"^/"     and lastTokRepr:find"/$"    ) or
+			(stringFind(tokRepr, "^[%w_]") and stringFind(lastTokRepr, "[%w_]$")) or
+			(stringFind(tokRepr, "^%."   ) and stringFind(lastTokRepr, "%.$"   )) or
+			(stringFind(tokRepr, "^%-"   ) and stringFind(lastTokRepr, "%-$"   )) or
+			(stringFind(tokRepr, "^/"    ) and stringFind(lastTokRepr, "/$"    )) or
 
-			(tokTypes[tok-1] == "number" and tokRepr    :find"^%.") or
-			(tokTypes[tok  ] == "number" and lastTokRepr:find"%.$")
+			(tokTypes[tok-1] == "number" and stringFind(tokRepr,     "^%.")) or
+			(tokTypes[tok  ] == "number" and stringFind(lastTokRepr, "%.$"))
 		) then
-			insert(parts, " ")
+			tableInsert(parts, " ")
 		end
-		insert(parts, tokRepr)
+		tableInsert(parts, tokRepr)
 	end
 
-	return concat(parts)
+	return tableConcat(parts)
 end
 
 
@@ -1376,7 +1380,7 @@ local function parseNameList(tokens, tok, names, allowVararg, allowAttributes) -
 			tok = tok + 1 -- '>'
 		end
 
-		insert(names, ident)
+		tableInsert(names, ident)
 
 		if not isToken(tokens, tok, "punctuation", ",") then
 			return true, tok
@@ -1421,7 +1425,7 @@ local function parseTable(tokens, tokStart) --> tableNode, token, error
 			tok = tokNext
 
 			local tableField = {key=keyExpr, value=valueExpr, generatedKey=false}
-			insert(tableNode.fields, tableField)
+			tableInsert(tableNode.fields, tableField)
 
 		elseif isTokenType(tokens, tok, "identifier") and isToken(tokens, tok+1, "punctuation", "=") then
 			local keyExpr = AstLiteral(tokens, tok, tokens.value[tok])
@@ -1437,7 +1441,7 @@ local function parseTable(tokens, tokStart) --> tableNode, token, error
 			tok = tokNext
 
 			local tableField = {key=keyExpr, value=valueExpr, generatedKey=false}
-			insert(tableNode.fields, tableField)
+			tableInsert(tableNode.fields, tableField)
 
 		else
 			generatedIndex = generatedIndex + 1
@@ -1448,7 +1452,7 @@ local function parseTable(tokens, tokStart) --> tableNode, token, error
 			tok = tokNext
 
 			local tableField = {key=keyExpr, value=valueExpr, generatedKey=true}
-			insert(tableNode.fields, tableField)
+			tableInsert(tableNode.fields, tableField)
 		end
 
 		if isToken(tokens, tok, "punctuation", ",") or isToken(tokens, tok, "punctuation", ";") then
@@ -1779,7 +1783,7 @@ function parseExpressionList(tokens, tok, expressions) --> success, token, error
 		if not expr then  return false, tok, err  end
 		tok = tokNext
 
-		insert(expressions, expr)
+		tableInsert(expressions, expr)
 
 		if not isToken(tokens, tok, "punctuation", ",") then
 			return true, tok
@@ -1861,7 +1865,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		end
 		tok = tok + 1 -- 'end'
 
-		insert(statements, block)
+		tableInsert(statements, block)
 		return true, tok
 
 	-- while
@@ -1890,7 +1894,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		end
 		tok = tok + 1 -- 'end'
 
-		insert(statements, whileLoop)
+		tableInsert(statements, whileLoop)
 		return true, tok
 
 	-- repeat
@@ -1913,7 +1917,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		repeatLoop.condition = expr
 		tok                  = tokNext
 
-		insert(statements, repeatLoop)
+		tableInsert(statements, repeatLoop)
 		return true, tok
 
 	-- if
@@ -1975,7 +1979,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		end
 		tok = tok + 1 -- 'end'
 
-		insert(statements, ifNode)
+		tableInsert(statements, ifNode)
 		return true, tok
 
 	-- for
@@ -2033,7 +2037,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		end
 		tok = tok + 1 -- 'end'
 
-		insert(statements, forLoop)
+		tableInsert(statements, forLoop)
 		return true, tok
 
 	-- function
@@ -2087,13 +2091,13 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 
 		if isMethod then
 			local ident = AstIdentifier(tokens, func.token, "self")
-			insert(func.parameters, 1, ident)
+			tableInsert(func.parameters, 1, ident)
 		end
 
 		assignment.targets[1] = targetExpr
 		assignment.values[1]  = func
 
-		insert(statements, assignment)
+		tableInsert(statements, assignment)
 		return true, tok
 
 	-- local function
@@ -2115,8 +2119,8 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		assignment.targets[1] = identCopy
 		assignment.values[1]  = func
 
-		insert(statements, decl)
-		insert(statements, assignment)
+		tableInsert(statements, decl)
+		tableInsert(statements, assignment)
 		return true, tok
 
 	-- local
@@ -2136,7 +2140,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 			tok = tokNext
 		end
 
-		insert(statements, decl)
+		tableInsert(statements, decl)
 		return true, tok
 
 	-- ::label::
@@ -2155,7 +2159,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		end
 		tok = tok + 1 -- '::'
 
-		insert(statements, label)
+		tableInsert(statements, label)
 		return true, tok
 
 	-- goto
@@ -2169,7 +2173,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 
 		gotoNode.name = labelIdent.name
 
-		insert(statements, gotoNode)
+		tableInsert(statements, gotoNode)
 		return true, tok
 
 	-- return (last)
@@ -2183,7 +2187,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 			tok = tokNext
 		end
 
-		insert(statements, returnNode)
+		tableInsert(statements, returnNode)
 		return true, tok
 
 	-- break (last)
@@ -2191,7 +2195,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		local breakNode = AstBreak(tokens, tok)
 		tok             = tok + 1 -- 'break'
 
-		insert(statements, breakNode)
+		tableInsert(statements, breakNode)
 		return true, tok
 
 	elseif isTokenType(tokens, tok, "keyword") then
@@ -2205,7 +2209,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 			local call = lookahead
 			tok        = tokNext
 
-			insert(statements, call)
+			tableInsert(statements, call)
 			return true, tok
 
 		elseif isToken(tokens, tokNext, "punctuation", "=") or isToken(tokens, tokNext, "punctuation", ",") then
@@ -2230,7 +2234,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 			if not ok then  return false, tok, err  end
 			tok = tokNext
 
-			insert(statements, assignment)
+			tableInsert(statements, assignment)
 			return true, tok
 
 		else
@@ -2414,7 +2418,7 @@ local function newNode(nodeType, ...)
 
 		if type(name) ~= "string" then
 			errorf(2, "Invalid name argument value type '%s'. (Expected string)", type(name))
-		elseif not find(name, "^[%a_][%w_]*$") or KEYWORDS[name] then
+		elseif not stringFind(name, "^[%a_][%w_]*$") or KEYWORDS[name] then
 			errorf(2, "Invalid identifier name '%s'.", name)
 		end
 
@@ -2437,7 +2441,7 @@ local function newNode(nodeType, ...)
 		local name = ...
 		if type(name) ~= "string" then
 			errorf(2, "Invalid name argument value type '%s'. (Expected string)", type(name))
-		elseif not find(name, "^[%a_][%w_]*$") or KEYWORDS[name] then
+		elseif not stringFind(name, "^[%a_][%w_]*$") or KEYWORDS[name] then
 			errorf(2, "Invalid label name '%s'.", name)
 		end
 
@@ -2452,7 +2456,7 @@ local function newNode(nodeType, ...)
 		local name = ...
 		if type(name) ~= "string" then
 			errorf(2, "Invalid label name argument value type '%s'. (Expected string)", type(name))
-		elseif not find(name, "^[%a_][%w_]*$") or KEYWORDS[name] then
+		elseif not stringFind(name, "^[%a_][%w_]*$") or KEYWORDS[name] then
 			errorf(2, "Invalid label name '%s'.", name)
 		end
 
@@ -2519,6 +2523,11 @@ end
 
 
 do
+	local NL_AND_CR_TO_READABLE = {
+		["\n"] = "{NL}",
+		["\r"] = "{CR}",
+	}
+
 	local function _printNode(node)
 		local nodeType = node.type
 
@@ -2544,7 +2553,7 @@ do
 			if node.value == nil or node.value == true or node.value == false then
 				ioWrite(" (", tostring(node.value), ")")
 			elseif type(node.value) == "string" then
-				ioWrite(' (string="', node.value:gsub('\r','{CR}'):gsub('\n','{NL}'), '")')
+				ioWrite(' (string="', stringGsub(node.value, "[\n\r]", NL_AND_CR_TO_READABLE), '")')
 			else
 				ioWrite(" (", type(node.value), "=", tostring(node.value), ")")
 			end
@@ -3013,9 +3022,9 @@ function updateReferences(node, updateTopNodePosition)
 	local topNodeKey       = nil
 
 	if updateTopNodePosition == false then
-		parent    = node.parent
-		container = node.container
-		key       = node.key
+		topNodeParent    = node.parent
+		topNodeContainer = node.container
+		topNodeKey       = node.key
 	end
 
 	traverseTree(node, function(node, parent, container, key)
@@ -3053,10 +3062,10 @@ local HEX_DIGIT_TO_BITS = {
 }
 
 local function intToBits(n, bitsOut)
-	local hexNumber = getSubstring(F(PATTERN_INT_TO_HEX, maybeWrapInt(n)), -INT_SIZE/4) -- The getSubstring() call is probably not needed, but just to be safe.
+	local hexNumber = stringSub(F(PATTERN_INT_TO_HEX, maybeWrapInt(n)), -INT_SIZE/4) -- The stringSub() call is probably not needed, but just to be safe.
 	local i         = 1
 
-	for hexDigit in gmatch(hexNumber, ".") do
+	for hexDigit in stringGmatch(hexNumber, ".") do
 		local bits = HEX_DIGIT_TO_BITS[hexDigit]
 
 		for iOffset = 1, 4 do
@@ -3078,8 +3087,18 @@ local function bitsToInt(bits)
 	return (bits[1] == 1 and MIN_INT+n or n)
 end
 
-local function isFiniteNumber(v)
+local function isValueNumberOrString(v)
+	return type(v) == "number" or type(v) == "string"
+end
+local function isValueFiniteNumber(v)
 	return type(v) == "number" and v == v and v ~= 1/0 and v ~= -1/0
+end
+local function isValueNumberLike(v)
+	return tonumber(v) ~= nil
+end
+local function areValuesNumbersOrStringsAndOfSameType(v1, v2)
+	local type1 = type(v1)
+	return type1 == type(v2) and (type1 == "number" or type1 == "string")
 end
 
 local bits1 = {}
@@ -3087,7 +3106,7 @@ local bits2 = {}
 
 local unaryFolders = {
 	["-"] = function(unary, expr)
-		if expr.type == "literal" and type(expr.value) == "number" then
+		if expr.type == "literal" and isValueNumberLike(expr.value) then
 			return AstLiteral(dummyTokens, unary.token, -expr.value)
 		end
 		return nil
@@ -3103,7 +3122,7 @@ local unaryFolders = {
 		return nil
 	end,
 	["~"] = function(unary, expr)
-		if expr.type == "literal" and isFiniteNumber(expr.value) then
+		if expr.type == "literal" and isValueFiniteNumber(expr.value) then
 			intToBits(expr.value, bits1)
 			for i = 1, INT_SIZE do
 				bits1[i] = 1 - bits1[i]
@@ -3116,49 +3135,49 @@ local unaryFolders = {
 
 local binaryFolders = {
 	["+"] = function(binary, l, r)
-		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and type(l.value) == "number" then
+		if l.type == "literal" and r.type == "literal" and isValueNumberLike(l.value) and isValueNumberLike(r.value) then
 			return AstLiteral(dummyTokens, binary.token, l.value+r.value)
 		end
 		return nil
 	end,
 	["-"] = function(binary, l, r)
-		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and type(l.value) == "number" then
+		if l.type == "literal" and r.type == "literal" and isValueNumberLike(l.value) and isValueNumberLike(r.value) then
 			return AstLiteral(dummyTokens, binary.token, l.value-r.value)
 		end
 		return nil
 	end,
 	["*"] = function(binary, l, r)
-		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and type(l.value) == "number" then
+		if l.type == "literal" and r.type == "literal" and isValueNumberLike(l.value) and isValueNumberLike(r.value) then
 			return AstLiteral(dummyTokens, binary.token, l.value*r.value)
 		end
 		return nil
 	end,
 	["/"] = function(binary, l, r)
-		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and type(l.value) == "number" then
+		if l.type == "literal" and r.type == "literal" and isValueNumberLike(l.value) and isValueNumberLike(r.value) then
 			return AstLiteral(dummyTokens, binary.token, l.value/r.value)
 		end
 		return nil
 	end,
 	["//"] = function(binary, l, r)
-		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and type(l.value) == "number" then
-			return AstLiteral(dummyTokens, binary.token, floor(l.value/r.value))
+		if l.type == "literal" and r.type == "literal" and isValueNumberLike(l.value) and isValueNumberLike(r.value) then
+			return AstLiteral(dummyTokens, binary.token, mathFloor(l.value/r.value))
 		end
 		return nil
 	end,
 	["^"] = function(binary, l, r)
-		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and type(l.value) == "number" then
+		if l.type == "literal" and r.type == "literal" and isValueNumberLike(l.value) and isValueNumberLike(r.value) then
 			return AstLiteral(dummyTokens, binary.token, l.value^r.value)
 		end
 		return nil
 	end,
 	["%"] = function(binary, l, r)
-		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and type(l.value) == "number" then
+		if l.type == "literal" and r.type == "literal" and isValueNumberLike(l.value) and isValueNumberLike(r.value) then
 			return AstLiteral(dummyTokens, binary.token, l.value%r.value)
 		end
 		return nil
 	end,
 	["&"] = function(binary, l, r)
-		if l.type == "literal" and r.type == "literal" and isFiniteNumber(l.value) and isFiniteNumber(r.value) then
+		if l.type == "literal" and r.type == "literal" and isValueFiniteNumber(l.value) and isValueFiniteNumber(r.value) then
 			intToBits(l.value, bits1)
 			intToBits(r.value, bits2)
 			for i = 1, INT_SIZE do
@@ -3169,7 +3188,7 @@ local binaryFolders = {
 		return nil
 	end,
 	["~"] = function(binary, l, r)
-		if l.type == "literal" and r.type == "literal" and isFiniteNumber(l.value) and isFiniteNumber(r.value) then
+		if l.type == "literal" and r.type == "literal" and isValueFiniteNumber(l.value) and isValueFiniteNumber(r.value) then
 			intToBits(l.value, bits1)
 			intToBits(r.value, bits2)
 			for i = 1, INT_SIZE do
@@ -3180,7 +3199,7 @@ local binaryFolders = {
 		return nil
 	end,
 	["|"] = function(binary, l, r)
-		if l.type == "literal" and r.type == "literal" and isFiniteNumber(l.value) and isFiniteNumber(r.value) then
+		if l.type == "literal" and r.type == "literal" and isValueFiniteNumber(l.value) and isValueFiniteNumber(r.value) then
 			intToBits(l.value, bits1)
 			intToBits(r.value, bits2)
 			for i = 1, INT_SIZE do
@@ -3191,10 +3210,10 @@ local binaryFolders = {
 		return nil
 	end,
 	[">>"] = function(binary, l, r)
-		if l.type == "literal" and r.type == "literal" and isFiniteNumber(l.value) and type(r.value) == "number" then
+		if l.type == "literal" and r.type == "literal" and isValueFiniteNumber(l.value) and type(r.value) == "number" then
 			intToBits(l.value, bits1)
 
-			local shift = floor(r.value)
+			local shift = mathFloor(r.value)
 			local i1    = INT_SIZE
 			local i2    = 1
 			local step  = -1
@@ -3214,10 +3233,10 @@ local binaryFolders = {
 		return nil
 	end,
 	["<<"] = function(binary, l, r)
-		if l.type == "literal" and r.type == "literal" and isFiniteNumber(l.value) and type(r.value) == "number" then
+		if l.type == "literal" and r.type == "literal" and isValueFiniteNumber(l.value) and type(r.value) == "number" then
 			intToBits(l.value, bits1)
 
-			local shift = floor(r.value)
+			local shift = mathFloor(r.value)
 			local i1    = 1
 			local i2    = INT_SIZE
 			local step  = 1
@@ -3237,31 +3256,31 @@ local binaryFolders = {
 		return nil
 	end,
 	[".."] = function(binary, l, r)
-		if l.type == "literal" and r.type == "literal" and (type(l.value) == "number" or type(l.value) == "string") and (type(r.value) == "number" or type(r.value) == "string") then
+		if l.type == "literal" and r.type == "literal" and isValueNumberOrString(l.value) and isValueNumberOrString(r.value) then
 			return AstLiteral(dummyTokens, binary.token, l.value..r.value)
 		end
 		return nil
 	end,
 	["<"] = function(binary, l, r)
-		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and (type(l.value) == "number" or type(l.value) == "string") then
+		if l.type == "literal" and r.type == "literal" and areValuesNumbersOrStringsAndOfSameType(l.value, r.value) then
 			return AstLiteral(dummyTokens, binary.token, (l.value < r.value))
 		end
 		return nil
 	end,
 	["<="] = function(binary, l, r)
-		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and (type(l.value) == "number" or type(l.value) == "string") then
+		if l.type == "literal" and r.type == "literal" and areValuesNumbersOrStringsAndOfSameType(l.value, r.value) then
 			return AstLiteral(dummyTokens, binary.token, (l.value <= r.value))
 		end
 		return nil
 	end,
 	[">"] = function(binary, l, r)
-		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and (type(l.value) == "number" or type(l.value) == "string") then
+		if l.type == "literal" and r.type == "literal" and areValuesNumbersOrStringsAndOfSameType(l.value, r.value) then
 			return AstLiteral(dummyTokens, binary.token, (l.value > r.value))
 		end
 		return nil
 	end,
 	[">="] = function(binary, l, r)
-		if l.type == "literal" and r.type == "literal" and type(l.value) == type(r.value) and (type(l.value) == "number" or type(l.value) == "string") then
+		if l.type == "literal" and r.type == "literal" and areValuesNumbersOrStringsAndOfSameType(l.value, r.value) then
 			return AstLiteral(dummyTokens, binary.token, (l.value >= r.value))
 		end
 		return nil
@@ -3329,7 +3348,7 @@ local function simplifyNode(node, parent, container, key)
 				replace(ifNode, replacement, parent, container, key)
 				return simplifyNode(replacement, parent, container, key)
 			else
-				remove(container, key)
+				tableRemove(container, key)
 			end
 		end
 
@@ -3340,7 +3359,7 @@ local function simplifyNode(node, parent, container, key)
 			if whileLoop.condition.value then
 				whileLoop.condition.value = true
 			else
-				remove(container, key)
+				tableRemove(container, key)
 			end
 		end
 
@@ -3370,10 +3389,10 @@ local function simplifyNode(node, parent, container, key)
 
 			if not hasDeclarations then
 				-- Blocks without declarations don't need a scope.
-				remove(parent.statements, key)
+				tableRemove(parent.statements, key)
 
 				for i, statement in ipairs(block.statements) do
-					insert(parent.statements, key+i-1, statement)
+					tableInsert(parent.statements, key+i-1, statement)
 				end
 			end
 		end
@@ -3415,11 +3434,11 @@ local function lookForDeclarationLikesAndRegisterWatchers(declLikeWatchers, iden
 
 			-- Note: Identifiers in declaration-likes also watch their own declaration-like. (Is this good?) :DeclarationIdentifiersWatchTheirParent
 			declLikeWatchers[declLike] = declLikeWatchers[declLike] or {}
-			insert(declLikeWatchers[declLike], identInfo.ident)
+			tableInsert(declLikeWatchers[declLike], identInfo.ident)
 
 			if declLike == currentDeclLike then  return true  end
 
-			-- insert(identInfo.visibleDeclLikes, declLike)
+			-- tableInsert(identInfo.visibleDeclLikes, declLike)
 		end
 	end
 
@@ -3454,7 +3473,7 @@ local function getInformationAboutIdentifiersAndUpdateMostReferences(node)
 			-- if currentDeclLike then  print(F("%s:%d: %s '%s'", currentIdent.sourcePath, currentIdent.line, identType, currentIdent.name))  end -- DEBUG
 
 			local identInfo = {ident=currentIdent, type=identType--[[, visibleDeclLikes={}]]}
-			insert(identInfos, identInfo)
+			tableInsert(identInfos, identInfo)
 			identInfos[currentIdent] = identInfo
 
 			-- Determine visible declarations for the identifier.
@@ -3485,7 +3504,7 @@ local function getInformationAboutIdentifiersAndUpdateMostReferences(node)
 
 					-- :DeclarationIdentifiersWatchTheirParent
 					declLikeWatchers[declLike] = declLikeWatchers[declLike] or {}
-					insert(declLikeWatchers[declLike], currentIdent)
+					tableInsert(declLikeWatchers[declLike], currentIdent)
 
 					if declLike == currentDeclLike then  break  end
 
@@ -3503,7 +3522,7 @@ local function getInformationAboutIdentifiersAndUpdateMostReferences(node)
 
 					-- :DeclarationIdentifiersWatchTheirParent
 					declLikeWatchers[declLike] = declLikeWatchers[declLike] or {}
-					insert(declLikeWatchers[declLike], currentIdent)
+					tableInsert(declLikeWatchers[declLike], currentIdent)
 
 					break
 				end
@@ -3672,7 +3691,7 @@ local function clean(theNode)
 	do
 		-- We assume theNode is a block, but it's fine if it isn't.
 		local funcInfo = {node=theNode, declLikes={}, assignments={}, locals={}, upvalues={}, globals={}}
-		insert(funcInfos, funcInfo)
+		tableInsert(funcInfos, funcInfo)
 	end
 
 	traverseTree(theNode, function(node)
@@ -3680,7 +3699,7 @@ local function clean(theNode)
 
 		if node.type == "function" then
 			local funcInfo = {node=node, declLikes={node}, assignments={}, locals={}, upvalues={}, globals={}}
-			insert(funcInfos, funcInfo)
+			tableInsert(funcInfos, funcInfo)
 		end
 	end)
 
@@ -3707,17 +3726,17 @@ local function clean(theNode)
 						parent = parent.parent
 					end
 
-					insert((isInFunc and funcInfo.locals or funcInfo.upvalues), ident)
+					tableInsert((isInFunc and funcInfo.locals or funcInfo.upvalues), ident)
 
 				else
-					insert(funcInfo.globals, ident)
+					tableInsert(funcInfo.globals, ident)
 				end
 
 			elseif node.type == "declaration" or node.type == "for" then
-				insert(funcInfo.declLikes, node)
+				tableInsert(funcInfo.declLikes, node)
 
 			elseif node.type == "assignment" then
-				insert(funcInfo.assignments, node)
+				tableInsert(funcInfo.assignments, node)
 			end
 		end)
 
@@ -3770,7 +3789,7 @@ local function clean(theNode)
 						significantValueCount = significantValueCount + 1
 						significantCall       = significantCall or (valueExpr.type == "call" and valueExpr) or nil
 					else
-						remove(decl.values, i)
+						tableRemove(decl.values, i)
 					end
 				end
 
@@ -3862,7 +3881,7 @@ local function clean(theNode)
 						else
 							if canRemoveSlot and #declIdents > 1 then
 								unregisterWatchers(identInfos, declLikeWatchers, declIdent)
-								remove(declIdents, slot)
+								tableRemove(declIdents, slot)
 								for slot = slot, #declIdents do
 									declIdents[slot].key = slot
 								end
@@ -3871,7 +3890,7 @@ local function clean(theNode)
 							if wantToRemoveValue and valueExpr then
 								if canRemoveSlot or not decl.values[slot+1] then
 									unregisterWatchers(identInfos, declLikeWatchers, valueExpr)
-									remove(decl.values, slot)
+									tableRemove(decl.values, slot)
 									for slot = slot, #decl.values do
 										decl.values[slot]. key = slot
 									end
@@ -3980,7 +3999,7 @@ local function clean_OLD(theNode)
 					-- if statement.line == 1804 then  ioWrite(">>>>>>> ") ; printNode(statement)  end -- DEBUG
 
 					unregisterWatchers(identInfos, declLikeWatchers, statement)
-					remove(block.statements, i)
+					tableRemove(block.statements, i)
 
 				elseif statement.type == "declaration" then
 					local decl = statement
@@ -4028,10 +4047,10 @@ local function clean_OLD(theNode)
 
 					if not hasDeclarations then
 						-- Blocks without declarations don't need a scope.
-						remove(block.statements, i)
+						tableRemove(block.statements, i)
 
 						for subIndex, subStatement in ipairs(subBlock.statements) do
-							insert(block.statements, i+subIndex-1, subStatement)
+							tableInsert(block.statements, i+subIndex-1, subStatement)
 						end
 					end
 				end
@@ -4066,13 +4085,13 @@ do
 				nameGeneration  = nameGeneration - 1
 				local charBank  = (i == 1) and BANK_LETTERS or BANK_ALPHANUM
 				local charIndex = nameGeneration % #charBank + 1
-				charBytes[i]    = charBank:byte(charIndex)
-				nameGeneration  = floor(nameGeneration / #charBank)
+				charBytes[i]    = stringByte(charBank, charIndex)
+				nameGeneration  = mathFloor(nameGeneration / #charBank)
 
 				if nameGeneration == 0 then  break  end
 			end
 
-			cache[nameGeneration] = byteToString(unpack(charBytes))
+			cache[nameGeneration] = stringChar(tableUnpack(charBytes))
 		end
 
 		return cache[nameGeneration]
@@ -4113,7 +4132,7 @@ local function minify(node, optimize)
 	-- Make sure frequencies affect who gets shorter names first. @Incomplete
 	--
 	--[[
-	sort(identInfos, function(a, b)
+	tableSort(identInfos, function(a, b)
 		if #a.visibleDeclLikes ~= #b.visibleDeclLikes then
 			-- I feel this is kinda reversed - it should be how many can see you, not how many you can see. Does this matter? This sure is confusing!
 			return #a.visibleDeclLikes < #b.visibleDeclLikes
@@ -4189,9 +4208,9 @@ function printTokens(tokens)
 
 	for tok = 1, tokens.n do
 		local v = tostring(tokValues[tok])
-		if #v > 200 then  v = getSubstring(v, 1, 200-3).."..."  end
+		if #v > 200 then  v = stringSub(v, 1, 200-3).."..."  end
 
-		v = gsub(v, "\n", "\\n")
+		v = stringGsub(v, "\n", "\\n")
 
 		if printLocs then  ioWrite(sourcePath, ":", tokLine[tok], ": ")  end
 		ioWrite(tok, ". ", F("%-11s", tokTypes[tok]), " '", v, "'\n")
@@ -4211,18 +4230,18 @@ do
 	end
 
 	local function canNodeBeName(node)
-		return node.type == "literal" and type(node.value) == "string" and node.value:find"^[%a_][%w_]*$" and not KEYWORDS[node.value]
+		return node.type == "literal" and type(node.value) == "string" and stringFind(node.value, "^[%a_][%w_]*$") and not KEYWORDS[node.value]
 	end
 
 	-- ensureSpaceIfNotPretty( buffer, pretty, lastOutput, value [, value2 ] )
 	local function ensureSpaceIfNotPretty(buffer, pretty, lastOutput, value, value2)
 		if not pretty and (lastOutput == value or lastOutput == value2) then
-			insert(buffer, " ")
+			tableInsert(buffer, " ")
 		end
 	end
 
 	local function writeLua(buffer, lua, lastOutput)
-		insert(buffer, lua)
+		tableInsert(buffer, lua)
 		return lastOutput
 	end
 
@@ -4269,7 +4288,7 @@ do
 
 	local function writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
 		if pretty and indent > 0 then
-			lastOutput = writeLua(buffer, repeatString("\t", indent), "")
+			lastOutput = writeLua(buffer, stringRep("\t", indent), "")
 		end
 		return lastOutput
 	end
@@ -4406,7 +4425,7 @@ do
 
 		if binary.operator == ".." then  ensureSpaceIfNotPretty(buffer, pretty, lastOutput, "number")  end
 
-		local nextOutput = ((binary.operator == "-" and "-") or (binary.operator:find"%w" and "alphanum") or (""))
+		local nextOutput = ((binary.operator == "-" and "-") or (stringFind(binary.operator, "%w") and "alphanum") or (""))
 		if nextOutput ~= "" then  ensureSpaceIfNotPretty(buffer, pretty, lastOutput, nextOutput)  end
 		lastOutput = writeLua(buffer, binary.operator, nextOutput)
 
@@ -4461,44 +4480,44 @@ do
 			elseif type(node.value) == "string" then
 				local R         = isNumberInRange
 				local s         = node.value
-				local quote     = find(s, '"', 1, true) and not find(s, "'", 1, true) and "'" or '"'
-				local quoteByte = getByte(quote)
+				local quote     = stringFind(s, '"', 1, true) and not stringFind(s, "'", 1, true) and "'" or '"'
+				local quoteByte = stringByte(quote)
 				local pos       = 1
 
 				lastOutput = writeLua(buffer, quote, "")
 
 				while pos <= #s do
-					local b1, b2, b3, b4 = getByte(s, pos, pos+3)
+					local b1, b2, b3, b4 = stringByte(s, pos, pos+3)
 
 					-- Printable ASCII.
 					if R(b1,32,126) and b1 ~= 92 then
-						if     b1 == quoteByte then  insert(buffer, "\\") ; insert(buffer, quote) ; pos = pos + 1
-						elseif b1 == 92        then  insert(buffer, [[\\]])                       ; pos = pos + 1
-						else                         insert(buffer, getSubstring(s, pos, pos))    ; pos = pos + 1
+						if     b1 == quoteByte then  tableInsert(buffer, "\\") ; tableInsert(buffer, quote) ; pos = pos + 1
+						elseif b1 == 92        then  tableInsert(buffer, [[\\]])                            ; pos = pos + 1
+						else                         tableInsert(buffer, stringSub(s, pos, pos))            ; pos = pos + 1
 						end
 
 					-- Multi-byte UTF-8 sequence.
-					elseif b2 and R(b1,194,223) and R(b2,128,191)                                     then  insert(buffer, getSubstring(s, pos, pos+1)) ; pos = pos + 2
-					elseif b3 and b1== 224      and R(b2,160,191) and R(b3,128,191)                   then  insert(buffer, getSubstring(s, pos, pos+2)) ; pos = pos + 3
-					elseif b3 and R(b1,225,236) and R(b2,128,191) and R(b3,128,191)                   then  insert(buffer, getSubstring(s, pos, pos+2)) ; pos = pos + 3
-					elseif b3 and b1== 237      and R(b2,128,159) and R(b3,128,191)                   then  insert(buffer, getSubstring(s, pos, pos+2)) ; pos = pos + 3
-					elseif b3 and R(b1,238,239) and R(b2,128,191) and R(b3,128,191)                   then  insert(buffer, getSubstring(s, pos, pos+2)) ; pos = pos + 3
-					elseif b4 and b1== 240      and R(b2,144,191) and R(b3,128,191) and R(b4,128,191) then  insert(buffer, getSubstring(s, pos, pos+3)) ; pos = pos + 4
-					elseif b4 and R(b1,241,243) and R(b2,128,191) and R(b3,128,191) and R(b4,128,191) then  insert(buffer, getSubstring(s, pos, pos+3)) ; pos = pos + 4
-					elseif b4 and b1== 244      and R(b2,128,143) and R(b3,128,191) and R(b4,128,191) then  insert(buffer, getSubstring(s, pos, pos+3)) ; pos = pos + 4
+					elseif b2 and R(b1,194,223) and R(b2,128,191)                                     then  tableInsert(buffer, stringSub(s, pos, pos+1)) ; pos = pos + 2
+					elseif b3 and b1== 224      and R(b2,160,191) and R(b3,128,191)                   then  tableInsert(buffer, stringSub(s, pos, pos+2)) ; pos = pos + 3
+					elseif b3 and R(b1,225,236) and R(b2,128,191) and R(b3,128,191)                   then  tableInsert(buffer, stringSub(s, pos, pos+2)) ; pos = pos + 3
+					elseif b3 and b1== 237      and R(b2,128,159) and R(b3,128,191)                   then  tableInsert(buffer, stringSub(s, pos, pos+2)) ; pos = pos + 3
+					elseif b3 and R(b1,238,239) and R(b2,128,191) and R(b3,128,191)                   then  tableInsert(buffer, stringSub(s, pos, pos+2)) ; pos = pos + 3
+					elseif b4 and b1== 240      and R(b2,144,191) and R(b3,128,191) and R(b4,128,191) then  tableInsert(buffer, stringSub(s, pos, pos+3)) ; pos = pos + 4
+					elseif b4 and R(b1,241,243) and R(b2,128,191) and R(b3,128,191) and R(b4,128,191) then  tableInsert(buffer, stringSub(s, pos, pos+3)) ; pos = pos + 4
+					elseif b4 and b1== 244      and R(b2,128,143) and R(b3,128,191) and R(b4,128,191) then  tableInsert(buffer, stringSub(s, pos, pos+3)) ; pos = pos + 4
 
 					-- Escape sequence.
-					elseif b1 == 7  then  insert(buffer, [[\a]]) ; pos = pos + 1
-					elseif b1 == 8  then  insert(buffer, [[\b]]) ; pos = pos + 1
-					elseif b1 == 9  then  insert(buffer, [[\t]]) ; pos = pos + 1
-					elseif b1 == 10 then  insert(buffer, [[\n]]) ; pos = pos + 1
-					elseif b1 == 11 then  insert(buffer, [[\v]]) ; pos = pos + 1
-					elseif b1 == 12 then  insert(buffer, [[\f]]) ; pos = pos + 1
-					elseif b1 == 13 then  insert(buffer, [[\r]]) ; pos = pos + 1
+					elseif b1 == 7  then  tableInsert(buffer, [[\a]]) ; pos = pos + 1
+					elseif b1 == 8  then  tableInsert(buffer, [[\b]]) ; pos = pos + 1
+					elseif b1 == 9  then  tableInsert(buffer, [[\t]]) ; pos = pos + 1
+					elseif b1 == 10 then  tableInsert(buffer, [[\n]]) ; pos = pos + 1
+					elseif b1 == 11 then  tableInsert(buffer, [[\v]]) ; pos = pos + 1
+					elseif b1 == 12 then  tableInsert(buffer, [[\f]]) ; pos = pos + 1
+					elseif b1 == 13 then  tableInsert(buffer, [[\r]]) ; pos = pos + 1
 
 					-- Other control character or anything else.
-					elseif b2 and R(b2,48,57) then  insert(buffer, F([[\%03d]], b1)) ; pos = pos + 1
-					else                            insert(buffer, F([[\%d]],   b1)) ; pos = pos + 1
+					elseif b2 and R(b2,48,57) then  tableInsert(buffer, F([[\%03d]], b1)) ; pos = pos + 1
+					else                            tableInsert(buffer, F([[\%d]],   b1)) ; pos = pos + 1
 					end
 				end
 
@@ -4544,7 +4563,7 @@ do
 			if not ok then  return nil, lastOutput  end
 
 		elseif nodeType == "unary" then
-			local operatorOutput    = ((node.operator == "-" and "-") or (find(node.operator, "%w") and "alphanum") or (""))
+			local operatorOutput    = ((node.operator == "-" and "-") or (stringFind(node.operator, "%w") and "alphanum") or (""))
 			local prettyAndAlphanum = pretty and operatorOutput == "alphanum"
 
 			if prettyAndAlphanum and not maySafelyOmitParens then  lastOutput = writeLua(buffer, "(", "")  end -- @Polish: Only output parentheses around child unaries/binaries if associativity requires it.
@@ -4570,7 +4589,7 @@ do
 				local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, node.left, false)
 				if not ok then  return nil, lastOutput  end
 
-				local operatorOutput = ((node.operator == "-" and "-") or (find(node.operator, "%w") and "alphanum") or (""))
+				local operatorOutput = ((node.operator == "-" and "-") or (stringFind(node.operator, "%w") and "alphanum") or (""))
 
 				if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
@@ -4637,7 +4656,7 @@ do
 
 		elseif nodeType == "label" then
 			local name = node.name
-			if not (find(name, "^[%a_][%w_]*$") and not KEYWORDS[name]) then
+			if not (stringFind(name, "^[%a_][%w_]*$") and not KEYWORDS[name]) then
 				return nil, F("Error: AST: Invalid label '%s'.", name)
 			end
 			lastOutput = writeLua(buffer, "::", "")
@@ -4647,7 +4666,7 @@ do
 
 		elseif nodeType == "goto" then
 			local name = node.name
-			if not (find(name, "^[%a_][%w_]*$") and not KEYWORDS[name]) then
+			if not (stringFind(name, "^[%a_][%w_]*$") and not KEYWORDS[name]) then
 				return nil, F("Error: AST: Invalid label '%s'.", name)
 			end
 			lastOutput = writeAlphanum(buffer, pretty, "goto", lastOutput)
@@ -4709,7 +4728,7 @@ do
 				end
 
 				local explicitParams = func.parameters
-				if implicitSelfParam then  explicitParams = {unpack(explicitParams, 2)}  end
+				if implicitSelfParam then  explicitParams = {tableUnpack(explicitParams, 2)}  end
 
 				local ok;ok, lastOutput = writeFunctionParametersAndBody(buffer, pretty, indent, lastOutput, func, explicitParams)
 				if not ok then  return nil, lastOutput  end
@@ -4863,7 +4882,7 @@ do
 		end
 
 		if ok then
-			return concat(buffer)
+			return tableConcat(buffer)
 		else
 			return nil, err
 		end
@@ -4893,7 +4912,7 @@ function assertArg(funcName, argNum, v, ...)
 	for i = 1, select("#", ...) do
 		if type(v) == select(i, ...) then  return  end
 	end
-	errorf(3, "Bad argument #%d to '%s'. (Expected %s, got %s)", argNum, funcName, concat({...}, " or "), type(v))
+	errorf(3, "Bad argument #%d to '%s'. (Expected %s, got %s)", argNum, funcName, tableConcat({...}, " or "), type(v))
 end
 
 -- errorf( [ level=1, ] format, ... )
@@ -4908,7 +4927,7 @@ end
 
 
 function formatNumber(n)
-	if n == math.floor(n) and not (getNumberType and getNumberType(n) == "float") then
+	if n == mathFloor(n) and not (mathType and mathType(n) == "float") then
 		local nStr = F("%.0f", n)
 		if tonumber(nStr) == n then  return nStr  end
 	end
@@ -5040,7 +5059,7 @@ function addChild(node, fieldName, i, childNode, extraChildNode)
 		assertArg1("addChild", 4+postIndexArgOffset, childNode, "table")
 
 		i = i or #node[fieldName]+1
-		insert(node[fieldName], i, childNode)
+		tableInsert(node[fieldName], i, childNode)
 
 	elseif childFieldType == "tablefields" then
 		if i ~= nil then  assertArg1("addChild", 3, i, "number")  end
@@ -5048,7 +5067,7 @@ function addChild(node, fieldName, i, childNode, extraChildNode)
 		assertArg1("addChild", 5+postIndexArgOffset, extraChildNode, "table")
 
 		i = i or #node[fieldName]+1
-		insert(node[fieldName], i, {key=childNode, value=extraChildNode, generatedKey=false})
+		tableInsert(node[fieldName], i, {key=childNode, value=extraChildNode, generatedKey=false})
 
 	else
 		errorf(2, "Node field '%s.%s' is not an array.", nodeType, tostring(fieldName))
@@ -5066,7 +5085,7 @@ function removeChild(node, fieldName, i)
 	local childFieldType = childFields[fieldName] or errorf(2, "Unknown node field '%s.%s'.", nodeType, tostring(fieldName))
 
 	if childFieldType == "nodearray" or childFieldType == "tablefields" then
-		remove(node[fieldName], i) -- This also works if i is nil.
+		tableRemove(node[fieldName], i) -- This also works if i is nil.
 	else
 		errorf(2, "Node field '%s.%s' is not an array.", nodeType, tostring(fieldName))
 	end
