@@ -89,7 +89,7 @@ parse()
 
 parseFile()
 	astNode, error = parser.parseFile( path )
-	Convert a Lua file into an AST.
+	Convert a Lua file into an AST. Uses io.open().
 	Returns nil and a message on error.
 
 newNode()
@@ -287,36 +287,42 @@ Node fields: (Search for 'NodeFields'.)
 
 local PARSER_VERSION = "2.0.0-dev"
 
-local io            = io
-local ioWrite       = io.write
+local assert       = assert
+local error        = error
+local ipairs       = ipairs
+local loadstring   = loadstring or load
+local pairs        = pairs
+local select       = select
+local tonumber     = tonumber
+local tostring     = tostring
+local type         = type
 
-local F             = string.format
-local stringByte    = string.byte
-local stringChar    = string.char
-local stringFind    = string.find
-local stringGmatch  = string.gmatch
-local stringGsub    = string.gsub
-local stringMatch   = string.match
-local stringRep     = string.rep
-local stringSub     = string.sub
+local io           = io
+local ioOpen       = io.open
+local ioWrite      = io.write
 
-local mathFloor     = math.floor
-local mathMax       = math.max
-local mathMin       = math.min
-local mathType      = math.type -- May be nil.
+local mathFloor    = math.floor
+local mathMax      = math.max
+local mathMin      = math.min
+local mathType     = math.type -- May be nil.
 
-local tableConcat   = table.concat
-local tableInsert   = table.insert
-local tableRemove   = table.remove
-local tableSort     = table.sort
-local tableUnpack   = table.unpack or unpack
+local F            = string.format
+local stringByte   = string.byte
+local stringChar   = string.char
+local stringFind   = string.find
+local stringGmatch = string.gmatch
+local stringGsub   = string.gsub
+local stringMatch  = string.match
+local stringRep    = string.rep
+local stringSub    = string.sub
 
-local loadstring    = loadstring or load
-local tonumber      = tonumber
-local tostring      = tostring
-local type          = type
+local tableConcat  = table.concat
+local tableInsert  = table.insert
+local tableRemove  = table.remove
+local tableSort    = table.sort
+local tableUnpack  = table.unpack or unpack
 
-local maybeWrapInt  = (jit and function(n)return(n%2^32)end) or (_VERSION == "Lua 5.2" and bit32.band) or function(n)return(n)end
+local maybeWrapInt = (jit and function(n)return(n%2^32)end) or (_VERSION == "Lua 5.2" and bit32.band) or function(n)return(n)end
 
 local assertArg1, assertArg, errorf
 local countString, countSubString
@@ -1131,7 +1137,7 @@ end
 function tokenizeFile(path)
 	assertArg1("tokenizeFile", 1, path, "string")
 
-	local file, err = io.open(path, "r")
+	local file, err = ioOpen(path, "r")
 	if not file then  return nil, err  end
 
 	local s = file:read("*a")
