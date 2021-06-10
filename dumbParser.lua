@@ -399,6 +399,7 @@ local NUM_HEX_FRAC_EXP = stringGsub("^( 0[Xx] (%x*) %.(%x+) [Pp]([-+]?%x+) )", "
 local NUM_HEX_FRAC     = stringGsub("^( 0[Xx] (%x*) %.(%x+)                )", " +", "")
 local NUM_HEX_EXP      = stringGsub("^( 0[Xx] (%x+) %.?     [Pp]([-+]?%x+) )", " +", "")
 local NUM_HEX          = stringGsub("^( 0[Xx]  %x+  %.?                    )", " +", "")
+local NUM_BIN          = stringGsub("^( 0[Bb]  [01]+                       )", " +", "")
 local NUM_DEC_FRAC_EXP = stringGsub("^(        %d*  %.%d+   [Ee][-+]?%d+   )", " +", "")
 local NUM_DEC_FRAC     = stringGsub("^(        %d*  %.%d+                  )", " +", "")
 local NUM_DEC_EXP      = stringGsub("^(        %d+  %.?     [Ee][-+]?%d+   )", " +", "")
@@ -960,16 +961,17 @@ function tokenize(s, path)
 
 		-- Number.
 		elseif stringFind(s, "^%.?%d", ptr) then
-			local               pat, maybeInt, lua52Hex, i1, i2, numStr = NUM_HEX_FRAC_EXP, false, true,  stringFind(s, NUM_HEX_FRAC_EXP, ptr)
-			if not i1     then  pat, maybeInt, lua52Hex, i1, i2, numStr = NUM_HEX_FRAC,     false, true,  stringFind(s, NUM_HEX_FRAC,     ptr)
-			if not i1     then  pat, maybeInt, lua52Hex, i1, i2, numStr = NUM_HEX_EXP,      false, true,  stringFind(s, NUM_HEX_EXP,      ptr)
-			if not i1     then  pat, maybeInt, lua52Hex, i1, i2, numStr = NUM_HEX,          true,  false, stringFind(s, NUM_HEX,          ptr)
-			if not i1     then  pat, maybeInt, lua52Hex, i1, i2, numStr = NUM_DEC_FRAC_EXP, false, false, stringFind(s, NUM_DEC_FRAC_EXP, ptr)
-			if not i1     then  pat, maybeInt, lua52Hex, i1, i2, numStr = NUM_DEC_FRAC,     false, false, stringFind(s, NUM_DEC_FRAC,     ptr)
-			if not i1     then  pat, maybeInt, lua52Hex, i1, i2, numStr = NUM_DEC_EXP,      false, false, stringFind(s, NUM_DEC_EXP,      ptr)
-			if not i1     then  pat, maybeInt, lua52Hex, i1, i2, numStr = NUM_DEC,          true,  false, stringFind(s, NUM_DEC,          ptr)
+			local               pat, maybeInt, kind, i1, i2, numStr = NUM_HEX_FRAC_EXP, false, "lua52hex",  stringFind(s, NUM_HEX_FRAC_EXP, ptr)
+			if not i1     then  pat, maybeInt, kind, i1, i2, numStr = NUM_HEX_FRAC,     false, "lua52hex",  stringFind(s, NUM_HEX_FRAC,     ptr)
+			if not i1     then  pat, maybeInt, kind, i1, i2, numStr = NUM_HEX_EXP,      false, "lua52hex",  stringFind(s, NUM_HEX_EXP,      ptr)
+			if not i1     then  pat, maybeInt, kind, i1, i2, numStr = NUM_HEX,          true,  "",          stringFind(s, NUM_HEX,          ptr)
+			if not i1     then  pat, maybeInt, kind, i1, i2, numStr = NUM_BIN,          true,  "binary",    stringFind(s, NUM_BIN,          ptr) -- LuaJIT supports these, so why not.
+			if not i1     then  pat, maybeInt, kind, i1, i2, numStr = NUM_DEC_FRAC_EXP, false, "",          stringFind(s, NUM_DEC_FRAC_EXP, ptr)
+			if not i1     then  pat, maybeInt, kind, i1, i2, numStr = NUM_DEC_FRAC,     false, "",          stringFind(s, NUM_DEC_FRAC,     ptr)
+			if not i1     then  pat, maybeInt, kind, i1, i2, numStr = NUM_DEC_EXP,      false, "",          stringFind(s, NUM_DEC_EXP,      ptr)
+			if not i1     then  pat, maybeInt, kind, i1, i2, numStr = NUM_DEC,          true,  "",          stringFind(s, NUM_DEC,          ptr)
 			if not numStr then  return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Malformed number.")
-			end end end end end end end end
+			end end end end end end end end end
 
 			local numStrFallback = numStr
 
@@ -998,24 +1000,30 @@ function tokenize(s, path)
 
 			n = n or tonumber(numStrFallback)
 
-			-- Support hexadecimal floats if we're running Lua 5.1.
-			if not n and lua52Hex then
-				-- Note: We know we're not running LuaJIT here as it supports hexadecimal floats, thus we use numStrFallback instead of numStr.
-				local                                _, intStr, fracStr, expStr
-				if     pat == NUM_HEX_FRAC_EXP then  _, intStr, fracStr, expStr = numStrFallback:match(NUM_HEX_FRAC_EXP)
-				elseif pat == NUM_HEX_FRAC     then  _, intStr, fracStr         = numStrFallback:match(NUM_HEX_FRAC) ; expStr  = "0"
-				elseif pat == NUM_HEX_EXP      then  _, intStr,          expStr = numStrFallback:match(NUM_HEX_EXP)  ; fracStr = ""
-				else return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Internal error parsing the number '%s'.", numStrFallback) end
+			if not n then
+				-- Note: We know we're not running LuaJIT here as it supports hexadecimal floats and binary notation, thus we use numStrFallback instead of numStr.
 
-				n = tonumber(intStr, 16) or 0 -- intStr may be "".
+				-- Support hexadecimal floats if we're running Lua 5.1.
+				if kind == "lua52hex" then
+					local                                _, intStr, fracStr, expStr
+					if     pat == NUM_HEX_FRAC_EXP then  _, intStr, fracStr, expStr = numStrFallback:match(NUM_HEX_FRAC_EXP)
+					elseif pat == NUM_HEX_FRAC     then  _, intStr, fracStr         = numStrFallback:match(NUM_HEX_FRAC) ; expStr  = "0"
+					elseif pat == NUM_HEX_EXP      then  _, intStr,          expStr = numStrFallback:match(NUM_HEX_EXP)  ; fracStr = ""
+					else return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Internal error parsing the number '%s'.", numStrFallback) end
 
-				local fracValue = 1
-				for i = 1, #fracStr do
-					fracValue = fracValue / 16
-					n         = n + tonumber(stringSub(fracStr, i, i), 16) * fracValue
+					n = tonumber(intStr, 16) or 0 -- intStr may be "".
+
+					local fracValue = 1
+					for i = 1, #fracStr do
+						fracValue = fracValue / 16
+						n         = n + tonumber(stringSub(fracStr, i, i), 16) * fracValue
+					end
+
+					n = n * 2 ^ stringGsub(expStr, "^+", "")
+
+				elseif kind == "binary" then
+					n = tonumber(numStrFallback:sub(3), 2)
 				end
-
-				n = n * 2 ^ stringGsub(expStr, "^+", "")
 			end
 
 			if not n then
@@ -1027,8 +1035,9 @@ function tokenize(s, path)
 			tokRepr  = numStr
 			tokValue = n
 
-			if stringFind(s, "^%.", ptr) then
-				return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Malformed number.")
+			if stringFind(s, "^[%w_.]", ptr) then
+				local after = stringMatch(s, "^%.?%d+", ptr) or stringMatch(s, "^[%w_.][%w_.]?", ptr)
+				return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Malformed number near '%s%s'.", numStr, after)
 			end
 
 		-- Quoted string.
@@ -1333,8 +1342,8 @@ local function concatTokens(tokens)
 			(stringFind(tokRepr, "^%-"   ) and stringFind(lastTokRepr, "%-$"   )) or
 			(stringFind(tokRepr, "^/"    ) and stringFind(lastTokRepr, "/$"    )) or
 
-			(tokTypes[tok-1] == "number" and stringFind(tokRepr,     "^%.")) or
-			(tokTypes[tok  ] == "number" and stringFind(lastTokRepr, "%.$"))
+			(tokTypes[tok-1] == "number" and stringFind(tokRepr,     "^[%w_.]")) or
+			(tokTypes[tok  ] == "number" and stringFind(lastTokRepr, "%.$") and not stringFind(lastTokRepr, "%.%.$"))
 		) then
 			tableInsert(parts, " ")
 		end

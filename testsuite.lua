@@ -391,6 +391,11 @@ if jit then
 	end)
 end
 
+test("Soft LuaJIT", function()
+	local ast = assert(parser.parse([[ x = 0b1001001111101011 ]], "<luastring>"))
+	assertLua(assert(parser.toLua(ast)), [[ x=37867; ]])
+end)
+
 
 
 print(("="):rep(64))
