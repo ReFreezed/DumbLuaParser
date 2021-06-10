@@ -5,6 +5,7 @@ local PRETTY_OUTPUT   = 1==1
 local PRINT_IDS       = 1==1
 local PRINT_LOCATIONS = 1==1
 
+collectgarbage("stop")
 io.stdout:setvbuf("no")
 io.stderr:setvbuf("no")
 
@@ -16,6 +17,8 @@ local loadLuaString   = loadstring or load
 local parser          = require"dumbParser"
 parser.printIds       = PRINT_IDS
 parser.printLocations = PRINT_LOCATIONS
+
+
 
 local function test(label, f)
 	testCount = testCount + 1
@@ -61,6 +64,8 @@ local function assertLua(lua, expectedLua, expectedLuaAlt, level)
 		("-"):rep(64)
 	), 1+(level or 1))
 end
+
+
 
 test("Test file", function()
 	local path = "test.lua"
@@ -153,6 +158,8 @@ test("Test file", function()
 	end
 end)
 
+
+
 test("Token stream manipulations", function()
 	local tokens = parser.newTokenStream()
 
@@ -174,6 +181,8 @@ test("Token stream manipulations", function()
 	local ast = assert(parser.parse(tokens))
 	assertLua(assert(parser.toLua(ast)), [[ local n=math.abs(-1.75); ]])
 end)
+
+
 
 test("AST manipulations", function()
 	local identifier1  = parser.newNode("identifier", "foo")
@@ -239,6 +248,8 @@ test("AST manipulations", function()
 	assert(loadLuaString(lua, "@<luastring>"))
 end)
 
+
+
 test("Call and lookup parsing", function()
 	assert(    parser.parse([[ x =  tbl   () ]], "<luastring>"))
 	assert(    parser.parse([[ x =  tbl   "" ]], "<luastring>"))
@@ -281,6 +292,8 @@ test("Call and lookup parsing", function()
 	assert(    parser.parse([[ x = (nil).m() ]], "<luastring>"))
 	assert(    parser.parse([[ x = (nil):m"" ]], "<luastring>"))
 end)
+
+
 
 test("Simplify", function()
 	local function testSimplify(lua, expectedLua, expectedLuaAlt)
@@ -359,6 +372,27 @@ test("Simplify", function()
 	)
 end)
 
+
+
+if jit then
+	test("LuaJIT", function()
+		local ast = assert(parser.parse([[ x = 0x0fffffffffffffffLL ]], "<luastring>"))
+		assertLua(assert(parser.toLua(ast)), [[ x=1152921504606846975LL; ]])
+
+		local ast = assert(parser.parse([[ x = 12.5i ]], "<luastring>"))
+		assertLua(assert(parser.toLua(ast)), [[ x=12.5i; ]])
+
+		local ast = assert(parser.parse([[ x = -3.75i ]], "<luastring>"))
+		assertLua(assert(parser.toLua(ast)), [[ x=-3.75i; ]])
+
+		local ast = assert(parser.parse([[ x = 94LL + 94LL ]], "<luastring>"))
+		parser.simplify(ast)
+		assertLua(assert(parser.toLua(ast)), [[ x=188LL; ]])
+	end)
+end
+
+
+
 print(("="):rep(64))
 for _, result in ipairs(results) do
 	print(string.format("%-4s  %s", (result.ok and "ok" or "FAIL"), result.label))
@@ -371,3 +405,5 @@ if failCount > 0 then
 else
 	print("All tests passed successfully!")
 end
+
+

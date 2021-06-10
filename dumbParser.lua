@@ -301,6 +301,8 @@ local io           = io
 local ioOpen       = io.open
 local ioWrite      = io.write
 
+local jit          = jit
+
 local mathFloor    = math.floor
 local mathMax      = math.max
 local mathMin      = math.min
@@ -393,14 +395,14 @@ local OPERATOR_PRECEDENCE = {
 	["^"]   = 12,
 }
 
-local NUM_HEX_FRAC_EXP = stringGsub("^( 0[Xx] ([%dA-Fa-f]*) %.([%dA-Fa-f]+) [Pp]([-+]?[%dA-Fa-f]+) )", " +", "")
-local NUM_HEX_FRAC     = stringGsub("^( 0[Xx] ([%dA-Fa-f]*) %.([%dA-Fa-f]+)                        )", " +", "")
-local NUM_HEX_EXP      = stringGsub("^( 0[Xx] ([%dA-Fa-f]+) %.?             [Pp]([-+]?[%dA-Fa-f]+) )", " +", "")
-local NUM_HEX          = stringGsub("^( 0[Xx]  [%dA-Fa-f]+  %.?                                    )", " +", "")
-local NUM_DEC_FRAC_EXP = stringGsub("^(        %d*          %.%d+           [Ee][-+]?%d+           )", " +", "")
-local NUM_DEC_FRAC     = stringGsub("^(        %d*          %.%d+                                  )", " +", "")
-local NUM_DEC_EXP      = stringGsub("^(        %d+          %.?             [Ee][-+]?%d+           )", " +", "")
-local NUM_DEC          = stringGsub("^(        %d+          %.?                                    )", " +", "")
+local NUM_HEX_FRAC_EXP = stringGsub("^( 0[Xx] (%x*) %.(%x+) [Pp]([-+]?%x+) )", " +", "")
+local NUM_HEX_FRAC     = stringGsub("^( 0[Xx] (%x*) %.(%x+)                )", " +", "")
+local NUM_HEX_EXP      = stringGsub("^( 0[Xx] (%x+) %.?     [Pp]([-+]?%x+) )", " +", "")
+local NUM_HEX          = stringGsub("^( 0[Xx]  %x+  %.?                    )", " +", "")
+local NUM_DEC_FRAC_EXP = stringGsub("^(        %d*  %.%d+   [Ee][-+]?%d+   )", " +", "")
+local NUM_DEC_FRAC     = stringGsub("^(        %d*  %.%d+                  )", " +", "")
+local NUM_DEC_EXP      = stringGsub("^(        %d+  %.?     [Ee][-+]?%d+   )", " +", "")
+local NUM_DEC          = stringGsub("^(        %d+  %.?                    )", " +", "")
 
 local INT_SIZE, MAX_INT, MIN_INT
 do
@@ -958,26 +960,52 @@ function tokenize(s, path)
 
 		-- Number.
 		elseif stringFind(s, "^%.?%d", ptr) then
-			local               lua52Hex, i1, i2, numStr = true,  stringFind(s, NUM_HEX_FRAC_EXP, ptr)
-			if not i1     then  lua52Hex, i1, i2, numStr = true,  stringFind(s, NUM_HEX_FRAC,     ptr)
-			if not i1     then  lua52Hex, i1, i2, numStr = true,  stringFind(s, NUM_HEX_EXP,      ptr)
-			if not i1     then  lua52Hex, i1, i2, numStr = false, stringFind(s, NUM_HEX,          ptr)
-			if not i1     then  lua52Hex, i1, i2, numStr = false, stringFind(s, NUM_DEC_FRAC_EXP, ptr)
-			if not i1     then  lua52Hex, i1, i2, numStr = false, stringFind(s, NUM_DEC_FRAC,     ptr)
-			if not i1     then  lua52Hex, i1, i2, numStr = false, stringFind(s, NUM_DEC_EXP,      ptr)
-			if not i1     then  lua52Hex, i1, i2, numStr = false, stringFind(s, NUM_DEC,          ptr)
+			local               pat, maybeInt, lua52Hex, i1, i2, numStr = NUM_HEX_FRAC_EXP, false, true,  stringFind(s, NUM_HEX_FRAC_EXP, ptr)
+			if not i1     then  pat, maybeInt, lua52Hex, i1, i2, numStr = NUM_HEX_FRAC,     false, true,  stringFind(s, NUM_HEX_FRAC,     ptr)
+			if not i1     then  pat, maybeInt, lua52Hex, i1, i2, numStr = NUM_HEX_EXP,      false, true,  stringFind(s, NUM_HEX_EXP,      ptr)
+			if not i1     then  pat, maybeInt, lua52Hex, i1, i2, numStr = NUM_HEX,          true,  false, stringFind(s, NUM_HEX,          ptr)
+			if not i1     then  pat, maybeInt, lua52Hex, i1, i2, numStr = NUM_DEC_FRAC_EXP, false, false, stringFind(s, NUM_DEC_FRAC_EXP, ptr)
+			if not i1     then  pat, maybeInt, lua52Hex, i1, i2, numStr = NUM_DEC_FRAC,     false, false, stringFind(s, NUM_DEC_FRAC,     ptr)
+			if not i1     then  pat, maybeInt, lua52Hex, i1, i2, numStr = NUM_DEC_EXP,      false, false, stringFind(s, NUM_DEC_EXP,      ptr)
+			if not i1     then  pat, maybeInt, lua52Hex, i1, i2, numStr = NUM_DEC,          true,  false, stringFind(s, NUM_DEC,          ptr)
 			if not numStr then  return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Malformed number.")
 			end end end end end end end end
 
+			local numStrFallback = numStr
+
+			if jit then
+				if s:find("^[Ii]", i2+1) then -- Imaginary part of complex number.
+					numStr = stringSub(s, i1, i2+1)
+					i2     = i2 + 1
+
+				elseif not maybeInt or numStr:find(".", 1, true) then
+					-- void
+				elseif s:find("^[Uu][Ll][Ll]", i2+1) then -- Unsigned 64-bit integer.
+					numStr = stringSub(s, i1, i2+3)
+					i2     = i2 + 3
+				elseif s:find("^[Ll][Ll]", i2+1) then -- Signed 64-bit integer.
+					numStr = stringSub(s, i1, i2+2)
+					i2     = i2 + 2
+				end
+			end
+
 			local n = tonumber(numStr)
+
+			if not n and jit then
+				local chunk = loadstring("return "..numStr)
+				n           = chunk and chunk() or n
+			end
+
+			n = n or tonumber(numStrFallback)
 
 			-- Support hexadecimal floats if we're running Lua 5.1.
 			if not n and lua52Hex then
-				local               _, intStr, fracStr, expStr = stringMatch(numStr, NUM_HEX_FRAC_EXP)
-				if not intStr then  _, intStr, fracStr         = stringMatch(numStr, NUM_HEX_FRAC) ; expStr  = "0"
-				if not intStr then  _, intStr,          expStr = stringMatch(numStr, NUM_HEX_EXP)  ; fracStr = ""
-				if not intStr then  return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Internal error parsing the number '%s'.", numStr)
-				end end end
+				-- Note: We know we're not running LuaJIT here as it supports hexadecimal floats, thus we use numStrFallback instead of numStr.
+				local                                _, intStr, fracStr, expStr
+				if     pat == NUM_HEX_FRAC_EXP then  _, intStr, fracStr, expStr = numStrFallback:match(NUM_HEX_FRAC_EXP)
+				elseif pat == NUM_HEX_FRAC     then  _, intStr, fracStr         = numStrFallback:match(NUM_HEX_FRAC) ; expStr  = "0"
+				elseif pat == NUM_HEX_EXP      then  _, intStr,          expStr = numStrFallback:match(NUM_HEX_EXP)  ; fracStr = ""
+				else return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Internal error parsing the number '%s'.", numStrFallback) end
 
 				n = tonumber(intStr, 16) or 0 -- intStr may be "".
 
@@ -4480,7 +4508,7 @@ do
 			elseif node.value == nil or type(node.value) == "boolean" then
 				lastOutput = writeAlphanum(buffer, pretty, tostring(node.value), lastOutput)
 
-			elseif type(node.value) == "number" then
+			elseif type(node.value) == "number" or (jit and type(node.value) == "cdata" and tonumber(node.value)) then
 				lastOutput = writeNumber(buffer, pretty, node.value, lastOutput)
 
 			elseif type(node.value) == "string" then
@@ -4530,7 +4558,7 @@ do
 				lastOutput = writeLua(buffer, quote, "")
 
 			else
-				return nil, F("Error: Failed outputting value '%s'.", tostring(node.value))
+				return nil, F("Error: Failed outputting '%s' value '%s'.", type(node.value), tostring(node.value))
 			end
 
 		elseif nodeType == "table" then
@@ -4933,10 +4961,35 @@ end
 
 
 function formatNumber(n)
+	-- 64-bit int in LuaJIT (is what we assume, anyway).
+	if jit and type(n) == "cdata" then
+		local nStr = tostring(n)
+
+		if stringFind(nStr, "i$") then
+			if stringFind(nStr, "^0[-+]") then
+				nStr = stringGsub(nStr, "^0%+?", "")
+			else
+				--
+				-- LuaJIT doesn't seem to be able to parse nStr if we output it as-is.
+				-- What is even the notation for complex numbers with a non-zero real part?
+				-- Oh LuaJIT, you're so mysterious...
+				--
+				-- @Robustness: Make sure we don't choke when trying to simplify() complex numbers.
+				--
+				errorf(2, "Cannot output complex number '%s'.", nStr)
+			end
+		end
+
+		return nStr
+	end
+
+	-- Int (including 64-bit ints in Lua 5.3+, and excluding whole floats).
 	if n == mathFloor(n) and not (mathType and mathType(n) == "float") then
 		local nStr = F("%.0f", n)
 		if tonumber(nStr) == n then  return nStr  end
 	end
+
+	-- Anything else.
 	return (tostring(n)
 		:gsub("(e[-+])0+(%d+)$", "%1%2") -- Remove unnecessary zeroes after 'e'.
 		:gsub("e%+",             "e"   ) -- Remove plus after 'e'.
