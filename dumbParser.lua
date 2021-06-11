@@ -140,7 +140,7 @@ traverseTreeReverse()
 updateReferences()
 	parser.updateReferences( astNode [, updateTopNodePosition=true ] )
 	Update references between nodes in the tree.
-	This function sets 'parent', 'container' and 'key' for all nodes and 'declaration' for identifiers.
+	This function sets 'parent'+'container'+'key' for all nodes, and 'declaration'+'declarationIdentifier' for identifiers.
 	If 'updateTopNodePosition' is false then 'parent', 'container' and 'key' will remain as-it for 'astNode' specifically.
 
 simplify()
@@ -328,7 +328,8 @@ local maybeWrapInt = (jit and function(n)return(n%2^32)end) or (_VERSION == "Lua
 
 local assertArg1, assertArg, errorf
 local countString, countSubString
-local formatErrorInFile, formatErrorAtToken, formatErrorAfterToken, formatErrorAtNode -- @Incomplete: Should we expose these functions?
+local formatErrorInFile, formatErrorAtToken, formatErrorAfterToken, formatErrorAtNode
+local formatMessageInFile, formatMessageAtToken, formatMessageAfterToken, formatMessageAtNode -- @Incomplete: Should we expose these functions?
 local formatNumber
 local getChild, setChild, addChild, removeChild
 local getLineNumber
@@ -336,13 +337,13 @@ local getNameArrayOfDeclarationLike
 local getRelativeLocationText, getRelativeLocationTextForToken, getRelativeLocationTextForNode
 local ipairsr
 local isToken, isTokenType, isTokenAnyValue
-local itemWith1
+local itemWith1, lastItemWith1
 local mayNodeBeInvolvedInJump, mayAnyNodeBeInvolvedInJump
 local newTokenStream, dummyTokens
 local parse, parseFile
 local printNode, printTree
 local printTokens
-local removeUnordered
+local removeUnordered, removeItemUnordered
 local tokenize, tokenizeFile
 local toLua
 local traverseTree, traverseTreeReverse
@@ -447,6 +448,7 @@ local function AstIdentifier (tokens,tok,name)return populateCommonNodeFields(to
 	name        = name,  -- String.
 	attribute   = "",    -- "" | "close" | "const"
 	declaration = nil,   -- AstDeclaration, AstFunction or AstFor. Updated by updateReferences(). This is nil for globals.
+	declarationIdentifier = nil, -- AstIdentifier. Updated by updateReferences(). This is nil for globals.
 })end
 local function AstVararg (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "vararg",
@@ -548,7 +550,7 @@ local function AstFor (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 
 
 local CHILD_FIELDS = {
-	["identifier"]  = {declaration="node"},
+	["identifier"]  = {},
 	["vararg"]      = {},
 	["literal"]     = {},
 	["table"]       = {fields="tablefields"},
@@ -645,11 +647,11 @@ do
 		return len
 	end
 
-	function formatErrorInFile(contents, path, pos, agent, s, ...)
+	function formatMessageInFile(prefix, contents, path, pos, agent, s, ...)
 		s = F(s, ...)
 
 		if contents == "" then
-			return F("Error @ %s: [%s] %s", path, agent, s)
+			return F("%s @ %s: [%s] %s", prefix, path, agent, s)
 		end
 
 		pos      = mathMin(mathMax(pos, 1), #contents+1)
@@ -663,8 +665,8 @@ do
 		local linePre2End   = findEndOfLine  (contents, linePre2Start-1)
 		-- print(F("pos %d | lines %d..%d, %d..%d, %d..%d", pos, linePre2Start,linePre2End+1, linePre1Start,linePre1End+1, lineStart,lineEnd+1)) -- DEBUG
 
-		return F("Error @ %s:%d: [%s] %s\n>\n%s%s%s>-%s^",
-			path, ln, agent, s,
+		return F("%s @ %s:%d: [%s] %s\n>\n%s%s%s>-%s^",
+			prefix, path, ln, agent, s,
 			(linePre2Start < linePre1Start and linePre2Start <= linePre2End) and F("> %s\n", (stringGsub(stringSub(contents, linePre2Start, linePre2End), "\t", "    "))) or "",
 			(linePre1Start < lineStart     and linePre1Start <= linePre1End) and F("> %s\n", (stringGsub(stringSub(contents, linePre1Start, linePre1End), "\t", "    "))) or "",
 			(                                  lineStart     <= lineEnd    ) and F("> %s\n", (stringGsub(stringSub(contents, lineStart,     lineEnd    ), "\t", "    "))) or ">\n",
@@ -673,18 +675,25 @@ do
 	end
 end
 
-function formatErrorAtToken(tokens, tok, agent, s, ...)
+function formatMessageAtToken(prefix, tokens, tok, agent, s, ...)
 	local pos = tokens.positionStart[tok] or (tok == 1 and 1 or #tokens.sourceString+1)
-	return (formatErrorInFile(tokens.sourceString, tokens.sourcePath, pos, agent, s, ...))
+	return (formatMessageInFile(prefix, tokens.sourceString, tokens.sourcePath, pos, agent, s, ...))
 end
-function formatErrorAfterToken(tokens, tok, agent, s, ...)
+function formatMessageAfterToken(prefix, tokens, tok, agent, s, ...)
 	local pos = (tokens.positionStart[tok] and tokens.positionEnd[tok]+1) or (tok == 1 and 1 or #tokens.sourceString+1)
-	return (formatErrorInFile(tokens.sourceString, tokens.sourcePath, pos, agent, s, ...))
+	return (formatMessageInFile(prefix, tokens.sourceString, tokens.sourcePath, pos, agent, s, ...))
 end
 
-function formatErrorAtNode(node, agent, s, ...)
-	return (formatErrorInFile(node.sourceString, node.sourcePath, node.position, agent, s, ...))
+function formatMessageAtNode(prefix, node, agent, s, ...)
+	return (formatMessageInFile(prefix, node.sourceString, node.sourcePath, node.position, agent, s, ...))
 end
+
+
+
+function formatErrorInFile    (...)  return formatMessageInFile    ("Error", ...)  end
+function formatErrorAtToken   (...)  return formatMessageAtToken   ("Error", ...)  end
+function formatErrorAfterToken(...)  return formatMessageAfterToken("Error", ...)  end
+function formatErrorAtNode    (...)  return formatMessageAtNode    ("Error", ...)  end
 
 
 
@@ -1588,9 +1597,10 @@ function parseExpression(tokens, tokStart, lastPrecedence) --> expression, token
 
 	-- function
 	elseif isToken(tokens, tok, "keyword", "function") then
-		tok = tok + 1 -- 'function'
+		local funcTok = tok
+		tok           = tok + 1 -- 'function'
 
-		local func, tokNext, err = parseFunctionParametersAndBody(tokens, tok)
+		local func, tokNext, err = parseFunctionParametersAndBody(tokens, tok, funcTok)
 		if not func then  return nil, tok, err  end
 		func.token = tok
 		tok        = tokNext
@@ -1834,9 +1844,9 @@ function parseExpressionList(tokens, tok, expressions) --> success, token, error
 	end
 end
 
-function parseFunctionParametersAndBody(tokens, tokStart) --> func, token, error
+function parseFunctionParametersAndBody(tokens, tokStart, funcTok) --> func, token, error
 	local tok  = tokStart
-	local func = AstFunction(tokens, tok)
+	local func = AstFunction(tokens, funcTok)
 
 	if not isToken(tokens, tok, "punctuation", "(") then
 		return nil, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected '(' to start parameter list for function.")
@@ -2084,6 +2094,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 
 	-- function
 	elseif isToken(tokens, tok, "keyword", "function") then
+		local funcTok    = tok
 		local assignment = AstAssignment(tokens, tok)
 		tok              = tok + 1 -- 'function'
 
@@ -2127,7 +2138,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 			targetExpr = lookup
 		end
 
-		local func, tokNext, err = parseFunctionParametersAndBody(tokens, tok)
+		local func, tokNext, err = parseFunctionParametersAndBody(tokens, tok, funcTok)
 		if not func then  return false, tok, err  end
 		tok = tokNext
 
@@ -2144,6 +2155,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 
 	-- local function
 	elseif isToken(tokens, tok, "keyword", "local") and isToken(tokens, tok+1, "keyword", "function") then
+		local funcTok    = tok + 1
 		local decl       = AstDeclaration(tokens, tok)
 		local assignment = AstAssignment(tokens, tok)
 		tok              = tok + 2 -- 'local function'
@@ -2153,7 +2165,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		local identCopy = parseIdentifier(tokens, tok)
 		tok             = tokNext
 
-		local func, tokNext, err = parseFunctionParametersAndBody(tokens, tok)
+		local func, tokNext, err = parseFunctionParametersAndBody(tokens, tok, funcTok)
 		if not func then  return false, tok, err  end
 		tok = tokNext
 
@@ -2565,7 +2577,8 @@ end
 
 
 do
-	local NL_AND_CR_TO_READABLE = {
+	local CONTROL_TO_READABLE = {
+		["\0"] = "{NUL}",
 		["\n"] = "{NL}",
 		["\r"] = "{CR}",
 	}
@@ -2595,7 +2608,9 @@ do
 			if node.value == nil or node.value == true or node.value == false then
 				ioWrite(" (", tostring(node.value), ")")
 			elseif type(node.value) == "string" then
-				ioWrite(' (string="', stringGsub(node.value, "[\n\r]", NL_AND_CR_TO_READABLE), '")')
+				ioWrite(' (string="', stringGsub(node.value, "[%z\1-\31\127-\255]", function(c)
+					return CONTROL_TO_READABLE[c] or (stringByte(c) <= 31 or stringByte(c) >= 127) and F("{%d}", stringByte(c)) or nil
+				end), '")')
 			else
 				ioWrite(" (", type(node.value), "=", tostring(node.value), ")")
 			end
@@ -2649,9 +2664,8 @@ do
 
 		if nodeType == "table" then
 			for i, tableField in ipairs(node.fields) do
-				if tableField.key   then  _printTree(tableField.key,   indent, i..(tableField.generatedKey and "KEYGEN" or "KEY  "))  end
-				if tableField.value then  _printTree(tableField.value, indent, i..(                                   "VALUE"))  end
-				local a =  {1, 5, g=6}
+				if tableField.key   then  _printTree(tableField.key,   indent, i..(tableField.generatedKey and "KEYGEN" or "KEY   "))  end
+				if tableField.value then  _printTree(tableField.value, indent, i..(                                        "VALUE "))  end
 			end
 
 		elseif nodeType == "lookup" then
@@ -2971,7 +2985,7 @@ end
 
 
 
--- decl|func|forLoop|nil = findDeclaration(ident)
+-- decl|func|forLoop|nil, declIdent = findDeclaration( ident )
 local function findDeclaration(ident)
 	local name   = ident.name
 	local parent = ident
@@ -2984,21 +2998,21 @@ local function findDeclaration(ident)
 
 		if parent.type == "declaration" then
 			local decl = parent
-			if lastChild.container == decl.names and itemWith1(decl.names, "name", name) then
-				return decl
+
+			if lastChild.container == decl.names then
+				local declIdent = lastItemWith1(decl.names, "name", name)
+				if declIdent then  return decl, declIdent  end
 			end
 
 		elseif parent.type == "function" then
-			local func = parent
-			if itemWith1(func.parameters, "name", name) then
-				return func
-			end
+			local func      = parent
+			local declIdent = lastItemWith1(func.parameters, "name", name)
+			if declIdent then  return func, declIdent  end
 
 		elseif parent.type == "for" then
-			local forLoop = parent
-			if itemWith1(forLoop.names, "name", name) then
-				return forLoop
-			end
+			local forLoop   = parent
+			local declIdent = lastItemWith1(forLoop.names, "name", name)
+			if declIdent then  return forLoop, declIdent  end
 
 		elseif parent.type == "block" then
 			local block = parent
@@ -3007,16 +3021,16 @@ local function findDeclaration(ident)
 				local statement = block.statements[i]
 
 				if statement.type == "declaration" then
-					local decl = statement
-					if itemWith1(decl.names, "name", name) then
-						return decl
-					end
+					local decl      = statement
+					local declIdent = lastItemWith1(decl.names, "name", name)
+					if declIdent then  return decl, declIdent  end
 				end
 			end
 
 		elseif parent.type == "repeat" then
 			local repeatLoop = parent
 
+			-- Repeat loop conditions can see into the loop block.
 			if lastChild == repeatLoop.condition then
 				local block = repeatLoop.body
 
@@ -3024,8 +3038,9 @@ local function findDeclaration(ident)
 					local statement = block.statements[i]
 
 					if statement.type == "declaration" then
-						local decl = statement
-						if itemWith1(decl.names, "name", name) then  return decl  end
+						local decl      = statement
+						local declIdent = lastItemWith1(decl.names, "name", name)
+						if declIdent then  return decl, declIdent  end
 					end
 				end
 			end
@@ -3038,9 +3053,7 @@ local function findLabel(gotoNode)
 	local parent = gotoNode
 
 	while true do
-		local lastChild = parent
-		parent          = parent.parent
-
+		parent = parent.parent
 		if not parent then  return nil  end
 
 		if parent.type == "block" then
@@ -3075,8 +3088,8 @@ function updateReferences(node, updateTopNodePosition)
 		node.key       = key
 
 		if node.type == "identifier" then
-			local ident       = node
-			ident.declaration = findDeclaration(ident) -- We can call this because all parents and previous nodes already have their references updated at this point.
+			local ident                                    = node
+			ident.declaration, ident.declarationIdentifier = findDeclaration(ident) -- We can call this because all parents and previous nodes already have their references updated at this point.
 
 			--[[ DEBUG
 			print(F(
@@ -3497,9 +3510,10 @@ local function getInformationAboutIdentifiersAndUpdateMostReferences(node)
 		node.key       = key
 
 		if node.type == "identifier" then
-			local currentIdent       = node
-			local currentDeclLike    = findDeclaration(currentIdent) -- We can call this because all parents and previous nodes already have their references updated at this point.
-			currentIdent.declaration = currentDeclLike
+			local currentIdent                      = node
+			local currentDeclLike, currentDeclIdent = findDeclaration(currentIdent) -- We can call this because all parents and previous nodes already have their references updated at this point.
+			currentIdent.declaration                = currentDeclLike
+			currentIdent.declarationIdentifier      = currentDeclIdent
 
 			local identType = (
 				(parent and (
@@ -3592,7 +3606,7 @@ function mayNodeBeInvolvedInJump(node)
 		return true
 
 	elseif node.type == "identifier" then
-		return (node.declaration == nil) -- Globals may invoke a metamethod.
+		return (node.declaration == nil) -- Globals may invoke a metamethod on the environment.
 
 	elseif node.type == "binary" then
 		return mayNodeBeInvolvedInJump(node.left) or mayNodeBeInvolvedInJump(node.right)
@@ -3636,6 +3650,491 @@ end
 
 
 
+-- unregisterWatchers( identInfos, declLikeWatchers, theNode, declIdentReadCount, declIdentAssignmentCount, funcInfos, currentFuncInfo )
+-- unregisterWatchers( identInfos, declLikeWatchers, theNode ) -- @Obsolete
+local function unregisterWatchers(identInfos, declLikeWatchers, theNode, declIdentReadCount, declIdentAssignmentCount, funcInfos, currentFuncInfo)
+	ioWrite("unregister ") ; printNode(theNode) -- DEBUG
+
+	traverseTree(theNode, true, function(node) -- @Speed
+		--[[ DEBUG
+		unregistered = unregistered or {}
+		if unregistered[node] then
+			printNode(node)
+			print(debug.traceback("NEW", 2))
+			print(unregistered[node])
+		end
+		unregistered[node] = debug.traceback("OLD", 2)
+		--]]
+
+		if node.type == "identifier" then
+			local currentIdent     = node
+			local currentIdentInfo = identInfos[currentIdent]
+			assert(currentIdentInfo)
+
+			-- Remove identifier info.
+			for i, identInfo in ipairs(identInfos) do
+				if identInfo == currentIdentInfo then
+					removeUnordered(identInfos, i)
+					break
+				end
+			end
+			identInfos[currentIdent] = nil
+
+			-- Remove as watcher.
+			for _, watcherIdents in pairs(declLikeWatchers) do -- @Speed
+				for i, watcherIdent in ipairs(watcherIdents) do
+					if watcherIdent == currentIdent then
+						removeUnordered(watcherIdents, i)
+						break
+					end
+				end
+			end
+
+			-- Update access count.
+			if not currentIdent.declaration then
+				-- void
+			elseif currentIdentInfo.type == "rvalue" then
+				local declIdent               = currentIdent.declarationIdentifier
+				declIdentReadCount[declIdent] = declIdentReadCount[declIdent] - 1 -- :AccessCount
+				assert(declIdentReadCount[declIdent] >= 0)
+			elseif --[[currentIdentInfo.type == "lvalue" and]] currentIdentInfo.ident.parent.type == "assignment" then
+				local declIdent                     = currentIdent.declarationIdentifier
+				declIdentAssignmentCount[declIdent] = declIdentAssignmentCount[declIdent] - 1 -- :AccessCount
+				assert(declIdentAssignmentCount[declIdent] >= 0)
+			end
+
+			-- removeItemUnordered(currentFuncInfo.locals,   currentIdent)
+			-- removeItemUnordered(currentFuncInfo.upvalues, currentIdent)
+			-- removeItemUnordered(currentFuncInfo.globals,  currentIdent)
+
+		elseif node.type == "assignment" then
+			local assignment = node
+			removeItemUnordered(currentFuncInfo.assignments, assignment)
+
+		elseif node.type == "declaration" or node.type == "function" or node.type == "for" then -- @Cleanup: Maybe define isValueDeclLike().
+			local declLike = node
+			declLikeWatchers[declLike] = nil
+			removeItemUnordered(currentFuncInfo.declLikes, declLike)
+		end
+
+		if funcInfos[node] then
+			for i, funcInfo in ipairs(funcInfos) do
+				if funcInfo.node == node then
+					removeUnordered(funcInfos, i)
+					break
+				end
+			end
+			funcInfos[node] = nil
+		end
+	end)
+end
+
+-- Note: References need to be updated after calling this!
+local function clean(theNode)
+	local identInfos, declLikeWatchers = getInformationAboutIdentifiersAndUpdateMostReferences(theNode)
+
+	--
+	-- Gather functions
+	--
+	local funcInfos        = {}
+	-- local allDeclIdents = {}
+
+	do
+		-- We assume theNode is a block, but it's fine if it isn't.
+		local funcInfo = {node=theNode, declLikes={}, assignments={}--[[, locals={}, upvalues={}, globals={}]]}
+		tableInsert(funcInfos, funcInfo)
+		funcInfos[theNode] = funcInfo
+	end
+
+	traverseTree(theNode, function(node)
+		if node == theNode then  return  end
+
+		if node.type == "function" then
+			local funcInfo = {node=node, declLikes={node}, assignments={}--[[, locals={}, upvalues={}, globals={}]]}
+			tableInsert(funcInfos, funcInfo)
+			funcInfos[node] = funcInfo
+		end
+	end)
+
+	--
+	-- Gather relevant nodes
+	--
+	for _, funcInfo in ipairs(funcInfos) do
+		-- if funcInfo.node.type == "function" then
+		-- 	for _, declIdent in ipairs(funcInfo.node.parameters) do
+		-- 		table.insert(allDeclIdents, declIdent)
+		-- 	end
+		-- end
+
+		traverseTree(funcInfo.node, function(node)
+			if node      == funcInfo.node then  return                   end
+			if node.type == "function"    then  return "ignorechildren"  end
+
+			if node.type == "identifier" then
+				local ident    = node
+				local declLike = ident.declaration
+
+				if declLike then
+					local isInFunc = true
+					local parent   = ident.parent
+
+					while parent do
+						if parent == declLike then -- declLike may be a function itself.
+							break
+						elseif parent.type == "function" then
+							isInFunc = false
+							break
+						end
+						parent = parent.parent
+					end
+
+					-- tableInsert((isInFunc and funcInfo.locals or funcInfo.upvalues), ident)
+
+				else
+					-- tableInsert(funcInfo.globals, ident)
+				end
+
+			elseif node.type == "declaration" or node.type == "for" then
+				tableInsert(funcInfo.declLikes, node)
+
+				-- for _, declIdent in ipairs(node.names) do
+				-- 	table.insert(allDeclIdents, declIdent)
+				-- end
+
+			elseif node.type == "assignment" then
+				tableInsert(funcInfo.assignments, node)
+			end
+		end)
+
+		--[[ DEBUG
+		print("--------------")
+		printNode(funcInfo.node)
+		for i, ident in ipairs(funcInfo.locals) do
+			ioWrite("local   ", i, "  ") ; printNode(ident)
+		end
+		for i, ident in ipairs(funcInfo.upvalues) do
+			ioWrite("upvalue ", i, "  ") ; printNode(ident)
+		end
+		for i, ident in ipairs(funcInfo.globals) do
+			ioWrite("global  ", i, "  ") ; printNode(ident)
+		end
+	end
+	print("--------------")
+	--[==[]]
+	end
+	--]==]
+
+	--
+	-- Figure out accesses of declared names
+	--
+	local declIdentReadCount       = {--[[ [declIdent1]=count, ... ]]}
+	local declIdentAssignmentCount = {--[[ [declIdent1]=count, ... ]]}
+
+	for _, funcInfo in ipairs(funcInfos) do
+		for _, declLike in ipairs(funcInfo.declLikes) do
+			local declIdents = getNameArrayOfDeclarationLike(declLike)
+
+			for _, declIdent in ipairs(declIdents) do
+				local readCount       = 0
+				local assignmentCount = 0
+
+				for _, watcherIdent in ipairs(declLikeWatchers[declLike]) do
+					if watcherIdent.declarationIdentifier == declIdent then
+						local identInfo = identInfos[watcherIdent]
+
+						if identInfo.type == "rvalue" then
+							readCount = readCount + 1 -- :AccessCount
+						elseif --[[identInfo.type == "lvalue" and]] identInfo.ident.parent.type == "assignment" then
+							assignmentCount = assignmentCount + 1 -- :AccessCount
+						end
+					end
+				end
+
+				declIdentReadCount      [declIdent] = readCount
+				declIdentAssignmentCount[declIdent] = assignmentCount
+			end
+		end
+	end
+
+	--
+	-- Remove useless assignments
+	--
+	-- Note that we go in reverse order almost everywhere! We may remove later stuff when we reach earlier stuff.
+	for _, funcInfo in ipairsr(funcInfos) do
+		for _, assignment in ipairsr(funcInfo.assignments) do
+			local targets = assignment.targets
+			local values  = assignment.values
+
+			-- Save some adjustment information.
+			local madeToAdjusted = {}
+
+			for i = 1, #values-1 do -- Skip the last value.
+				local valueExpr = values[i]
+
+				if (valueExpr.type == "call" or valueExpr.type == "vararg") and not valueExpr.adjustToOne then
+					valueExpr.adjustToOne     = true
+					madeToAdjusted[valueExpr] = true
+				end
+			end
+
+			-- Remove useless extra values.
+			local significantValueCount = 0
+			local significantCall       = nil
+
+			for i = #values, #targets+1, -1 do
+				local valueExpr = values[i]
+
+				if mayNodeBeInvolvedInJump(valueExpr) then
+					significantValueCount = significantValueCount + 1
+					significantCall       = significantCall or (valueExpr.type == "call" and valueExpr) or nil
+				else
+					unregisterWatchers(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo)
+					tableRemove(values, i)
+				end
+			end
+
+			for i = #targets+1, #values do
+				values[i].key = i
+			end
+
+			-- Remove useless targets.
+			local assignmentIsRemoved = false
+
+			for slot, targetExpr in ipairsr(targets) do
+				if targetExpr.type == "identifier" and targetExpr.declaration and declIdentReadCount[targetExpr.declarationIdentifier] == 0 then
+					local targetIdent = targetExpr
+					-- ioWrite("useless ") ; printNode(targetIdent) -- DEBUG
+
+					local valueExpr          = values[slot]
+					local valueExprEffective = valueExpr
+
+					if not valueExprEffective then
+						valueExprEffective = values[#values]
+						if valueExprEffective and (not (valueExprEffective.type == "call" or valueExprEffective.type == "vararg") or valueExprEffective.adjustToOne) then
+							valueExprEffective = nil
+						end
+					end
+
+					local wantToRemoveValue = not (valueExprEffective and mayNodeBeInvolvedInJump(valueExprEffective))
+
+					if not wantToRemoveValue then
+						significantValueCount = significantValueCount + 1
+						significantCall       = significantCall or (valueExpr and valueExpr.type == "call" and valueExpr) or nil
+					end
+
+					-- @Incomplete: Replace 'unused, useless = func()' with 'useless = func()' etc.
+
+					-- Remove the whole assignment.
+					if slot == 1 and wantToRemoveValue and not (targets[2] or values[2]) then
+						unregisterWatchers(identInfos, declLikeWatchers, assignment, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo)
+
+						local block = assignment.parent
+
+						for i = assignment.key, #block.statements do
+							local statement     = block.statements[i+1]
+							block.statements[i] = statement
+
+							if statement then  statement.key = i  end
+						end
+
+						assignmentIsRemoved = true
+
+					-- Replace 'local unused = func()' with just 'func()'. This is a unique case as call expressions can also be statements.
+					elseif slot == 1 and not targets[2] and significantCall and significantValueCount == 1 then
+						unregisterWatchers(identInfos, declLikeWatchers, targetIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo)
+
+						local block                      = assignment.parent
+						block.statements[assignment.key] = significantCall
+						significantCall.parent           = block
+						significantCall.container        = assignment.container
+						significantCall.key              = assignment.key
+
+						assignmentIsRemoved = true
+
+					-- Remove whatever we can.
+					else
+						if wantToRemoveValue and #targets > 1 then
+							unregisterWatchers(identInfos, declLikeWatchers, targetIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo)
+							tableRemove(targets, slot)
+							for slot = slot, #targets do
+								targets[slot].key = slot
+							end
+						end
+
+						if wantToRemoveValue and valueExpr then
+							if wantToRemoveValue or not values[slot+1] then
+								unregisterWatchers(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo)
+								tableRemove(values, slot)
+								for slot = slot, #values do
+									values[slot].key = slot
+								end
+
+							elseif not (valueExpr.type == "literal" and valueExpr.value == nil) then
+								unregisterWatchers(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo)
+								replace(valueExpr, AstLiteral(dummyTokens, valueExpr.token, nil), valueExpr.parent, valueExpr.container, valueExpr.key)
+							end
+						end
+					end
+				end--if targetExpr is relevant
+			end--for targets
+
+			-- Restore or remove adjusted flags.
+			for i = 1, #values do
+				local valueExpr = values[i]
+
+				if (valueExpr.type == "call" or valueExpr.type == "vararg") then
+					if assignmentIsRemoved or values[i+1] or not targets[i+1] or not madeToAdjusted[valueExpr] then
+						valueExpr.adjustToOne = false
+					end
+				end
+			end
+		end--for assignments
+	end--for funcInfos
+
+	--
+	-- Remove useless declaration-likes
+	--
+	-- Note that we go in reverse order almost everywhere! We may remove later stuff when we reach earlier stuff.
+	for _, funcInfo in ipairsr(funcInfos) do
+		for _, declLike in ipairsr(funcInfo.declLikes) do
+			if declLike.type == "declaration" then -- @Incomplete: Handle other declaration-likes.
+				local decl       = declLike
+				local declIdents = decl.names--getNameArrayOfDeclarationLike(declLike)
+				local values     = decl.values
+
+				-- Save some adjustment information.
+				local madeToAdjusted = {}
+
+				for i = 1, #values-1 do -- Skip the last value.
+					local valueExpr = values[i]
+
+					if (valueExpr.type == "call" or valueExpr.type == "vararg") and not valueExpr.adjustToOne then
+						valueExpr.adjustToOne     = true
+						madeToAdjusted[valueExpr] = true
+					end
+				end
+
+				-- Remove useless extra values.
+				local significantValueCount = 0
+				local significantCall       = nil
+
+				for i = #values, #declIdents+1, -1 do
+					local valueExpr = values[i]
+
+					if mayNodeBeInvolvedInJump(valueExpr) then
+						significantValueCount = significantValueCount + 1
+						significantCall       = significantCall or (valueExpr.type == "call" and valueExpr) or nil
+					else
+						unregisterWatchers(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo)
+						tableRemove(values, i)
+					end
+				end
+
+				for i = #declIdents+1, #values do
+					values[i].key = i
+				end
+
+				-- Remove useless declared identifiers.
+				local declIsRemoved = false
+
+				for slot, declIdent in ipairsr(declIdents) do
+					if declIdentReadCount[declIdent] == 0 then
+						-- ioWrite("useless ") ; printNode(declIdent) -- DEBUG
+
+						local valueExpr          = values[slot]
+						local valueExprEffective = valueExpr
+
+						if not valueExprEffective then
+							valueExprEffective = values[#values]
+							if valueExprEffective and (not (valueExprEffective.type == "call" or valueExprEffective.type == "vararg") or valueExprEffective.adjustToOne) then
+								valueExprEffective = nil
+							end
+						end
+
+						local wantToRemoveIdent = (declIdentAssignmentCount[declIdent] == 0)
+						local wantToRemoveValue = not (valueExprEffective and mayNodeBeInvolvedInJump(valueExprEffective))
+
+						if not wantToRemoveValue then
+							significantValueCount = significantValueCount + 1
+							significantCall       = significantCall or (valueExpr and valueExpr.type == "call" and valueExpr) or nil
+						end
+
+						-- @Incomplete: Update funcInfo.locals and whatever else (if we end up using them at some point).
+						-- @Incomplete: Replace 'local unused, useless = func()' with 'local useless = func()' etc.
+						local canRemoveSlot = (wantToRemoveIdent and wantToRemoveValue)
+
+						-- Remove the whole declaration.
+						if canRemoveSlot and not (declIdents[2] or values[2]) then
+							unregisterWatchers(identInfos, declLikeWatchers, decl, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo)
+
+							local block = decl.parent
+
+							for i = decl.key, #block.statements do
+								local statement     = block.statements[i+1]
+								block.statements[i] = statement
+
+								if statement then  statement.key = i  end
+							end
+
+							declIsRemoved = true
+
+						-- Replace 'local unused = func()' with just 'func()'. This is a unique case as call expressions can also be statements.
+						elseif slot == 1 and wantToRemoveIdent and not declIdents[2] and significantCall and significantValueCount == 1 then
+							unregisterWatchers(identInfos, declLikeWatchers, declIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo)
+							declLikeWatchers[decl] = nil
+
+							local block                = decl.parent
+							block.statements[decl.key] = significantCall
+							significantCall.parent     = block
+							significantCall.container  = decl.container
+							significantCall.key        = decl.key
+
+							declIsRemoved = true
+
+						-- Remove whatever we can.
+						else
+							if canRemoveSlot and #declIdents > 1 then
+								unregisterWatchers(identInfos, declLikeWatchers, declIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo)
+								tableRemove(declIdents, slot)
+								for slot = slot, #declIdents do
+									declIdents[slot].key = slot
+								end
+							end
+
+							if wantToRemoveValue and valueExpr then
+								if canRemoveSlot or not values[slot+1] then
+									unregisterWatchers(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo)
+									tableRemove(values, slot)
+									for slot = slot, #values do
+										values[slot]. key = slot
+									end
+
+								elseif not (valueExpr.type == "literal" and valueExpr.value == nil) then
+									unregisterWatchers(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo)
+									replace(valueExpr, AstLiteral(dummyTokens, valueExpr.token, nil), valueExpr.parent, valueExpr.container, valueExpr.key)
+								end
+							end
+						end
+					end--if not declIdentReadCount
+				end--for names
+
+				-- Restore or remove adjusted flags.
+				for i = 1, #values do
+					local valueExpr = values[i]
+					if (valueExpr.type == "call" or valueExpr.type == "vararg") then
+						if declIsRemoved or values[i+1] or not decl.names[i+1] or not madeToAdjusted[valueExpr] then
+							valueExpr.adjustToOne = false
+						end
+					end
+				end
+			end
+		end--for declLikes
+	end--for funcInfos
+
+	-- @Incomplete: Remove useless return statements etc.
+end
+
+--[===[ OLD
 local function hasNodeType(theNode, nodeType)
 	return (traverseTree(theNode, function(node)
 		if node.type == nodeType then  return "stop"  end
@@ -3691,279 +4190,8 @@ local function isAssignmentSignificant(identInfos, declLikeWatchers, assignment)
 	return false
 end
 
-local function unregisterWatchers(identInfos, declLikeWatchers, theNode)
-	-- ioWrite("unregister ") ; printNode(theNode) -- DEBUG
-
-	traverseTree(theNode, true, function(node) -- @Speed
-		if node.type == "identifier" then
-			local currentIdent = node
-
-			for _, watcherIdents in pairs(declLikeWatchers) do -- @Speed
-				for i, watcherIdent in ipairs(watcherIdents) do
-					if watcherIdent == currentIdent then
-						removeUnordered(watcherIdents, i)
-						break
-					end
-				end
-			end
-
-			for i, identInfo in ipairs(identInfos) do
-				if identInfo.ident == currentIdent then
-					removeUnordered(identInfos, i)
-					break
-				end
-			end
-			identInfos[currentIdent] = nil
-
-		else
-			declLikeWatchers[node] = nil -- In case it's a declLike. This does nothing otherwise, which is OK.
-		end
-	end)
-end
-
 -- Note: References need to be updated after calling this!
 local function clean(theNode)
-	local identInfos, declLikeWatchers = getInformationAboutIdentifiersAndUpdateMostReferences(theNode)
-
-	--
-	-- Find functions
-	--
-	local funcInfos = {}
-
-	do
-		-- We assume theNode is a block, but it's fine if it isn't.
-		local funcInfo = {node=theNode, declLikes={}, assignments={}, locals={}, upvalues={}, globals={}}
-		tableInsert(funcInfos, funcInfo)
-	end
-
-	traverseTree(theNode, function(node)
-		if node == theNode then  return  end
-
-		if node.type == "function" then
-			local funcInfo = {node=node, declLikes={node}, assignments={}, locals={}, upvalues={}, globals={}}
-			tableInsert(funcInfos, funcInfo)
-		end
-	end)
-
-	for _, funcInfo in ipairs(funcInfos) do
-		traverseTree(funcInfo.node, function(node)
-			if node      == funcInfo.node then  return                   end
-			if node.type == "function"    then  return "ignorechildren"  end
-
-			if node.type == "identifier" then
-				local ident    = node
-				local declLike = ident.declaration
-
-				if declLike then
-					local isInFunc = true
-					local parent   = ident.parent
-
-					while parent do
-						if parent == declLike then -- declLike may be a function itself.
-							break
-						elseif parent.type == "function" then
-							isInFunc = false
-							break
-						end
-						parent = parent.parent
-					end
-
-					tableInsert((isInFunc and funcInfo.locals or funcInfo.upvalues), ident)
-
-				else
-					tableInsert(funcInfo.globals, ident)
-				end
-
-			elseif node.type == "declaration" or node.type == "for" then
-				tableInsert(funcInfo.declLikes, node)
-
-			elseif node.type == "assignment" then
-				tableInsert(funcInfo.assignments, node)
-			end
-		end)
-
-		--[[ DEBUG
-		print("--------------")
-		printNode(funcInfo.node)
-		for i, ident in ipairs(funcInfo.locals) do
-			ioWrite("local   ", i, "  ") ; printNode(ident)
-		end
-		for i, ident in ipairs(funcInfo.upvalues) do
-			ioWrite("upvalue ", i, "  ") ; printNode(ident)
-		end
-		for i, ident in ipairs(funcInfo.globals) do
-			ioWrite("global  ", i, "  ") ; printNode(ident)
-		end
-	end
-	print("--------------")
-	--[==[]]
-	end
-	--]==]
-
-	--
-	-- Remove useless declaration-likes
-	--
-	for _, funcInfo in ipairs(funcInfos) do
-		for _, declLike in ipairs(funcInfo.declLikes) do
-			if declLike.type == "declaration" then -- @Incomplete: Handle other declaration-likes.
-				local decl                  = declLike
-				local declIdents            = decl.names--getNameArrayOfDeclarationLike(declLike)
-				local usedIdentCount        = 0
-				local significantValueCount = 0
-				local significantCall       = nil
-
-				-- Save some adjustment information.
-				local madeToAdjusted = {}
-
-				for i = 1, #decl.values-1 do -- Skip the last value.
-					local valueExpr = decl.values[i]
-					if (valueExpr.type == "call" or valueExpr.type == "vararg") and not valueExpr.adjustToOne then
-						valueExpr.adjustToOne     = true
-						madeToAdjusted[valueExpr] = true
-					end
-				end
-
-				-- Remove useless extra values.
-				for i = #decl.values, #declIdents+1, -1 do
-					local valueExpr = decl.values[i]
-
-					if mayNodeBeInvolvedInJump(valueExpr) then
-						significantValueCount = significantValueCount + 1
-						significantCall       = significantCall or (valueExpr.type == "call" and valueExpr) or nil
-					else
-						tableRemove(decl.values, i)
-					end
-				end
-
-				for i = #declIdents+1, #decl.values do
-					decl.values[i].key = i
-				end
-
-				-- Remove useles declared identifiers.
-				local declIsRemoved = false
-
-				for slot, declIdent in ipairsr(declIdents) do
-					local identIsReadFrom   = false
-					local identIsAssignedTo = false
-
-					for _, watcherIdent in ipairs(declLikeWatchers[decl]) do
-						if watcherIdent.declaration == decl and watcherIdent.name == declIdent.name then
-							local identInfo = identInfos[watcherIdent]
-
-							if identInfo.type == "rvalue" then
-								identIsReadFrom = true
-								if identIsAssignedTo then  break  end
-
-							elseif identInfo.ident.parent.type == "assignment" then
-								identIsAssignedTo = true
-								if identIsReadFrom then  break  end
-							end
-						end
-					end
-
-					if not identIsReadFrom then
-						-- ioWrite("useless ") ; printNode(declIdent) -- DEBUG
-
-						local valueExpr          = decl.values[slot]
-						local valueExprEffective = valueExpr or decl.values[#decl.values]
-
-						local wantToRemoveIdent = not identIsAssignedTo -- :RemoveConnectedAssigments
-						local wantToRemoveValue = not (
-							(valueExpr and mayNodeBeInvolvedInJump(valueExpr))
-							or (
-								valueExprEffective
-								and (valueExprEffective.type == "call" or valueExprEffective.type == "vararg")
-								and not valueExprEffective.adjustToOne
-							)
-						)
-
-						if not wantToRemoveIdent then
-							usedIdentCount = usedIdentCount + 1
-						end
-
-						if not wantToRemoveValue then
-							significantValueCount = significantValueCount + 1
-							significantCall       = significantCall or (valueExpr and valueExpr.type == "call" and valueExpr) or nil
-						end
-
-						-- @Incomplete: Remove connected assigments. Note that if the identifier cannot be removed from some assignment then we cannot remove the slot! :RemoveConnectedAssigments
-						-- @Incomplete: Update funcInfo.locals and whatever else.
-						-- @Incomplete: Replace 'local unused, useless = func()' with 'local useless = func()' etc.
-						local canRemoveSlot = (wantToRemoveIdent and wantToRemoveValue)
-
-						-- Remove the whole declaration.
-						if canRemoveSlot and not (declIdents[2] or decl.values[2]) then
-							unregisterWatchers(identInfos, declLikeWatchers, decl)
-
-							local block = decl.parent
-
-							for i = decl.key, #block.statements do
-								local statement     = block.statements[i+1]
-								block.statements[i] = statement
-
-								if statement then  statement.key = i  end
-							end
-
-							declIsRemoved = true
-
-						-- Replace 'local unused = func()' with just 'func()'. This is a unique case as call expressions can also be statements.
-						elseif slot == 1 and wantToRemoveIdent and not declIdents[2] and significantCall and significantValueCount == 1 then
-							unregisterWatchers(identInfos, declLikeWatchers, declIdent)
-							declLikeWatchers[decl] = nil
-
-							local block                = decl.parent
-							block.statements[decl.key] = significantCall
-							significantCall.parent     = block
-							significantCall.container  = decl.container
-							significantCall.key        = decl.key
-
-							declIsRemoved = true
-
-						-- Remove whatever we can.
-						else
-							if canRemoveSlot and #declIdents > 1 then
-								unregisterWatchers(identInfos, declLikeWatchers, declIdent)
-								tableRemove(declIdents, slot)
-								for slot = slot, #declIdents do
-									declIdents[slot].key = slot
-								end
-							end
-
-							if wantToRemoveValue and valueExpr then
-								if canRemoveSlot or not decl.values[slot+1] then
-									unregisterWatchers(identInfos, declLikeWatchers, valueExpr)
-									tableRemove(decl.values, slot)
-									for slot = slot, #decl.values do
-										decl.values[slot]. key = slot
-									end
-
-								elseif not (valueExpr.type == "literal" and valueExpr.value == nil) then
-									unregisterWatchers(identInfos, declLikeWatchers, valueExpr)
-									replace(valueExpr, AstLiteral(dummyTokens, valueExpr.token, nil), valueExpr.parent, valueExpr.container, valueExpr.key)
-								end
-							end
-						end
-					end--if not identIsReadFrom
-				end--for names
-
-				-- Restore or remove adjusted flags.
-				for i = 1, #decl.values do
-					local valueExpr = decl.values[i]
-					if (valueExpr.type == "call" or valueExpr.type == "vararg") then
-						if declIsRemoved or decl.values[i+1] or not decl.names[i+1] or not madeToAdjusted[valueExpr] then
-							valueExpr.adjustToOne = false
-						end
-					end
-				end
-			end
-		end--for declLikes
-	end--for funcInfos
-
-	-- @Incomplete: Remove useless return statements etc.
-end
-
---[[
-local function clean_OLD(theNode)
 	local identInfos, declLikeWatchers = getInformationAboutIdentifiersAndUpdateMostReferences(theNode)
 
 	traverseTreeReverse(theNode, true, function(node)
@@ -4102,7 +4330,7 @@ local function clean_OLD(theNode)
 		end
 	end)
 end
---]]
+--]===]
 
 
 
@@ -4941,6 +5169,14 @@ function itemWith1(t, k, v)
 	return nil
 end
 
+-- item, index = lastItemWith1( array, key, value )
+function lastItemWith1(t, k, v)
+	for i, item in ipairsr(t) do
+		if item[k] == v then  return item, i  end
+	end
+	return nil
+end
+
 
 
 -- assertArg1( functionName, argumentNumber, value, expectedType )
@@ -5023,7 +5259,18 @@ function removeUnordered(t, i)
 	local len = #t
 	if i > len or i < 1 then  return  end
 
-	t[len], t[i] = nil, t[len]
+	-- Note: This does the correct thing if i==len too.
+	t[i]   = t[len]
+	t[len] = nil
+end
+
+function removeItemUnordered(t, v)
+	for i = 1, #t do
+		if t[i] == v then
+			removeUnordered(t, i)
+			return
+		end
+	end
 end
 
 

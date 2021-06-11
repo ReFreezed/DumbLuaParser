@@ -256,12 +256,15 @@ do
 		_"Keep call, c must be 3."
 		local a, b, c = 1, globalFunc2(), 3, 4
 		global1       = c
-		_"C must be third value returned from call."
+		_"c must be third value returned from call."
 		local a, b, c = globalFunc123()
 		global2       = c
 		_"Keep call, c must be nil."
 		local a, b, c = globalFunc1(), 2
 		global3       = c
+		_"Assignments, keep call"
+		local a       = 11, 12
+		a             = 21, globalFunc2(), 23
 	end
 end
 --]===]

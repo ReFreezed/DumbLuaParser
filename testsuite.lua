@@ -4,6 +4,7 @@
 local PRETTY_OUTPUT   = 1==1
 local PRINT_IDS       = 1==1
 local PRINT_LOCATIONS = 1==1
+local EXIT_ON_ERROR   = 1==0
 
 collectgarbage("stop")
 io.stdout:setvbuf("no")
@@ -19,23 +20,6 @@ parser.printIds       = PRINT_IDS
 parser.printLocations = PRINT_LOCATIONS
 
 
-
-local function test(label, f)
-	testCount = testCount + 1
-
-	print("Running test: "..label)
-	local ok, err = pcall(f)
-
-	if ok then
-		print("Test succeeded!")
-	else
-		failCount = failCount + 1
-		io.stderr:write(err, "\n")
-		print("Test failed!")
-	end
-
-	table.insert(results, {label=label, ok=ok, err=err})
-end
 
 local function assert(v, err)
 	if v then  return v  end
@@ -63,6 +47,31 @@ local function assertLua(lua, expectedLua, expectedLuaAlt, level)
 		lua,
 		("-"):rep(64)
 	), 1+(level or 1))
+end
+
+local function debugExit()
+	print("!!! DEBUG EXIT !!!")
+	os.exit(2)
+end
+
+local function test(label, f)
+	testCount = testCount + 1
+
+	print("Running test: "..label)
+	local ok, err = pcall(f)
+
+	if ok then
+		print("Test succeeded!")
+
+	else
+		io.stderr:write(err, "\n")
+		if EXIT_ON_ERROR then  os.exit(1)  end
+
+		failCount = failCount + 1
+		print("Test failed!")
+	end
+
+	table.insert(results, {label=label, ok=ok, err=err})
 end
 
 
@@ -96,7 +105,7 @@ test("Test file", function()
 
 	-- parser.printTokens(tokens)
 	-- parser.printTree(ast)
-	-- error("DEBUG")
+	-- debugExit()
 
 	--[[
 	parser.traverseTree(ast, function(node, parent, container, k)
@@ -118,7 +127,7 @@ test("Test file", function()
 	parser.updateReferences(ast)
 	-- parser.printTree(ast)
 	-- print(parser.toLua(ast, 1==1))
-	-- error("DEBUG")
+	-- debugExit()
 
 	if 1==1 then
 		parser.simplify(ast)
@@ -129,7 +138,7 @@ test("Test file", function()
 	end
 	-- parser.printTree(ast)
 	-- print(parser.toLua(ast, 1==1))
-	-- error("DEBUG")
+	-- debugExit()
 
 	local lua = assert(parser.toLua(ast, PRETTY_OUTPUT))
 
@@ -139,6 +148,7 @@ test("Test file", function()
 		-- luaEdit = luaEdit:gsub("([%w_]+)%z([%w_]+)", "%1%2\n")
 		-- luaEdit = luaEdit:gsub("%z", "\n")
 		print(luaEdit)
+		-- debugExit()
 	end
 
 	assert(loadLuaString(lua, "@<luastring>"))
