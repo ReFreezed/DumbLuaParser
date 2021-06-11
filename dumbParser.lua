@@ -444,9 +444,9 @@ end
 -- AST expressions.
 local function AstIdentifier (tokens,tok,name)return populateCommonNodeFields(tokens,tok,{
 	type        = "identifier",
-	name        = name, -- String.
-	attribute   = "",   -- "" | "close" | "const"
-	declaration = nil,  -- AstDeclaration, AstFunction or AstFor. Updated by updateReferences(). This is nil for globals.
+	name        = name,  -- String.
+	attribute   = "",    -- "" | "close" | "const"
+	declaration = nil,   -- AstDeclaration, AstFunction or AstFor. Updated by updateReferences(). This is nil for globals.
 })end
 local function AstVararg (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "vararg",
@@ -458,36 +458,36 @@ local function AstLiteral (tokens,tok,value)return populateCommonNodeFields(toke
 })end
 local function AstTable (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "table",
-	fields      = {}, -- Array of {key=expression, value=expression, generatedKey=bool}.
+	fields      = {},    -- Array of {key=expression, value=expression, generatedKey=bool}.
 })end
 local function AstLookup (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "lookup",
-	object      = nil, -- Expression.
-	member      = nil, -- Expression.
+	object      = nil,   -- Expression.
+	member      = nil,   -- Expression.
 })end
 local function AstUnary (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "unary",
-	operator    = "",  -- "-" | "not" | "#" | "~"
-	expression  = nil, -- Expression.
+	operator    = "",    -- "-" | "not" | "#" | "~"
+	expression  = nil,   -- Expression.
 })end
 local function AstBinary (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "binary",
-	operator    = "",  -- "+" | "-" | "*" | "/" | "//" | "^" | "%" | "&" | "~" | "|" | ">>" | "<<" | ".." | "<" | "<=" | ">" | ">=" | "==" | "~=" | "and" | "or"
-	left        = nil, -- Expression.
-	right       = nil, -- Expression.
+	operator    = "",    -- "+" | "-" | "*" | "/" | "//" | "^" | "%" | "&" | "~" | "|" | ">>" | "<<" | ".." | "<" | "<=" | ">" | ">=" | "==" | "~=" | "and" | "or"
+	left        = nil,   -- Expression.
+	right       = nil,   -- Expression.
 })end
 local function AstCall (tokens,tok)return populateCommonNodeFields(tokens,tok,{ -- Calls can be both expressions and statements.
 	type        = "call",
 	callee      = nil,   -- Expression.
 	arguments   = {},    -- Array of expressions.
-	method      = false,
+	method      = false, -- True if the call is a method call. Method calls must have a callee that is a lookup with a member expression that is a string literal that can pass as an identifier.
 	adjustToOne = false, -- True if parentheses surround the call.
 })end
 local function AstFunction (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "function",
-	parameters  = {},  -- Array of AstIdentifier.
-	vararg      = nil, -- AstVararg or nil.
-	body        = nil, -- AstBlock.
+	parameters  = {},    -- Array of AstIdentifier.
+	vararg      = nil,   -- AstVararg or nil.
+	body        = nil,   -- AstBlock.
 })end
 
 -- AST statements.
@@ -496,54 +496,53 @@ local function AstBreak (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 })end
 local function AstReturn (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "return",
-	values      = {}, -- Array of expressions.
+	values      = {},    -- Array of expressions.
 })end
 local function AstLabel (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "label",
-	name        = "",
+	name        = "",    -- The value must be able to pass as an identifier
 })end
 local function AstGoto (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "goto",
-	name        = "",
-	label       = nil, -- AstLabel. Updated by updateReferences().
+	name        = "",    -- The value must be able to pass as an identifier
+	label       = nil,   -- AstLabel. Updated by updateReferences().
 })end
 local function AstBlock (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "block",
-	statements  = {}, -- Array of statements.
+	statements  = {},    -- Array of statements.
 })end
 local function AstDeclaration (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "declaration",
-	names       = {}, -- Array of AstIdentifier.
-	values      = {}, -- Array of expressions.
-
+	names       = {},    -- Array of AstIdentifier.
+	values      = {},    -- Array of expressions.
 })end
 local function AstAssignment (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "assignment",
-	targets     = {}, -- Mixed array of AstIdentifier and AstLookup.
-	values      = {}, -- Array of expressions.
+	targets     = {},    -- Mixed array of AstIdentifier and AstLookup.
+	values      = {},    -- Array of expressions.
 })end
 local function AstIf (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "if",
-	condition   = nil, -- Expression.
-	bodyTrue    = nil, -- AstBlock.
-	bodyFalse   = nil, -- AstBlock or nil.
+	condition   = nil,   -- Expression.
+	bodyTrue    = nil,   -- AstBlock.
+	bodyFalse   = nil,   -- AstBlock or nil.
 })end
 local function AstWhile (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "while",
-	condition   = nil, -- Expression.
-	body        = nil, -- AstBlock.
+	condition   = nil,   -- Expression.
+	body        = nil,   -- AstBlock.
 })end
 local function AstRepeat (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "repeat",
-	body        = nil, -- AstBlock.
-	condition   = nil, -- Expression.
+	body        = nil,   -- AstBlock.
+	condition   = nil,   -- Expression.
 })end
 local function AstFor (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "for",
-	kind        = "",  -- "numeric" | "generic"
-	names       = {},  -- Array of AstIdentifier.
-	values      = {},  -- Array of expressions.
-	body        = nil, -- AstBlock.
+	kind        = "",    -- "numeric" | "generic"
+	names       = {},    -- Array of AstIdentifier.
+	values      = {},    -- Array of expressions.
+	body        = nil,   -- AstBlock.
 })end
 
 
@@ -2412,9 +2411,9 @@ end
 --
 -- :NodeCreation
 --
--- identifier   = newNode( "identifier", name [, attributeName="" ] )
+-- identifier   = newNode( "identifier", name [, attributeName="" ] )  -- 'attributeName' can be "close", "const" or "".
 -- vararg       = newNode( "vararg" )
--- literal      = newNode( "literal", value ) -- 'value' must be a number, a string, a boolean or nil.
+-- literal      = newNode( "literal", value )  -- 'value' must be a number, a string, a boolean or nil.
 -- tableNode    = newNode( "table" )
 -- lookup       = newNode( "lookup" )
 -- unary        = newNode( "unary",  unaryOperator  )
@@ -2431,7 +2430,7 @@ end
 -- ifNode       = newNode( "if" )
 -- whileLoop    = newNode( "while" )
 -- repeatLoop   = newNode( "repeat" )
--- forLoop      = newNode( "for", forLoopKind )  -- forLoopKind can be "numeric" or "generic".
+-- forLoop      = newNode( "for", forLoopKind )  -- 'forLoopKind' can be "numeric" or "generic".
 --
 -- Search for 'NodeFields' for each node's fields.
 --
