@@ -153,7 +153,7 @@ test("Test file", function()
 	-- print(parser.toLua(ast, 1==1))
 	-- debugExit()
 
-	-- local stats = parser.clean(ast)
+	-- local stats = parser.optimize(ast)
 	-- printStats(stats)
 	-- parser.printTree(ast)
 	-- print(parser.toLua(ast, 1==1))
@@ -416,10 +416,10 @@ end)
 
 
 
-test("Clean", function()
-	local function testClean(lua, expectedLua, expectedLuaAlt)
+test("Optimize", function()
+	local function testOptimize(lua, expectedLua, expectedLuaAlt)
 		local ast = assert(parser.parse(lua, "<luastring>"))
-		parser.clean(ast)
+		parser.optimize(ast)
 		if expectedLuaAlt then
 			assertLua(assert(parser.toLua(ast)), expectedLua, expectedLuaAlt, 2)
 		else
@@ -428,14 +428,14 @@ test("Clean", function()
 	end
 
 	-- Constants.
-	testClean(
+	testOptimize(
 		[[
 		local n = -0  -- The value will get normalized to 0.
 		global(n)
 		]],
 		[[ global(0); ]]
 	)
-	testClean(
+	testOptimize(
 		[[
 		local n = 0
 		global(-n)

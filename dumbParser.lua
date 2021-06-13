@@ -51,7 +51,7 @@ parse, parseFile
 newNode, getChild, setChild, addChild, removeChild
 traverseTree, traverseTreeReverse
 updateReferences
-simplify, clean, minify
+simplify, optimize, minify
 toLua
 printTokens, printNode, printTree
 
@@ -148,8 +148,8 @@ simplify()
 	Simplify/fold expressions and statements involving constants ('1+2' becomes '3', 'false and func()' becomes 'false' etc.).
 	See the INT_SIZE constant for notes.
 
-clean()
-	clean( astNode )
+optimize()
+	optimize( astNode )
 	Attempt to remove nodes that aren't useful, like unused variables, or variables that are essentially constants.
 	Calls simplify() internally.
 	This function can be quite slow!
@@ -158,7 +158,7 @@ minify()
 	parser.minify( astNode [, optimize=false ] )
 	Replace local variable names with short names.
 	This function can be used to obfuscate the code to some extent.
-	If 'optimize' is set then clean() is also called automatically.
+	If 'optimize' is set then optimize() is also called automatically.
 
 toLua()
 	luaString, error = parser.toLua( astNode [, prettyOuput=false ] )
@@ -584,7 +584,7 @@ local CHILD_FIELDS = {
 
 local function Stats()
 	return {
-		-- simplify() and clean():
+		-- simplify() and optimize():
 		nodeRemoveCount    = 0,
 		nodeReplaceCount   = 0,
 		-- minify():
@@ -3779,7 +3779,7 @@ local function unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers,
 end
 
 -- Note: References need to be updated after calling this!
-local function _clean(theNode, stats)
+local function _optimize(theNode, stats)
 	_simplify(theNode, stats)
 
 	local identInfos, declLikeWatchers = getInformationAboutIdentifiersAndUpdateMostReferences(theNode)
@@ -3960,7 +3960,7 @@ local function _clean(theNode, stats)
 	end--for funcInfos
 
 	if replacedConstants then
-		return _clean(theNode, stats) -- @Speed
+		return _optimize(theNode, stats) -- @Speed
 	end
 
 	--
@@ -4244,9 +4244,9 @@ local function _clean(theNode, stats)
 end
 
 -- Note: References need to be updated after calling this!
-local function clean(theNode)
+local function optimize(theNode)
 	local stats = Stats()
-	_clean(theNode, stats)
+	_optimize(theNode, stats)
 	return stats -- @Undocumented
 end
 
@@ -4307,7 +4307,7 @@ local function isAssignmentSignificant(identInfos, declLikeWatchers, assignment)
 end
 
 -- Note: References need to be updated after calling this!
-local function clean(theNode)
+local function optimize(theNode)
 	local identInfos, declLikeWatchers = getInformationAboutIdentifiersAndUpdateMostReferences(theNode)
 
 	traverseTreeReverse(theNode, true, function(node)
@@ -4491,7 +4491,7 @@ local function minify(node, optimize)
 	local stats = Stats()
 
 	if optimize then
-		_clean(node, stats)
+		_optimize(node, stats)
 	end
 
 	local identInfos, declLikeWatchers = getInformationAboutIdentifiersAndUpdateMostReferences(node)
@@ -5599,7 +5599,7 @@ parser = {
 	updateReferences    = updateReferences,
 
 	simplify            = simplify,
-	clean               = clean,
+	optimize            = optimize,
 	minify              = minify,
 
 	toLua               = toLua,
