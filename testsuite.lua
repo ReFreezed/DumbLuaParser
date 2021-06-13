@@ -55,6 +55,29 @@ local function debugExit()
 	os.exit(2)
 end
 
+
+
+local function printStats(stats)
+	local keys    = {}
+	local kMaxLen = 0
+
+	for k, v in pairs(stats) do
+		table.insert(keys, k)
+		kMaxLen = math.max(kMaxLen, #k)
+	end
+
+	table.sort(keys)
+
+	print("Stats:")
+	local format = "  %-"..kMaxLen.."s = %s"
+
+	for _, k in ipairs(keys) do
+		print(string.format(format, k, tostring(stats[k])))
+	end
+end
+
+
+
 local function test(label, f)
 	testCount = testCount + 1
 
@@ -130,12 +153,14 @@ test("Test file", function()
 	-- print(parser.toLua(ast, 1==1))
 	-- debugExit()
 
-	-- parser.clean(ast)
+	-- local stats = parser.clean(ast)
+	-- printStats(stats)
 	-- parser.printTree(ast)
 	-- print(parser.toLua(ast, 1==1))
 	-- debugExit()
 
-	-- parser.minify(ast)
+	-- local stats = parser.minify(ast, 1==1)
+	-- printStats(stats)
 	-- parser.printTree(ast)
 	-- print(parser.toLua(ast, 1==1))
 	-- debugExit()
@@ -386,6 +411,38 @@ test("Simplify", function()
 		until 9 <= 1
 		]],
 		[[ repeat repeatYes();repeatOnce();until false ]]
+	)
+end)
+
+
+
+test("Clean", function()
+	local function testClean(lua, expectedLua, expectedLuaAlt)
+		local ast = assert(parser.parse(lua, "<luastring>"))
+		parser.clean(ast)
+		if expectedLuaAlt then
+			assertLua(assert(parser.toLua(ast)), expectedLua, expectedLuaAlt, 2)
+		else
+			assertLua(assert(parser.toLua(ast)), expectedLua, 2)
+		end
+	end
+
+	-- Constants.
+	testClean(
+		[[
+		local n = -0  -- The value will get normalized to 0.
+		global(n)
+		]],
+		[[ global(0); ]]
+	)
+	testClean(
+		[[
+		local n = 0
+		global(-n)
+		]],
+		_VERSION >= "Lua 5.3"
+		and [[ global(0); ]]
+		or  [[ local n=0;global(-n); ]]
 	)
 end)
 

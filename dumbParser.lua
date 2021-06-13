@@ -158,7 +158,7 @@ minify()
 	parser.minify( astNode [, optimize=false ] )
 	Replace local variable names with short names.
 	This function can be used to obfuscate the code to some extent.
-	If 'optimize' is set then simplify() is also called automatically.
+	If 'optimize' is set then clean() is also called automatically.
 
 toLua()
 	luaString, error = parser.toLua( astNode [, prettyOuput=false ] )
@@ -579,6 +579,19 @@ local CHILD_FIELDS = {
 	["repeat"]      = {body="node", condition="node"},
 	["for"]         = {names="nodearray", values="nodearray", body="node"},
 }
+
+
+
+local function Stats()
+	return {
+		-- simplify() and clean():
+		nodeRemoveCount    = 0,
+		nodeReplaceCount   = 0,
+		-- minify():
+		nameReplaceCount   = 0,
+		generatedNameCount = 0,
+	}
+end
 
 
 
@@ -3123,6 +3136,25 @@ end
 
 
 
+local function replace(node, replacement, parent, container, key, stats)
+	container[key] = replacement
+
+	replacement.sourcePath   = node.sourcePath
+	replacement.sourceString = node.sourceString
+
+	replacement.token    = node.token
+	replacement.line     = node.line
+	replacement.position = node.position
+
+	replacement.parent    = parent
+	replacement.container = container
+	replacement.key       = key
+
+	stats.nodeReplaceCount = stats.nodeReplaceCount + 1
+end
+
+
+
 local PATTERN_INT_TO_HEX = F("%%0%dx", INT_SIZE/4)
 
 local HEX_DIGIT_TO_BITS = {
@@ -3376,20 +3408,7 @@ local binaryFolders = {
 	end,
 }
 
-local function replace(node, replacement, parent, container, key)
-	container[key] = replacement
-
-	replacement.sourcePath   = node.sourcePath
-	replacement.sourceString = node.sourceString
-
-	replacement.token    = node.token
-	replacement.line     = node.line
-	replacement.position = node.position
-
-	replacement.parent    = parent
-	replacement.container = container
-	replacement.key       = key
-end
+local statsForSimplify
 
 local function simplifyNode(node, parent, container, key)
 	if not parent then
@@ -3400,12 +3419,12 @@ local function simplifyNode(node, parent, container, key)
 		-- be called, and folding '- -expr' into 'expr' would remove what could be a
 		-- runtime error if 'expr' didn't contain a number.
 		local replacement = unaryFolders[node.operator](node, node.expression)
-		if replacement then  replace(node, replacement, parent, container, key)  end
+		if replacement then  replace(node, replacement, parent, container, key, statsForSimplify)  end
 
 	elseif node.type == "binary" then
 		-- @Incomplete: Fold 'expr - -n' into 'expr + n' etc.
 		local replacement = binaryFolders[node.operator](node, node.left, node.right)
-		if replacement then  replace(node, replacement, parent, container, key)  end
+		if replacement then  replace(node, replacement, parent, container, key, statsForSimplify)  end
 
 	elseif node.type == "if" then
 		local ifNode = node
@@ -3414,10 +3433,11 @@ local function simplifyNode(node, parent, container, key)
 			local replacement = ifNode.condition.value and ifNode.bodyTrue or ifNode.bodyFalse
 
 			if replacement and replacement.statements[1] then
-				replace(ifNode, replacement, parent, container, key)
+				replace(ifNode, replacement, parent, container, key, statsForSimplify)
 				return simplifyNode(replacement, parent, container, key)
 			else
 				tableRemove(container, key)
+				statsForSimplify.nodeRemoveCount = statsForSimplify.nodeRemoveCount + 1
 			end
 		end
 
@@ -3429,6 +3449,7 @@ local function simplifyNode(node, parent, container, key)
 				whileLoop.condition.value = true
 			else
 				tableRemove(container, key)
+				statsForSimplify.nodeRemoveCount = statsForSimplify.nodeRemoveCount + 1
 			end
 		end
 
@@ -3437,7 +3458,7 @@ local function simplifyNode(node, parent, container, key)
 
 		if repeatLoop.condition.type == "literal" then -- :SimplifyTruthfulValues
 			if repeatLoop.condition.value then
-				replace(repeatLoop, repeatLoop.body, parent, container, key)
+				replace(repeatLoop, repeatLoop.body, parent, container, key, statsForSimplify)
 				return simplifyNode(repeatLoop.body, parent, container, key)
 			else
 				repeatLoop.condition.value = false
@@ -3459,6 +3480,7 @@ local function simplifyNode(node, parent, container, key)
 			if not hasDeclarations then
 				-- Blocks without declarations don't need a scope.
 				tableRemove(parent.statements, key)
+				statsForSimplify.nodeRemoveCount = statsForSimplify.nodeRemoveCount + 1
 
 				for i, statement in ipairs(block.statements) do
 					tableInsert(parent.statements, key+i-1, statement)
@@ -3472,8 +3494,15 @@ local function simplifyNode(node, parent, container, key)
 	end
 end
 
-local function simplify(node)
+local function _simplify(node, stats)
+	statsForSimplify = stats
 	traverseTreeReverse(node, true, simplifyNode)
+end
+
+local function simplify(node)
+	local stats = Stats()
+	_simplify(node, stats)
+	return stats -- @Undocumented
 end
 
 
@@ -3668,9 +3697,9 @@ end
 
 
 
--- unregisterWatchers( identInfos, declLikeWatchers, theNode, declIdentReadCount, declIdentAssignmentCount, funcInfos, currentFuncInfo )
--- unregisterWatchers( identInfos, declLikeWatchers, theNode ) -- @Obsolete
-local function unregisterWatchers(identInfos, declLikeWatchers, theNode, declIdentReadCount, declIdentAssignmentCount, funcInfos, currentFuncInfo)
+-- unregisterWatchersBeforeNodeRemoval( identInfos, declLikeWatchers, theNode, declIdentReadCount, declIdentAssignmentCount, funcInfos, currentFuncInfo, stats )
+-- unregisterWatchersBeforeNodeRemoval( identInfos, declLikeWatchers, theNode ) -- @Obsolete
+local function unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, theNode, declIdentReadCount, declIdentAssignmentCount, funcInfos, currentFuncInfo, stats)
 	-- ioWrite("unregister ") ; printNode(theNode) -- DEBUG
 
 	traverseTree(theNode, true, function(node) -- @Speed
@@ -3683,6 +3712,8 @@ local function unregisterWatchers(identInfos, declLikeWatchers, theNode, declIde
 		end
 		unregistered[node] = debug.traceback("OLD", 2)
 		--]]
+
+		stats.nodeRemoveCount = stats.nodeRemoveCount + 1
 
 		if node.type == "identifier" then
 			local currentIdent     = node
@@ -3748,8 +3779,9 @@ local function unregisterWatchers(identInfos, declLikeWatchers, theNode, declIde
 end
 
 -- Note: References need to be updated after calling this!
-local function clean(theNode)
-	simplify(theNode)
+local function _clean(theNode, stats)
+	_simplify(theNode, stats)
+
 	local identInfos, declLikeWatchers = getInformationAboutIdentifiersAndUpdateMostReferences(theNode)
 
 	--
@@ -3891,21 +3923,31 @@ local function clean(theNode)
 						declIdentAssignmentCount[declIdent] == 0
 						and declIdentReadCount[declIdent] > 0
 						and valueExpr.type == "literal"
-						and not (type(valueExpr.value) == "string" and #valueExpr.value > parser.constantNameStringValueMaxLength)
+						and not (
+							(type(valueExpr.value) == "string" and #valueExpr.value > parser.constantNameStringValueMaxLength)
+							-- or (valueExpr.value == 0 and not NORMALIZE_MINUS_ZERO and tostring(valueExpr.value) == "-0") -- No, bad rule!
+						)
 					then
 						-- show(declIdent, "Constant declaration.") -- DEBUG
+
+						local valueLiteral = valueExpr
+						local valueIsZero  = (valueLiteral.value == 0)
 
 						for _, watcherIdent in ipairsr(declLikeWatchers[decl]) do
 							if watcherIdent.declarationIdentifier == declIdent then
 								local identInfo = identInfos[watcherIdent]
 
-								if identInfo.type == "rvalue" then
+								if
+									identInfo.type == "rvalue"
+									-- Avoid creating '-0' (or '- -0') here as that may mess up Lua in weird/surprising ways.
+									and not (valueIsZero and not NORMALIZE_MINUS_ZERO and watcherIdent.parent.type == "unary" and watcherIdent.parent.operator == "-")
+								then
 									-- show(watcherIdent, "Constant value replacement.") -- DEBUG
 
-									local literal = AstLiteral(dummyTokens, watcherIdent.token, valueExpr.value)
+									local replacementLiteral = AstLiteral(dummyTokens, watcherIdent.token, valueLiteral.value)
 
-									unregisterWatchers(identInfos, declLikeWatchers, watcherIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo)
-									replace(watcherIdent, literal, watcherIdent.parent, watcherIdent.container, watcherIdent.key)
+									unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, watcherIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+									replace(watcherIdent, replacementLiteral, watcherIdent.parent, watcherIdent.container, watcherIdent.key, stats)
 
 									replacedConstants = true
 								end
@@ -3918,7 +3960,7 @@ local function clean(theNode)
 	end--for funcInfos
 
 	if replacedConstants then
-		return clean(theNode) -- @Speed
+		return _clean(theNode, stats) -- @Speed
 	end
 
 	--
@@ -3953,7 +3995,7 @@ local function clean(theNode)
 					significantValueCount = significantValueCount + 1
 					significantCall       = significantCall or (valueExpr.type == "call" and valueExpr) or nil
 				else
-					unregisterWatchers(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo)
+					unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
 					tableRemove(values, i)
 				end
 			end
@@ -3991,7 +4033,7 @@ local function clean(theNode)
 
 					-- Remove the whole assignment.
 					if slot == 1 and wantToRemoveValue and not (targets[2] or values[2]) then
-						unregisterWatchers(identInfos, declLikeWatchers, assignment, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo)
+						unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, assignment, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
 
 						local block = assignment.parent
 
@@ -4006,7 +4048,7 @@ local function clean(theNode)
 
 					-- Replace 'local unused = func()' with just 'func()'. This is a unique case as call expressions can also be statements.
 					elseif slot == 1 and not targets[2] and significantCall and significantValueCount == 1 then
-						unregisterWatchers(identInfos, declLikeWatchers, targetIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo)
+						unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, targetIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
 
 						local block                      = assignment.parent
 						block.statements[assignment.key] = significantCall
@@ -4019,7 +4061,7 @@ local function clean(theNode)
 					-- Remove whatever we can.
 					else
 						if wantToRemoveValue and #targets > 1 then
-							unregisterWatchers(identInfos, declLikeWatchers, targetIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo)
+							unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, targetIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
 							tableRemove(targets, slot)
 							for slot = slot, #targets do
 								targets[slot].key = slot
@@ -4028,15 +4070,15 @@ local function clean(theNode)
 
 						if wantToRemoveValue and valueExpr then
 							if wantToRemoveValue or not values[slot+1] then
-								unregisterWatchers(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo)
+								unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
 								tableRemove(values, slot)
 								for slot = slot, #values do
 									values[slot].key = slot
 								end
 
 							elseif not (valueExpr.type == "literal" and valueExpr.value == nil) then
-								unregisterWatchers(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo)
-								replace(valueExpr, AstLiteral(dummyTokens, valueExpr.token, nil), valueExpr.parent, valueExpr.container, valueExpr.key)
+								unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+								replace(valueExpr, AstLiteral(dummyTokens, valueExpr.token, nil), valueExpr.parent, valueExpr.container, valueExpr.key, stats)
 							end
 						end
 					end
@@ -4090,7 +4132,7 @@ local function clean(theNode)
 						significantValueCount = significantValueCount + 1
 						significantCall       = significantCall or (valueExpr.type == "call" and valueExpr) or nil
 					else
-						unregisterWatchers(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo)
+						unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
 						tableRemove(values, i)
 					end
 				end
@@ -4130,7 +4172,7 @@ local function clean(theNode)
 
 						-- Remove the whole declaration.
 						if canRemoveSlot and not (declIdents[2] or values[2]) then
-							unregisterWatchers(identInfos, declLikeWatchers, decl, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo)
+							unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, decl, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
 
 							local block = decl.parent
 
@@ -4145,7 +4187,7 @@ local function clean(theNode)
 
 						-- Replace 'local unused = func()' with just 'func()'. This is a unique case as call expressions can also be statements.
 						elseif slot == 1 and wantToRemoveIdent and not declIdents[2] and significantCall and significantValueCount == 1 then
-							unregisterWatchers(identInfos, declLikeWatchers, declIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo)
+							unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, declIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
 							declLikeWatchers[decl] = nil
 
 							local block                = decl.parent
@@ -4159,7 +4201,7 @@ local function clean(theNode)
 						-- Remove whatever we can.
 						else
 							if canRemoveSlot and #declIdents > 1 then
-								unregisterWatchers(identInfos, declLikeWatchers, declIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo)
+								unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, declIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
 								tableRemove(declIdents, slot)
 								for slot = slot, #declIdents do
 									declIdents[slot].key = slot
@@ -4168,15 +4210,15 @@ local function clean(theNode)
 
 							if wantToRemoveValue and valueExpr then
 								if canRemoveSlot or not values[slot+1] then
-									unregisterWatchers(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo)
+									unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
 									tableRemove(values, slot)
 									for slot = slot, #values do
 										values[slot]. key = slot
 									end
 
 								elseif not (valueExpr.type == "literal" and valueExpr.value == nil) then
-									unregisterWatchers(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo)
-									replace(valueExpr, AstLiteral(dummyTokens, valueExpr.token, nil), valueExpr.parent, valueExpr.container, valueExpr.key)
+									unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+									replace(valueExpr, AstLiteral(dummyTokens, valueExpr.token, nil), valueExpr.parent, valueExpr.container, valueExpr.key, stats)
 								end
 							end
 						end
@@ -4198,7 +4240,14 @@ local function clean(theNode)
 
 	-- @Incomplete: Remove useless return statements etc.
 
-	simplify(theNode) -- Not sure if needed. Or maybe we need to iterate?
+	_simplify(theNode, stats) -- Not sure if needed. Or maybe we need to iterate?
+end
+
+-- Note: References need to be updated after calling this!
+local function clean(theNode)
+	local stats = Stats()
+	_clean(theNode, stats)
+	return stats -- @Undocumented
 end
 
 --[===[ OLD
@@ -4291,7 +4340,7 @@ local function clean(theNode)
 					local declIdent = declIdents[i]
 					if isDeclaredIdentifierReferenced(declLikeWatchers, declLike, declIdent) then  break  end
 
-					unregisterWatchers(identInfos, declLikeWatchers, declIdent)
+					unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, declIdent)
 					declIdents[i] = nil
 				end
 			end
@@ -4311,7 +4360,7 @@ local function clean(theNode)
 					break
 				end
 
-				unregisterWatchers(identInfos, declLikeWatchers, targetIdent)
+				unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, targetIdent)
 				targets[i] = nil
 			end
 
@@ -4335,7 +4384,7 @@ local function clean(theNode)
 				if not mustKeep then
 					-- if statement.line == 1804 then  ioWrite(">>>>>>> ") ; printNode(statement)  end -- DEBUG
 
-					unregisterWatchers(identInfos, declLikeWatchers, statement)
+					unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, statement)
 					tableRemove(block.statements, i)
 
 				elseif statement.type == "declaration" then
@@ -4348,7 +4397,7 @@ local function clean(theNode)
 						and decl.values[1].type == "call"
 						and not isDeclaredIdentifierReferenced(declLikeWatchers, decl, decl.names[1])
 					then
-						unregisterWatchers(identInfos, declLikeWatchers, decl.names[1])
+						unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, decl.names[1])
 						declLikeWatchers[decl] = nil
 						block.statements[i]    = decl.values[1]
 					end
@@ -4367,7 +4416,7 @@ local function clean(theNode)
 						and valueExpr1.type == "call"
 						and not isDeclaredIdentifierLookedUp(identInfos, declLikeWatchers, targetExpr1)
 					then
-						unregisterWatchers(identInfos, declLikeWatchers, targetExpr1)
+						unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, targetExpr1)
 						block.statements[i] = valueExpr1
 					end
 
@@ -4439,8 +4488,10 @@ do
 end
 
 local function minify(node, optimize)
+	local stats = Stats()
+
 	if optimize then
-		clean(node)
+		_clean(node, stats)
 	end
 
 	local identInfos, declLikeWatchers = getInformationAboutIdentifiersAndUpdateMostReferences(node)
@@ -4482,8 +4533,8 @@ local function minify(node, optimize)
 	--
 	-- Rename locals!
 	--
-	local renamed       = {--[[ [declIdent1]=true, ... ]]}
-	-- local collisions = 0
+	local renamed           = {--[[ [declIdent1]=true, ... ]]}
+	local maxNameGeneration = 0
 
 	for _, identInfo in ipairs(identInfos) do
 		local declLike = identInfo.ident.declaration
@@ -4516,20 +4567,26 @@ local function minify(node, optimize)
 						end
 					end--for declLikeWatchers
 
-					if not collision then  break  end
-
-					-- collisions = collisions + 1
+					if not collision then
+						maxNameGeneration = mathMax(maxNameGeneration, nameGeneration)
+						break
+					end
 				end--for nameGeneration
 
-				declIdent.name     = newName
-				renamed[declIdent] = true
+				declIdent.name         = newName
+				renamed[declIdent]     = true
+				stats.nameReplaceCount = stats.nameReplaceCount + 1 -- @Polish: Don't count when old and new name are the same.
 			end
 
-			identInfo.ident.name = declIdent.name
+			identInfo.ident.name   = declIdent.name
+			stats.nameReplaceCount = stats.nameReplaceCount + 1 -- @Polish: Don't count when old and new name are the same.
 		end
 	end--for identInfos
 
-	-- print("collisions", collisions) -- DEBUG
+	stats.generatedNameCount = maxNameGeneration
+	-- print("maxNameGeneration", maxNameGeneration) -- DEBUG
+
+	return stats -- @Undocumented
 end
 
 
