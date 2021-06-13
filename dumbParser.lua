@@ -351,11 +351,11 @@ local parse, parseFile
 local printNode, printTree
 local printTokens
 local removeUnordered, removeItemUnordered
-local show
 local tokenize, tokenizeFile
 local toLua
 local traverseTree, traverseTreeReverse
 local updateReferences
+local where
 
 local parser
 
@@ -3778,6 +3778,10 @@ local function unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers,
 	end)
 end
 
+local function isVariableValueList(node)
+	return (node.type == "call" or node.type == "vararg") and not node.adjustToOne
+end
+
 -- Note: References need to be updated after calling this!
 local function _optimize(theNode, stats)
 	_simplify(theNode, stats)
@@ -3915,23 +3919,30 @@ local function _optimize(theNode, stats)
 			if declLike.type == "declaration" then
 				local decl = declLike
 
-				for slot = 1, mathMin(#decl.names, #decl.values) do
+				for slot = 1, #decl.names do
+				-- for slot = 1, mathMin(#decl.names, #decl.values) do
 					local declIdent = decl.names[slot]
 					local valueExpr = decl.values[slot]
 
 					if
 						declIdentAssignmentCount[declIdent] == 0
 						and declIdentReadCount[declIdent] > 0
-						and valueExpr.type == "literal"
-						and not (
-							(type(valueExpr.value) == "string" and #valueExpr.value > parser.constantNameStringValueMaxLength)
-							-- or (valueExpr.value == 0 and not NORMALIZE_MINUS_ZERO and tostring(valueExpr.value) == "-0") -- No, bad rule!
+						and (
+							(not valueExpr and not isVariableValueList(decl.values[#decl.values]))
+							or (
+								valueExpr
+								and valueExpr.type == "literal"
+								and not (
+									(type(valueExpr.value) == "string" and #valueExpr.value > parser.constantNameStringValueMaxLength)
+									-- or (valueExpr.value == 0 and not NORMALIZE_MINUS_ZERO and tostring(valueExpr.value) == "-0") -- No, bad rule!
+								)
+							)
 						)
 					then
-						-- show(declIdent, "Constant declaration.") -- DEBUG
+						-- where(declIdent, "Constant declaration.") -- DEBUG
 
 						local valueLiteral = valueExpr
-						local valueIsZero  = (valueLiteral.value == 0)
+						local valueIsZero  = (valueLiteral ~= nil and valueLiteral.value == 0)
 
 						for _, watcherIdent in ipairsr(declLikeWatchers[decl]) do
 							if watcherIdent.declarationIdentifier == declIdent then
@@ -3942,9 +3953,10 @@ local function _optimize(theNode, stats)
 									-- Avoid creating '-0' (or '- -0') here as that may mess up Lua in weird/surprising ways.
 									and not (valueIsZero and not NORMALIZE_MINUS_ZERO and watcherIdent.parent.type == "unary" and watcherIdent.parent.operator == "-")
 								then
-									-- show(watcherIdent, "Constant value replacement.") -- DEBUG
+									-- where(watcherIdent, "Constant value replacement.") -- DEBUG
 
-									local replacementLiteral = AstLiteral(dummyTokens, watcherIdent.token, valueLiteral.value)
+									local v                  = valueLiteral and valueLiteral.value
+									local replacementLiteral = AstLiteral(dummyTokens, watcherIdent.token, v)
 
 									unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, watcherIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
 									replace(watcherIdent, replacementLiteral, watcherIdent.parent, watcherIdent.container, watcherIdent.key, stats)
@@ -3967,6 +3979,7 @@ local function _optimize(theNode, stats)
 	-- Remove useless assignments.
 	--
 	-- Note that we go in reverse order almost everywhere! We may remove later stuff when we reach earlier stuff.
+	--
 	for _, funcInfo in ipairsr(funcInfos) do
 		for _, assignment in ipairsr(funcInfo.assignments) do
 			local targets = assignment.targets
@@ -3978,7 +3991,7 @@ local function _optimize(theNode, stats)
 			for i = 1, #values-1 do -- Skip the last value.
 				local valueExpr = values[i]
 
-				if (valueExpr.type == "call" or valueExpr.type == "vararg") and not valueExpr.adjustToOne then
+				if isVariableValueList(valueExpr) then
 					valueExpr.adjustToOne     = true
 					madeToAdjusted[valueExpr] = true
 				end
@@ -4017,12 +4030,11 @@ local function _optimize(theNode, stats)
 
 					if not valueExprEffective then
 						valueExprEffective = values[#values]
-						if valueExprEffective and (not (valueExprEffective.type == "call" or valueExprEffective.type == "vararg") or valueExprEffective.adjustToOne) then
-							valueExprEffective = nil
-						end
+						if valueExprEffective and not isVariableValueList(valueExprEffective) then  valueExprEffective = nil  end
 					end
 
-					local wantToRemoveValue = not (valueExprEffective and mayNodeBeInvolvedInJump(valueExprEffective))
+					local wantToRemoveValue = not (valueExpr and mayNodeBeInvolvedInJump(valueExpr))
+					local mayRemoveValue    = wantToRemoveValue and not (not valueExpr and targets[slot+1] and valueExprEffective)
 
 					if not wantToRemoveValue then
 						significantValueCount = significantValueCount + 1
@@ -4032,7 +4044,7 @@ local function _optimize(theNode, stats)
 					-- @Incomplete: Replace 'unused, useless = func()' with 'useless = func()' etc.
 
 					-- Remove the whole assignment.
-					if slot == 1 and wantToRemoveValue and not (targets[2] or values[2]) then
+					if slot == 1 and mayRemoveValue and not (targets[2] or values[2]) then
 						unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, assignment, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
 
 						local block = assignment.parent
@@ -4060,7 +4072,7 @@ local function _optimize(theNode, stats)
 
 					-- Remove whatever we can.
 					else
-						if wantToRemoveValue and #targets > 1 then
+						if mayRemoveValue and #targets > 1 then
 							unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, targetIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
 							tableRemove(targets, slot)
 							for slot = slot, #targets do
@@ -4069,7 +4081,7 @@ local function _optimize(theNode, stats)
 						end
 
 						if wantToRemoveValue and valueExpr then
-							if wantToRemoveValue or not values[slot+1] then
+							if mayRemoveValue or not values[slot+1] then
 								unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
 								tableRemove(values, slot)
 								for slot = slot, #values do
@@ -4102,6 +4114,8 @@ local function _optimize(theNode, stats)
 	-- Remove useless declaration-likes.
 	--
 	-- Note that we go in reverse order almost everywhere! We may remove later stuff when we reach earlier stuff.
+	-- Also, much @Copypaste from above (or the other way around).
+	--
 	for _, funcInfo in ipairsr(funcInfos) do
 		for _, declLike in ipairsr(funcInfo.declLikes) do
 			if declLike.type == "declaration" then -- @Incomplete: Handle other declaration-likes.
@@ -4115,7 +4129,7 @@ local function _optimize(theNode, stats)
 				for i = 1, #values-1 do -- Skip the last value.
 					local valueExpr = values[i]
 
-					if (valueExpr.type == "call" or valueExpr.type == "vararg") and not valueExpr.adjustToOne then
+					if isVariableValueList(valueExpr) then
 						valueExpr.adjustToOne     = true
 						madeToAdjusted[valueExpr] = true
 					end
@@ -4153,13 +4167,12 @@ local function _optimize(theNode, stats)
 
 						if not valueExprEffective then
 							valueExprEffective = values[#values]
-							if valueExprEffective and (not (valueExprEffective.type == "call" or valueExprEffective.type == "vararg") or valueExprEffective.adjustToOne) then
-								valueExprEffective = nil
-							end
+							if valueExprEffective and not isVariableValueList(valueExprEffective) then  valueExprEffective = nil  end
 						end
 
 						local wantToRemoveIdent = (declIdentAssignmentCount[declIdent] == 0)
-						local wantToRemoveValue = not (valueExprEffective and mayNodeBeInvolvedInJump(valueExprEffective))
+						local wantToRemoveValue = not (valueExpr and mayNodeBeInvolvedInJump(valueExpr))
+						local mayRemoveValue    = wantToRemoveValue and not (not valueExpr and declIdents[slot+1] and valueExprEffective)
 
 						if not wantToRemoveValue then
 							significantValueCount = significantValueCount + 1
@@ -4168,7 +4181,7 @@ local function _optimize(theNode, stats)
 
 						-- @Incomplete: Update funcInfo.locals and whatever else (if we end up using them at some point).
 						-- @Incomplete: Replace 'local unused, useless = func()' with 'local useless = func()' etc.
-						local canRemoveSlot = (wantToRemoveIdent and wantToRemoveValue)
+						local canRemoveSlot = (wantToRemoveIdent and mayRemoveValue)
 
 						-- Remove the whole declaration.
 						if canRemoveSlot and not (declIdents[2] or values[2]) then
@@ -4208,7 +4221,7 @@ local function _optimize(theNode, stats)
 								end
 							end
 
-							if wantToRemoveValue and valueExpr then
+							if mayRemoveValue and valueExpr then
 								if canRemoveSlot or not values[slot+1] then
 									unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
 									tableRemove(values, slot)
@@ -4249,204 +4262,6 @@ local function optimize(theNode)
 	_optimize(theNode, stats)
 	return stats -- @Undocumented
 end
-
---[===[ OLD
-local function hasNodeType(theNode, nodeType)
-	return (traverseTree(theNode, function(node)
-		if node.type == nodeType then  return "stop"  end
-	end))
-end
-
-local function isDeclaredIdentifierReferenced(declLikeWatchers, declLike, declIdent)
-	for _, watcherIdent in ipairs(declLikeWatchers[declLike]) do
-		if
-			watcherIdent.declaration == declLike
-			and watcherIdent.name == declIdent.name
-			and watcherIdent ~= declIdent
-		then
-			return true
-		end
-	end
-	return false
-end
-local function isDeclaredIdentifierLookedUp(identInfos, declLikeWatchers, ident)
-	local decl = ident.declaration
-	if not decl then  return false  end -- We don't care about globals.
-
-	for _, identInfo in ipairs(identInfos) do -- @Speed: Use declLikeWatchers.
-		if identInfo.ident.declaration == decl and identInfo.type == "rvalue" then
-			return true
-		end
-	end
-
-	return false
-end
-
-local function isAnyDeclaredIdentifierReferenced(identInfos, declLikeWatchers, declLike)
-	for _, watcherIdent in ipairs(declLikeWatchers[declLike] --[[or EMPTY_TABLE]]) do
-		if
-			watcherIdent.declaration == declLike
-			and watcherIdent.parent ~= declLike -- We look at the parent because :DeclarationIdentifiersWatchTheirParent.
-		then
-			return true
-		end
-	end
-	return false
-end
-
-local function isAssignmentSignificant(identInfos, declLikeWatchers, assignment)
-	if hasNodeType(assignment, "function") then  return true  end -- This isn't smart enough.
-
-	for _, targetExpr in ipairs(assignment.targets) do
-		if not (targetExpr.type == "identifier" and targetExpr.declaration and not isDeclaredIdentifierLookedUp(identInfos, declLikeWatchers, targetExpr)) then
-			return true
-		end
-	end
-
-	return false
-end
-
--- Note: References need to be updated after calling this!
-local function optimize(theNode)
-	local identInfos, declLikeWatchers = getInformationAboutIdentifiersAndUpdateMostReferences(theNode)
-
-	traverseTreeReverse(theNode, true, function(node)
-		----------------------------------------------------------------
-
-		if node.type == "declaration" or node.type == "function" or node.type == "for" then
-			if node.type == "function" and node.vararg then
-				local func               = node
-				local varargIsReferenced = false
-
-				traverseTree(func.body, function(nodeInFuncBody)
-					if nodeInFuncBody.type == "vararg" then
-						varargIsReferenced = true
-						return "stop"
-					elseif nodeInFuncBody.type == "function" then
-						return "ignorechildren"
-					end
-				end)
-
-				if not varargIsReferenced then
-					func.vararg = nil
-				end
-			end
-
-			if not (node.type == "function" and node.vararg) then
-				local declLike   = node
-				local declIdents = getNameArrayOfDeclarationLike(declLike)
-
-				for i = #declIdents, 2, -1 do
-					local declIdent = declIdents[i]
-					if isDeclaredIdentifierReferenced(declLikeWatchers, declLike, declIdent) then  break  end
-
-					unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, declIdent)
-					declIdents[i] = nil
-				end
-			end
-
-		----------------------------------------------------------------
-
-		elseif node.type == "assignment" then
-			local assignment = node
-			local targets    = assignment.targets
-
-			for i = #targets, 2, -1 do
-				local targetExpr = targets[i]
-				if targetExpr.type ~= "identifier" then  break  end
-
-				local targetIdent = targetExpr
-				if not targetIdent.declaration or isDeclaredIdentifierLookedUp(identInfos, declLikeWatchers, targetIdent) then
-					break
-				end
-
-				unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, targetIdent)
-				targets[i] = nil
-			end
-
-		----------------------------------------------------------------
-
-		elseif node.type == "block" then
-			local block = node
-
-			for i = #block.statements, 1, -1 do
-				local statement = block.statements[i]
-
-				local mustKeep = (
-					mayNodeBeInvolvedInJump(statement) -- I feel like this is insufficient...
-					or hasNodeType(statement, "function") -- This is overkill, but we currently need it, otherwise too much is removed. We need to propagate upwards to some extent what's significant.
-					or statement.type == "declaration" and (isAnyDeclaredIdentifierReferenced(identInfos, declLikeWatchers, statement) or hasNodeType(statement, "function")) -- @Incomplete: Unsure about the hasNodeType(). Look at assignments!
-					or statement.type == "assignment"  and isAssignmentSignificant(identInfos, declLikeWatchers, statement)
-				)
-
-				-- if statement.line == 1804 then  print("mustKeep", mustKeep) ; printTree(statement)  end -- DEBUG
-
-				if not mustKeep then
-					-- if statement.line == 1804 then  ioWrite(">>>>>>> ") ; printNode(statement)  end -- DEBUG
-
-					unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, statement)
-					tableRemove(block.statements, i)
-
-				elseif statement.type == "declaration" then
-					local decl = statement
-
-					-- Replace 'local unused = func()' with just 'func()'. This is a unique case as call expressions can also be statements.
-					if
-						not decl.names[2]
-						and #decl.values == 1
-						and decl.values[1].type == "call"
-						and not isDeclaredIdentifierReferenced(declLikeWatchers, decl, decl.names[1])
-					then
-						unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, decl.names[1])
-						declLikeWatchers[decl] = nil
-						block.statements[i]    = decl.values[1]
-					end
-
-				elseif statement.type == "assignment" then
-					local assignment  = statement
-					local targetExpr1 = assignment.targets[1]
-					local valueExpr1  = assignment.values[1]
-
-					-- Replace 'finalReference = func()' with just 'func()'. This is a unique case as call expressions can also be statements.
-					if
-						not assignment.targets[2]
-						and targetExpr1.type == "identifier"
-						and targetExpr1.declaration
-						and not assignment.values[2]
-						and valueExpr1.type == "call"
-						and not isDeclaredIdentifierLookedUp(identInfos, declLikeWatchers, targetExpr1)
-					then
-						unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, targetExpr1)
-						block.statements[i] = valueExpr1
-					end
-
-				elseif statement.type == "block" then
-					local subBlock        = statement
-					local hasDeclarations = false
-
-					for _, subStatement in ipairs(subBlock.statements) do
-						if subStatement.type == "declaration" then
-							hasDeclarations = true
-							break
-						end
-					end
-
-					if not hasDeclarations then
-						-- Blocks without declarations don't need a scope.
-						tableRemove(block.statements, i)
-
-						for subIndex, subStatement in ipairs(subBlock.statements) do
-							tableInsert(block.statements, i+subIndex-1, subStatement)
-						end
-					end
-				end
-			end--for statements
-
-		----------------------------------------------------------------
-		end
-	end)
-end
---]===]
 
 
 
@@ -5558,11 +5373,13 @@ end
 
 
 
-function show(node, s, ...)
-	if s then
-		print(formatMessageAtNode("Info", node, "DEBUG", s, ...))
+function where(node, s, ...)
+	if not node then
+		print("Where: [DEBUG] No node here!")
+	elseif s then
+		print(formatMessageAtNode("Where", node, "DEBUG", s, ...))
 	else
-		print(formatMessageAtNode("Info", node, "DEBUG", "Here!"))
+		print(formatMessageAtNode("Where", node, "DEBUG", "Here!"))
 	end
 end
 

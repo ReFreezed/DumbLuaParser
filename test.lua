@@ -77,7 +77,7 @@ do
 	local n = 5 - 1/0
 	local n = - - (-0)
 
-	--[[ Lua 5.2+
+	-- [[ Lua 5.2+
 	goto foo
 	do goto foo end
 	::foo::
@@ -98,15 +98,13 @@ do
 	end
 	--]]
 
-	--[[ Lua 5.4+
+	-- [[ Lua 5.4+
 	local x<close>
 	local y<close>, z<const> = 1, 2
 	--]]
 end
 
---
--- Minify tests
---
+-- Minify tests.
 do
 	local longNameA = global    -- Watchers: 3
 	local longNameB = longNameA -- Watchers: 5
@@ -130,145 +128,6 @@ do
 		for loop1, loop2 in ipairs(t) do
 			func(upvalue, arg1,arg2, assign1,assign2, decl, loop1,loop2)
 		end
-	end
-end
-
--- Simplifying/folding.
-do
-	local n1 = 1 << 8     -- 256
-	local n1 = 2^99999    -- huge
-	local n1 = 5 - - - -5 -- 10
-
-	local n2 = 2779          -- 2779
-	local n2 = ~2779         -- -2780
-	local n2 = 2779 & 0x1011 -- 17
-	local n2 = 2779 ~ 0x1011 -- 6858
-	local n2 = 2779 | 0x1011 -- 6875
-
-	local n3 =  2       -- 2
-	local n3 =  2 >>  1 -- 1
-	local n3 =  2 <<  1 -- 4
-	local n3 = -2       -- -2
-	local n3 = -2 >>  1 -- 32bit:2147483647, 64bit:9223372036854775807
-	local n3 = -2 <<  1 -- -4
-	local n3 =  2 >>  0 -- 2
-	local n3 =  2 <<  0 -- 2
-	local n3 = -2 << -1 -- 32bit:2147483647, 64bit:9223372036854775807
-	local n3 = -2 >> -1 -- -4
-
-	-- local n4 = 1/0 & 2 -- Should not fold.
-
-	local b = "yes" == "no"
-	local b = 5     ~= nil
-	local b = 80.6  >= 34
-
-	local s = "one" .. 2 .. "three"
-
-	local v = true  and always1()
-	local v = true  or  never1()
-	local v = 0     and always2()
-	local v = 0     or  never2()
-	local v = false and never3()
-	local v = false or  always3()
-	local v = nil   and never4()
-	local v = nil   or  always4()
-
-	yes()
-	if 9 > 1 then
-		ifYes()
-		if 1 == "foo" then  ifNo()  end
-	end
-	while 9 > 1 do
-		whileYes()
-		while 1 == "foo" do  whileNo()  end
-	end
-	repeat
-		repeatYes()
-		repeat  repeatOnce()  until 1 ~= "foo"
-	until 9 <= 1
-	yes()
-end
-
--- Removal of nodes.
-do
-	do
-		local noButKeep, yesKeep, noRemove = globalFunc()
-		globalFunc(yesKeep)
-		noButKeep, yesKeep, noRemove = globalFunc()
-	end
-
-	for noButKeep, yesKeep, noRemove in globalFunc() do
-		globalFunc(yesKeep)
-	end
-
-	do
-		local noButKeep, yesKeep, noRemove = globalFunc()
-		local function called()
-			yesKeep = global1
-		end
-		local function notCalled()
-			yesKeep = global2
-			return global3
-		end
-		noButKeep, yesKeep, noRemove = globalFunc()
-		called()
-		print(yesKeep)
-	end
-
-	do
-		globalFunc()
-	end
-
-	do
-		local forward
-		local function localFunc()  forward()  end
-		function globalFunc()  localFunc()  end
-		do
-			local n = 0
-			function forward()  n = n + 1 ; return n  end
-		end
-	end
-
-	-- This block should be removed completely.
-	do
-		local n = 1 + 2
-
-		local function f()
-			local g = global
-		end
-		f = nil
-	end
-
-	-- Complex removals.
-	do
-		_"Remove everything."
-		local a       = 1
-		local a       = 1, 2
-		local a, b    = 1
-		local a, b    = 1, 2
-		_"Keep calls."
-		local a       = globalFunc1()
-		local a       = globalFunc1(), 2
-		local a       = 1, globalFunc2()
-		local a       = 1, globalFunc2(), 3
-		local a       = 1, 2, globalFunc3()
-		_"Keep all calls."
-		local a       = globalFunc1(), globalFunc2()
-		_"Keep call."
-		local a, b, c = 1, globalFunc2(), 3, 4 -- @Incomplete: Improve the result of this.
-		c             = 1
-		_"Keep call, c must be 3."
-		local a, b, c = 1, globalFunc2(), 3, 4
-		global1       = c
-		_"c must be third value returned from call."
-		local a, b, c = globalFunc123()
-		global2       = c
-		_"Keep call, c must be nil."
-		local a, b, c = globalFunc1(), 2
-		global3       = c
-		_"Assignments, keep call"
-		local a       = 11, 12
-		a             = 21, globalFunc2(), 23
 	end
 end
 --]===]

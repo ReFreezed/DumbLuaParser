@@ -100,34 +100,16 @@ end
 
 
 
-test("Test file", function()
-	local path = "test.lua"
-	-- local path = "dumbParser.lua"
+test("Test file / misc.", function()
+	local PATH = "test.lua"
+	-- local PATH = "dumbParser.lua"
 
-	-- assert(loadfile(path))
-
-	local tokens = assert(parser.tokenizeFile(path))
-
-	do
-		local concatted = parser.concatTokens(tokens)
-		-- print(concatted)
-
-		local tripTokens    = assert(parser.tokenize(concatted))
-		local tripConcatted = parser.concatTokens(tripTokens)
-
-		if concatted ~= tripConcatted then
-			print(("-"):rep(64))
-			print((concatted:gsub("\n", "\\n")))
-			print(("-"):rep(64))
-			print((tripConcatted:gsub("\n", "\\n")))
-			print(("-"):rep(64))
-			error("Failed token round-trip.")
-		end
+	if _VERSION >= "Lua 5.4" then
+		assert(loadfile("test.lua"))
 	end
 
-	local ast = assert(parser.parse(tokens))
-
-	-- parser.printTokens(tokens)
+	local tokens = assert(parser.tokenizeFile(PATH))
+	local ast    = assert(parser.parse(tokens))
 	-- parser.printTree(ast)
 	-- debugExit()
 
@@ -153,21 +135,19 @@ test("Test file", function()
 	-- print(parser.toLua(ast, 1==1))
 	-- debugExit()
 
-	-- local stats = parser.optimize(ast)
-	-- printStats(stats)
+	-- local stats = parser.optimize(ast) ; printStats(stats)
 	-- parser.printTree(ast)
 	-- print(parser.toLua(ast, 1==1))
 	-- debugExit()
 
-	-- local stats = parser.minify(ast, 1==1)
-	-- printStats(stats)
+	-- local stats = parser.minify(ast, 1==1) ; printStats(stats)
 	-- parser.printTree(ast)
 	-- print(parser.toLua(ast, 1==1))
 	-- debugExit()
 
 	local lua = assert(parser.toLua(ast, PRETTY_OUTPUT))
 
-	do
+	if 1==1 then
 		local luaEdit = lua
 		-- luaEdit = luaEdit:gsub(("."):rep(250), "%0\0")
 		-- luaEdit = luaEdit:gsub("([%w_]+)%z([%w_]+)", "%1%2\n")
@@ -196,9 +176,33 @@ end)
 
 
 
+test("Tokens", function()
+	local tokens = assert(parser.tokenizeFile("test.lua"))
+	-- parser.printTokens(tokens)
+
+	local concatted = parser.concatTokens(tokens)
+	-- print(concatted)
+
+	-- Round-trip.
+	local tripTokens    = assert(parser.tokenize(concatted))
+	local tripConcatted = parser.concatTokens(tripTokens)
+
+	if concatted ~= tripConcatted then
+		print(("-"):rep(64))
+		print((concatted:gsub("\n", "\\n")))
+		print(("-"):rep(64))
+		print((tripConcatted:gsub("\n", "\\n")))
+		print(("-"):rep(64))
+		error("Failed token round-trip.")
+	end
+end)
+
+
+
 test("Token stream manipulations", function()
 	local tokens = parser.newTokenStream()
 
+	-- Construct a call.
 	parser.insertToken(tokens, "identifier",  "math")
 	parser.insertToken(tokens, "punctuation", ".")
 	parser.insertToken(tokens, "identifier",  "abs")
@@ -207,15 +211,19 @@ test("Token stream manipulations", function()
 	parser.insertToken(tokens, "number",      1.75)
 	parser.insertToken(tokens, "punctuation", ")")
 
+	-- Add call to a declaration with an error.
 	parser.insertToken(tokens, 1, "keyword",     "local")
 	parser.insertToken(tokens, 2, "identifier",  "n")
 	parser.insertToken(tokens, 3, "punctuation", "=")
 	parser.insertToken(tokens, 4, "punctuation", "/")
 
+	-- Remove the error.
 	parser.removeToken(tokens, 4)
 
 	local ast = assert(parser.parse(tokens))
-	assertLua(assert(parser.toLua(ast)), [[ local n=math.abs(-1.75); ]])
+	local lua = assert(parser.toLua(ast))
+	-- print(lua)
+	assertLua(lua, [[ local n=math.abs(-1.75); ]])
 end)
 
 
@@ -254,9 +262,9 @@ test("AST manipulations", function()
 
 		parser.addChild(tableNode, "fields", literal2, literal1)
 
-		parser.printNode(parser.getChild(call,        "callee"))
-		parser.printNode(parser.getChild(declaration, "names", 1))
-		parser.printNode(parser.getChild(tableNode,   "fields", 1, "value"))
+		local node = parser.getChild(call,        "callee")             ; parser.printNode(node)
+		local node = parser.getChild(declaration, "names", 1)           ; parser.printNode(node)
+		local node = parser.getChild(tableNode,   "fields", 1, "value") ; parser.printNode(node)
 
 		parser.removeChild(tableNode, "fields", 1)
 	end
@@ -420,14 +428,165 @@ test("Optimize", function()
 	local function testOptimize(lua, expectedLua, expectedLuaAlt)
 		local ast = assert(parser.parse(lua, "<luastring>"))
 		parser.optimize(ast)
+
+		lua = assert(parser.toLua(ast))
+		-- print(lua)
+
 		if expectedLuaAlt then
-			assertLua(assert(parser.toLua(ast)), expectedLua, expectedLuaAlt, 2)
+			assertLua(lua, expectedLua, expectedLuaAlt, 2)
 		else
-			assertLua(assert(parser.toLua(ast)), expectedLua, 2)
+			assertLua(lua, expectedLua, 2)
 		end
 	end
 
+	-- Unpack 'do' block.
+	testOptimize(
+		[[
+		do
+			globalFunc()
+		end
+		]],
+		[[ globalFunc(); ]]
+	)
+
+	--
+	-- Names.
+	--
+
+	-- Remove individual names.
+	testOptimize(
+		[[
+		local useless, keep, remove = globalFunc1()
+		globalFunc2(keep)
+		]],
+		[[ local useless,keep=globalFunc1();globalFunc2(keep); ]]
+	)
+	-- testOptimize( -- @Incomplete
+	-- 	[[
+	-- 	for useless, keep, remove in globalFunc() do
+	-- 		globalFunc(keep)
+	-- 	end
+	-- 	]],
+	-- 	[[ for useless,keep in globalFunc()do globalFunc(keep);end ]]
+	-- )
+	testOptimize(
+		[[
+		local useless, keep, remove
+		useless, keep, remove = globalFunc1()
+		globalFunc2(keep)
+		]],
+		[[ local useless,keep;useless,keep=globalFunc1();globalFunc2(keep); ]]
+	)
+	testOptimize(
+		[[
+		local useless, keep, remove = globalFunc()
+		local function keepCalled()
+			keep = global1
+		end
+		local function removeNotCalled()
+			keep = global2
+			return global3
+		end
+		useless, keep, remove = globalFunc()
+		keepCalled()
+		print(keep)
+		]],
+		[[ local useless,keep=globalFunc();local function keepCalled()keep=global1;end useless,keep=globalFunc();keepCalled();print(keep); ]]
+	)
+
+	-- Example from real code.
+	testOptimize(
+		[[
+		local forward
+		local function localFunc()  return forward()  end
+		function globalFunc()  return localFunc()  end
+		do
+			local n = 0
+			function forward()  n = n + 1 ; return n  end
+		end
+		]],
+		[[ local forward;local function localFunc()return forward();end function globalFunc()return localFunc();end do local n=0;function forward()n=n+1;return n;end end ]]
+	)
+
+	-- Complete removal.
+	testOptimize(
+		[[
+		local n = 1 + 2
+		local function f()
+			local g = global
+		end
+		f = nil
+		]],
+		[[ ]]
+	)
+
+	-- Complex removals.
+	testOptimize( -- Remove everything.
+		[[
+		local a    = 1
+		local a    = 1, 2
+		local a, b = 1
+		local a, b = 1, 2
+		]],
+		[[ ]]
+	)
+	testOptimize( -- Keep calls.
+		[[
+		local a = globalFunc1()
+		local a = globalFunc1(), 2
+		local a = 1, globalFunc2()
+		local a = 1, globalFunc2(), 3
+		local a = 1, 2, globalFunc3()
+		]],
+		[[ globalFunc1();globalFunc1();globalFunc2();globalFunc2();globalFunc3(); ]]
+	)
+	testOptimize( -- Keep all calls.
+		[[
+		local a = globalFunc1(), globalFunc2()
+		]],
+		[[ local a=globalFunc1(),globalFunc2(); ]] -- @Incomplete: Improve this.
+	)
+	testOptimize( -- Keep call.
+		[[
+		local a, b, c = 1, globalFunc2(), 3, 4
+		c             = 1
+		]],
+		[[ local b=globalFunc2(); ]] -- @Incomplete: Improve this.
+	)
+	testOptimize( -- Keep call, c must be 3.
+		[[
+		local a, b, c = 1, globalFunc2(), 3, 4
+		global        = c
+		]],
+		[[ local b=globalFunc2();global=3; ]] -- @Incomplete: Improve this.
+	)
+	testOptimize( -- c must be third value returned from call.
+		[[
+		local a, b, c = globalFunc123()
+		global        = c
+		]],
+		[[ local a,b,c=globalFunc123();global=c; ]]
+	)
+	testOptimize( -- Keep call, c must be nil.
+		[[
+		local a, b, c = globalFunc1(), 2
+		global        = c
+		]],
+		[[ globalFunc1();global=nil; ]]
+	)
+	testOptimize( -- Assignments, keep call.
+		[[
+		local a = 11, 12
+		a       = 21, globalFunc2(), 23
+		]],
+		[[ globalFunc2(); ]]
+	)
+
+	--
 	-- Constants.
+	--
+
+	-- Zero and the elusive minus. (Coming to all theaters next summer!)
 	testOptimize(
 		[[
 		local n = -0  -- The value will get normalized to 0.
@@ -441,7 +600,7 @@ test("Optimize", function()
 		global(-n)
 		]],
 		_VERSION >= "Lua 5.3"
-		and [[ global(0); ]]
+		and [[ global(0); ]] -- '-0' is not a thing in Lua 5.3+.
 		or  [[ local n=0;global(-n); ]]
 	)
 end)
