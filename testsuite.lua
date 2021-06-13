@@ -10,14 +10,15 @@ collectgarbage("stop")
 io.stdout:setvbuf("no")
 io.stderr:setvbuf("no")
 
-local testCount = 0
-local failCount = 0
-local results   = {}
+local loadstring = loadstring or load
 
-local loadLuaString   = loadstring or load
 local parser          = require"dumbParser"
 parser.printIds       = PRINT_IDS
 parser.printLocations = PRINT_LOCATIONS
+
+local testCount = 0
+local failCount = 0
+local results   = {}
 
 
 
@@ -129,13 +130,12 @@ test("Test file", function()
 	-- print(parser.toLua(ast, 1==1))
 	-- debugExit()
 
-	if 1==1 then
-		parser.simplify(ast)
-		parser.clean(ast)
-		parser.simplify(ast)
-	else
-		parser.minify(ast)
-	end
+	-- parser.clean(ast)
+	-- parser.printTree(ast)
+	-- print(parser.toLua(ast, 1==1))
+	-- debugExit()
+
+	-- parser.minify(ast)
 	-- parser.printTree(ast)
 	-- print(parser.toLua(ast, 1==1))
 	-- debugExit()
@@ -151,12 +151,13 @@ test("Test file", function()
 		-- debugExit()
 	end
 
-	assert(loadLuaString(lua, "@<luastring>"))
+	if _VERSION >= "Lua 5.4" then
+		assert(loadstring(lua, "@<luastring>"))
+	end
 
 	-- Round-trip.
-	local tripTokens = assert(parser.tokenize(lua))
-	local tripAst    = assert(parser.parse(tripTokens))
-	local tripLua    = assert(parser.toLua(tripAst, PRETTY_OUTPUT))
+	local tripAst = assert(parser.parse(lua))
+	local tripLua = assert(parser.toLua(tripAst, PRETTY_OUTPUT))
 
 	if tripLua ~= lua then
 		print(("-"):rep(64))
@@ -255,7 +256,7 @@ test("AST manipulations", function()
 	local lua = assert(parser.toLua(block, PRETTY_OUTPUT))
 	print(lua)
 
-	assert(loadLuaString(lua, "@<luastring>"))
+	assert(loadstring(lua, "@<luastring>"))
 end)
 
 
@@ -309,8 +310,14 @@ test("Simplify", function()
 	local function testSimplify(lua, expectedLua, expectedLuaAlt)
 		local ast = assert(parser.parse(lua, "<luastring>"))
 		parser.simplify(ast)
-		assertLua(assert(parser.toLua(ast)), expectedLua, expectedLuaAlt, 2)
+		if expectedLuaAlt then
+			assertLua(assert(parser.toLua(ast)), expectedLua, expectedLuaAlt, 2)
+		else
+			assertLua(assert(parser.toLua(ast)), expectedLua, 2)
+		end
 	end
+
+	testSimplify([[ x = -0 ]], [[ x=0; ]])
 
 	testSimplify([[ x = 1+2   ]], [[ x=3; ]])
 	testSimplify([[ x = 1+2^3 ]], [[ x=9; ]], [[ x=9.0; ]]) -- In Lua 5.3+ the result of x^y is always a float.

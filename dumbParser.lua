@@ -150,14 +150,15 @@ simplify()
 
 clean()
 	clean( astNode )
-	Attempt to remove nodes that aren't useful, like unused variables.
+	Attempt to remove nodes that aren't useful, like unused variables, or variables that are essentially constants.
+	Calls simplify() internally.
 	This function can be quite slow!
 
 minify()
 	parser.minify( astNode [, optimize=false ] )
 	Replace local variable names with short names.
 	This function can be used to obfuscate the code to some extent.
-	If 'optimize' is set then simplify() and clean() is also called automatically.
+	If 'optimize' is set then simplify() is also called automatically.
 
 toLua()
 	luaString, error = parser.toLua( astNode [, prettyOuput=false ] )
@@ -287,6 +288,12 @@ Node fields: (Search for 'NodeFields'.)
 
 local PARSER_VERSION = "2.0.0-dev"
 
+local NORMALIZE_MINUS_ZERO
+do
+	local n              = 0
+	NORMALIZE_MINUS_ZERO = tostring(-n) == "0"
+end
+
 local assert       = assert
 local error        = error
 local ipairs       = ipairs
@@ -344,6 +351,7 @@ local parse, parseFile
 local printNode, printTree
 local printTokens
 local removeUnordered, removeItemUnordered
+local show
 local tokenize, tokenizeFile
 local toLua
 local traverseTree, traverseTreeReverse
@@ -1244,10 +1252,10 @@ local function insertToken(tokens, i, tokType, tokValue)
 			errorf(2, "Expected number value for 'number' token. (Got %s)", type(tokValue))
 		end
 		tokRepr = (
-			tokValue == 0        and "0"      or -- Avoid '-0'.
-			tokValue == 1/0      and "(1/0)"  or
-			tokValue == -1/0     and "(-1/0)" or
-			tokValue ~= tokValue and "(0/0)"  or
+			tokValue == 0 and NORMALIZE_MINUS_ZERO and "0"      or -- Avoid '-0' sometimes.
+			tokValue == 1/0                        and "(1/0)"  or
+			tokValue == -1/0                       and "(-1/0)" or
+			tokValue ~= tokValue                   and "(0/0)"  or
 			formatNumber(tokValue)
 		)
 
@@ -1581,7 +1589,13 @@ function parseExpression(tokens, tokStart, lastPrecedence) --> expression, token
 		expr = unary
 
 		-- Special rule: Treat '-n' as one literal (but not '-n^n' because of operator precedence).
-		if unary.operator == "-" and subExpr.type == "literal" and type(subExpr.value) == "number" and isTokenType(tokens, subExpr.token, "number") then
+		if
+			unary.operator == "-"
+			and subExpr.type == "literal"
+			and type(subExpr.value) == "number"
+			and isTokenType(tokens, subExpr.token, "number")
+			and not (subExpr.value == 0 and NORMALIZE_MINUS_ZERO) -- We cannot store -0 in Lua 5.3+, thus we need to keep the unary expression.
+		then
 			subExpr.value = -subExpr.value
 			subExpr.token = unary.token
 			expr          = subExpr
@@ -3451,6 +3465,10 @@ local function simplifyNode(node, parent, container, key)
 				end
 			end
 		end
+
+	elseif node.type == "literal" then
+		local literal = node
+		if literal.value == 0 then  literal.value = 0  end -- Normalize '-0'.
 	end
 end
 
@@ -3653,7 +3671,7 @@ end
 -- unregisterWatchers( identInfos, declLikeWatchers, theNode, declIdentReadCount, declIdentAssignmentCount, funcInfos, currentFuncInfo )
 -- unregisterWatchers( identInfos, declLikeWatchers, theNode ) -- @Obsolete
 local function unregisterWatchers(identInfos, declLikeWatchers, theNode, declIdentReadCount, declIdentAssignmentCount, funcInfos, currentFuncInfo)
-	ioWrite("unregister ") ; printNode(theNode) -- DEBUG
+	-- ioWrite("unregister ") ; printNode(theNode) -- DEBUG
 
 	traverseTree(theNode, true, function(node) -- @Speed
 		--[[ DEBUG
@@ -3731,10 +3749,11 @@ end
 
 -- Note: References need to be updated after calling this!
 local function clean(theNode)
+	simplify(theNode)
 	local identInfos, declLikeWatchers = getInformationAboutIdentifiersAndUpdateMostReferences(theNode)
 
 	--
-	-- Gather functions
+	-- Gather functions.
 	--
 	local funcInfos        = {}
 	-- local allDeclIdents = {}
@@ -3757,7 +3776,7 @@ local function clean(theNode)
 	end)
 
 	--
-	-- Gather relevant nodes
+	-- Gather relevant nodes.
 	--
 	for _, funcInfo in ipairs(funcInfos) do
 		-- if funcInfo.node.type == "function" then
@@ -3825,16 +3844,14 @@ local function clean(theNode)
 	--]==]
 
 	--
-	-- Figure out accesses of declared names
+	-- Figure out accesses of declared names.
 	--
 	local declIdentReadCount       = {--[[ [declIdent1]=count, ... ]]}
 	local declIdentAssignmentCount = {--[[ [declIdent1]=count, ... ]]}
 
 	for _, funcInfo in ipairs(funcInfos) do
 		for _, declLike in ipairs(funcInfo.declLikes) do
-			local declIdents = getNameArrayOfDeclarationLike(declLike)
-
-			for _, declIdent in ipairs(declIdents) do
+			for _, declIdent in ipairs(getNameArrayOfDeclarationLike(declLike)) do
 				local readCount       = 0
 				local assignmentCount = 0
 
@@ -3857,7 +3874,55 @@ local function clean(theNode)
 	end
 
 	--
-	-- Remove useless assignments
+	-- Replace variables that are effectively constants with literals.
+	--
+	local replacedConstants = false
+
+	for _, funcInfo in ipairs(funcInfos) do
+		for _, declLike in ipairs(funcInfo.declLikes) do
+			if declLike.type == "declaration" then
+				local decl = declLike
+
+				for slot = 1, mathMin(#decl.names, #decl.values) do
+					local declIdent = decl.names[slot]
+					local valueExpr = decl.values[slot]
+
+					if
+						declIdentAssignmentCount[declIdent] == 0
+						and declIdentReadCount[declIdent] > 0
+						and valueExpr.type == "literal"
+						and not (type(valueExpr.value) == "string" and #valueExpr.value > parser.constantNameStringValueMaxLength)
+					then
+						-- show(declIdent, "Constant declaration.") -- DEBUG
+
+						for _, watcherIdent in ipairsr(declLikeWatchers[decl]) do
+							if watcherIdent.declarationIdentifier == declIdent then
+								local identInfo = identInfos[watcherIdent]
+
+								if identInfo.type == "rvalue" then
+									-- show(watcherIdent, "Constant value replacement.") -- DEBUG
+
+									local literal = AstLiteral(dummyTokens, watcherIdent.token, valueExpr.value)
+
+									unregisterWatchers(identInfos, declLikeWatchers, watcherIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo)
+									replace(watcherIdent, literal, watcherIdent.parent, watcherIdent.container, watcherIdent.key)
+
+									replacedConstants = true
+								end
+							end
+						end--for declLikeWatchers
+					end
+				end--for declIdents
+			end
+		end--for declLikes
+	end--for funcInfos
+
+	if replacedConstants then
+		return clean(theNode) -- @Speed
+	end
+
+	--
+	-- Remove useless assignments.
 	--
 	-- Note that we go in reverse order almost everywhere! We may remove later stuff when we reach earlier stuff.
 	for _, funcInfo in ipairsr(funcInfos) do
@@ -3992,7 +4057,7 @@ local function clean(theNode)
 	end--for funcInfos
 
 	--
-	-- Remove useless declaration-likes
+	-- Remove useless declaration-likes.
 	--
 	-- Note that we go in reverse order almost everywhere! We may remove later stuff when we reach earlier stuff.
 	for _, funcInfo in ipairsr(funcInfos) do
@@ -4132,6 +4197,8 @@ local function clean(theNode)
 	end--for funcInfos
 
 	-- @Incomplete: Remove useless return statements etc.
+
+	simplify(theNode) -- Not sure if needed. Or maybe we need to iterate?
 end
 
 --[===[ OLD
@@ -4373,9 +4440,7 @@ end
 
 local function minify(node, optimize)
 	if optimize then
-		simplify(node)
 		clean(node)
-		simplify(node) -- clean() may have created more situations that can be simplified.
 	end
 
 	local identInfos, declLikeWatchers = getInformationAboutIdentifiersAndUpdateMostReferences(node)
@@ -4521,8 +4586,13 @@ do
 		return "alphanum"
 	end
 	local function writeNumber(buffer, pretty, n, lastOutput)
-		ensureSpaceIfNotPretty(buffer, pretty, lastOutput, "alphanum","number")
-		lastOutput = writeLua(buffer, formatNumber(n), "number")
+		local nStr = formatNumber(n)
+		if lastOutput == "-" and stringByte(nStr, 1) == 45--[[ "-" ]] then
+			lastOutput = writeLua(buffer, " ", "")
+		else
+			ensureSpaceIfNotPretty(buffer, pretty, lastOutput, "alphanum","number")
+		end
+		lastOutput = writeLua(buffer, nStr, "number")
 		return "number"
 	end
 
@@ -4721,35 +4791,39 @@ do
 		-- Expressions:
 
 		if nodeType == "identifier" then
-			lastOutput = writeAlphanum(buffer, pretty, node.name, lastOutput)
+			local ident = node
+			lastOutput = writeAlphanum(buffer, pretty, ident.name, lastOutput)
 
 		elseif nodeType == "vararg" then
-			if node.adjustToOne then  lastOutput = writeLua(buffer, "(", "")  end
+			local vararg = node
+			if vararg.adjustToOne then  lastOutput = writeLua(buffer, "(", "")  end
 			lastOutput = writeLua(buffer, "...", "")
-			if node.adjustToOne then  lastOutput = writeLua(buffer, ")", "")  end
+			if vararg.adjustToOne then  lastOutput = writeLua(buffer, ")", "")  end
 
 		elseif nodeType == "literal" then
-			if node.value == 0 then
-				lastOutput = writeNumber(buffer, pretty, 0, lastOutput) -- Avoid writing '-0'. (This rule might mess up round-trip tests in rare cases, I think.)
+			local literal = node
 
-			elseif node.value == 1/0 then
+			if node.value == 0 and NORMALIZE_MINUS_ZERO then
+				lastOutput = writeNumber(buffer, pretty, 0, lastOutput) -- Avoid writing '-0' sometimes.
+
+			elseif literal.value == 1/0 then
 				lastOutput = writeAlphanum(buffer, pretty, "(1/0)", lastOutput) -- Note: We parse this as one literal.
 
-			elseif node.value == -1/0 then
+			elseif literal.value == -1/0 then
 				lastOutput = writeLua(buffer, "(-1/0)", "") -- Note: We parse this as one literal.
 
-			elseif node.value ~= node.value then
+			elseif literal.value ~= literal.value then
 				lastOutput = writeLua(buffer, "(0/0)", "") -- Note: We parse this as one literal.
 
-			elseif node.value == nil or type(node.value) == "boolean" then
-				lastOutput = writeAlphanum(buffer, pretty, tostring(node.value), lastOutput)
+			elseif literal.value == nil or type(literal.value) == "boolean" then
+				lastOutput = writeAlphanum(buffer, pretty, tostring(literal.value), lastOutput)
 
-			elseif type(node.value) == "number" or (jit and type(node.value) == "cdata" and tonumber(node.value)) then
-				lastOutput = writeNumber(buffer, pretty, node.value, lastOutput)
+			elseif type(literal.value) == "number" or (jit and type(literal.value) == "cdata" and tonumber(literal.value)) then
+				lastOutput = writeNumber(buffer, pretty, literal.value, lastOutput)
 
-			elseif type(node.value) == "string" then
+			elseif type(literal.value) == "string" then
 				local R         = isNumberInRange
-				local s         = node.value
+				local s         = literal.value
 				local quote     = stringFind(s, '"', 1, true) and not stringFind(s, "'", 1, true) and "'" or '"'
 				local quoteByte = stringByte(quote)
 				local pos       = 1
@@ -4794,13 +4868,14 @@ do
 				lastOutput = writeLua(buffer, quote, "")
 
 			else
-				return nil, F("Error: Failed outputting '%s' value '%s'.", type(node.value), tostring(node.value))
+				return nil, F("Error: Failed outputting '%s' value '%s'.", type(literal.value), tostring(literal.value))
 			end
 
 		elseif nodeType == "table" then
-			lastOutput = writeLua(buffer, "{", "")
+			local tableNode = node
+			lastOutput      = writeLua(buffer, "{", "")
 
-			for i, tableField in ipairs(node.fields) do
+			for i, tableField in ipairs(tableNode.fields) do
 				if i > 1 then
 					lastOutput = writeLua(buffer, ",", "")
 					if pretty then  lastOutput = writeLua(buffer, " ", "")  end
@@ -4829,56 +4904,64 @@ do
 			lastOutput = writeLua(buffer, "}", "")
 
 		elseif nodeType == "lookup" then
-			local ok;ok, lastOutput = writeLookup(buffer, pretty, indent, lastOutput, node, false)
+			local lookup            = node
+			local ok;ok, lastOutput = writeLookup(buffer, pretty, indent, lastOutput, lookup, false)
 			if not ok then  return nil, lastOutput  end
 
 		elseif nodeType == "unary" then
-			local operatorOutput    = ((node.operator == "-" and "-") or (stringFind(node.operator, "%w") and "alphanum") or (""))
+			local unary             = node
+			local operatorOutput    = (unary.operator == "-" and "-") or (stringFind(unary.operator, "%w") and "alphanum") or ("")
 			local prettyAndAlphanum = pretty and operatorOutput == "alphanum"
 
 			if prettyAndAlphanum and not maySafelyOmitParens then  lastOutput = writeLua(buffer, "(", "")  end -- @Polish: Only output parentheses around child unaries/binaries if associativity requires it.
 
-			if operatorOutput ~= "" then  ensureSpaceIfNotPretty(buffer, pretty, lastOutput, operatorOutput)  end
-			lastOutput = writeLua(buffer, node.operator, operatorOutput)
+			if lastOutput == "-" and operatorOutput == "-" then  lastOutput = writeLua(buffer, " ", "")
+			elseif                   operatorOutput ~= ""  then  ensureSpaceIfNotPretty(buffer, pretty, lastOutput, operatorOutput)
+			end
+			lastOutput = writeLua(buffer, unary.operator, operatorOutput)
 
 			if prettyAndAlphanum then  lastOutput = writeLua(buffer, " ", "")  end
 
-			local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, node.expression, false)
+			local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, unary.expression, false)
 			if not ok then  return nil, lastOutput  end
 
 			if prettyAndAlphanum and not maySafelyOmitParens then  lastOutput = writeLua(buffer, ")", "")  end
 
 		elseif nodeType == "binary" then
+			local binary = node
+
 			if not maySafelyOmitParens then  lastOutput = writeLua(buffer, "(", "")  end -- @Polish: Only output parentheses around child unaries/binaries if associativity requires it.
 
-			if node.operator == ".." or node.operator == "and" or node.operator == "or" then
-				local ok;ok, lastOutput = writeBinaryOperatorChain(buffer, pretty, indent, lastOutput, node)
+			if binary.operator == ".." or binary.operator == "and" or binary.operator == "or" then
+				local ok;ok, lastOutput = writeBinaryOperatorChain(buffer, pretty, indent, lastOutput, binary)
 				if not ok then  return nil, lastOutput  end
 
 			else
-				local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, node.left, false)
+				local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, binary.left, false)
 				if not ok then  return nil, lastOutput  end
 
-				local operatorOutput = ((node.operator == "-" and "-") or (stringFind(node.operator, "%w") and "alphanum") or (""))
+				local operatorOutput = ((binary.operator == "-" and "-") or (stringFind(binary.operator, "%w") and "alphanum") or (""))
 
 				if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
 				if operatorOutput ~= "" then  ensureSpaceIfNotPretty(buffer, pretty, lastOutput, operatorOutput)  end
-				lastOutput = writeLua(buffer, node.operator, operatorOutput)
+				lastOutput = writeLua(buffer, binary.operator, operatorOutput)
 
 				if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
-				local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, node.right, false)
+				local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, binary.right, false)
 				if not ok then  return nil, lastOutput  end
 			end
 
 			if not maySafelyOmitParens then  lastOutput = writeLua(buffer, ")", "")  end
 
-		elseif nodeType == "call" then
-			if node.adjustToOne then  lastOutput = writeLua(buffer, "(", "")  end
+		elseif nodeType == "call" then -- Can be statement too.
+			local call = node
 
-			if node.method then
-				local lookup = node.callee
+			if call.adjustToOne then  lastOutput = writeLua(buffer, "(", "")  end
+
+			if call.method then
+				local lookup = call.callee
 
 				if lookup.type ~= "lookup" then
 					return nil, "Error: AST: Callee for method call is not a lookup."
@@ -4888,22 +4971,23 @@ do
 				if not ok then  return nil, lastOutput  end
 
 			else
-				local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, node.callee, false)
+				local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, call.callee, false)
 				if not ok then  return nil, lastOutput  end
 			end
 
 			lastOutput = writeLua(buffer, "(", "")
 
-			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.arguments, false)
+			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, call.arguments, false)
 			if not ok then  return nil, lastOutput  end
 
 			lastOutput = writeLua(buffer, ")", "")
-			if node.adjustToOne then  lastOutput = writeLua(buffer, ")", "")  end
+			if call.adjustToOne then  lastOutput = writeLua(buffer, ")", "")  end
 
 		elseif nodeType == "function" then
+			local func = node
 			lastOutput = writeAlphanum(buffer, pretty, "function", lastOutput)
 
-			local ok;ok, lastOutput = writeFunctionParametersAndBody(buffer, pretty, indent, lastOutput, node, node.parameters)
+			local ok;ok, lastOutput = writeFunctionParametersAndBody(buffer, pretty, indent, lastOutput, func, func.parameters)
 			if not ok then  return nil, lastOutput  end
 
 		-- Statements:
@@ -4913,19 +4997,21 @@ do
 			lastOutput = writeLua(buffer, ";", "")
 
 		elseif nodeType == "return" then
-			lastOutput = writeAlphanum(buffer, pretty, "return", lastOutput)
+			local returnNode = node
+			lastOutput       = writeAlphanum(buffer, pretty, "return", lastOutput)
 
-			if node.values[1] then
+			if returnNode.values[1] then
 				if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
-				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.values, false)
+				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, returnNode.values, false)
 				if not ok then  return nil, lastOutput  end
 			end
 
 			lastOutput = writeLua(buffer, ";", "")
 
 		elseif nodeType == "label" then
-			local name = node.name
+			local label = node
+			local name  = label.name
 			if not (stringFind(name, "^[%a_][%w_]*$") and not KEYWORDS[name]) then
 				return nil, F("Error: AST: Invalid label '%s'.", name)
 			end
@@ -4935,7 +5021,8 @@ do
 			lastOutput = writeLua(buffer, ";", "")
 
 		elseif nodeType == "goto" then
-			local name = node.name
+			local gotoNode = node
+			local name     = gotoNode.name
 			if not (stringFind(name, "^[%a_][%w_]*$") and not KEYWORDS[name]) then
 				return nil, F("Error: AST: Invalid label '%s'.", name)
 			end
@@ -4945,55 +5032,58 @@ do
 			lastOutput = writeLua(buffer, ";", "")
 
 		elseif nodeType == "block" then
-			lastOutput = writeAlphanum(buffer, pretty, "do", lastOutput)
+			local block = node
+			lastOutput  = writeAlphanum(buffer, pretty, "do", lastOutput)
 			if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
 
-			local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, node.statements)
+			local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, block.statements)
 			if not ok then  return nil, lastOutput  end
 
 			lastOutput = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
 			lastOutput = writeAlphanum(buffer, pretty, "end", lastOutput)
 
 		elseif nodeType == "declaration" then
+			local decl = node
 			lastOutput = writeAlphanum(buffer, pretty, "local", lastOutput)
 			lastOutput = writeLua(buffer, " ", "")
 
-			if not node.names[1] then  return nil, "Error: AST: Missing name(s) for declaration."  end
+			if not decl.names[1] then  return nil, "Error: AST: Missing name(s) for declaration."  end
 
-			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.names, true)
+			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, decl.names, true)
 			if not ok then  return nil, lastOutput  end
 
-			if node.values[1] then
+			if decl.values[1] then
 				if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 				lastOutput = writeLua(buffer, "=", "")
 				if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
-				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.values, false)
+				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, decl.values, false)
 				if not ok then  return nil, lastOutput  end
 			end
 
 			lastOutput = writeLua(buffer, ";", "")
 
 		elseif nodeType == "assignment" then
-			if not node.targets[1] then  return nil, "Error: AST: Missing target expression(s) for assignment."  end
-			if not node.values[1]  then  return nil, "Error: AST: Missing value(s) for assignment."  end
+			local assignment = node
+			if not assignment.targets[1] then  return nil, "Error: AST: Missing target expression(s) for assignment."  end
+			if not assignment.values[1]  then  return nil, "Error: AST: Missing value(s) for assignment."  end
 
-			if isAssignmentFunctionAssignment(node) then
-				local func = node.values[1]
+			if isAssignmentFunctionAssignment(assignment) then
+				local func = assignment.values[1]
 				lastOutput = writeAlphanum(buffer, pretty, "function", lastOutput)
 				lastOutput = writeLua(buffer, " ", "")
 
 				local implicitSelfParam
 					=   #func.parameters >= 1
 					and func.parameters[1].name == "self"
-					and node.targets[1].type == "lookup"
-					and canNodeBeName(node.targets[1].member)
+					and assignment.targets[1].type == "lookup"
+					and canNodeBeName(assignment.targets[1].member)
 
 				if implicitSelfParam then
-					local ok;ok, lastOutput = writeLookup(buffer, pretty, indent, lastOutput, node.targets[1], true)
+					local ok;ok, lastOutput = writeLookup(buffer, pretty, indent, lastOutput, assignment.targets[1], true)
 					if not ok then  return nil, lastOutput  end
 				else
-					local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, node.targets[1], false)
+					local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, assignment.targets[1], false)
 					if not ok then  return nil, lastOutput  end
 				end
 
@@ -5004,50 +5094,51 @@ do
 				if not ok then  return nil, lastOutput  end
 
 			else
-				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.targets, false)
+				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, assignment.targets, false)
 				if not ok then  return nil, lastOutput  end
 
 				if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 				lastOutput = writeLua(buffer, "=", "")
 				if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
-				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.values, false)
+				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, assignment.values, false)
 				if not ok then  return nil, lastOutput  end
 
 				lastOutput = writeLua(buffer, ";", "")
 			end
 
 		elseif nodeType == "if" then
-			lastOutput = writeAlphanum(buffer, pretty, "if", lastOutput)
+			local ifNode = node
+			lastOutput   = writeAlphanum(buffer, pretty, "if", lastOutput)
 			if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
-			local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, node.condition, true)
+			local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, ifNode.condition, true)
 			if not ok then  return nil, lastOutput  end
 
 			if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 			lastOutput = writeAlphanum(buffer, pretty, "then", lastOutput)
 			if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
 
-			local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, node.bodyTrue.statements)
+			local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, ifNode.bodyTrue.statements)
 			if not ok then  return nil, lastOutput  end
 
-			while node.bodyFalse do
+			while ifNode.bodyFalse do
 				-- Automatically detect what looks like 'elseif'.
-				if #node.bodyFalse.statements == 1 and node.bodyFalse.statements[1].type == "if" then
-					node = node.bodyFalse.statements[1]
+				if #ifNode.bodyFalse.statements == 1 and ifNode.bodyFalse.statements[1].type == "if" then
+					ifNode = ifNode.bodyFalse.statements[1]
 
 					lastOutput = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
 					lastOutput = writeAlphanum(buffer, pretty, "elseif", lastOutput)
 					if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
-					local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, node.condition, true)
+					local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, ifNode.condition, true)
 					if not ok then  return nil, lastOutput  end
 
 					if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 					lastOutput = writeAlphanum(buffer, pretty, "then", lastOutput)
 					if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
 
-					local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, node.bodyTrue.statements)
+					local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, ifNode.bodyTrue.statements)
 					if not ok then  return nil, lastOutput  end
 
 				else
@@ -5055,7 +5146,7 @@ do
 					lastOutput = writeAlphanum(buffer, pretty, "else", lastOutput)
 					if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
 
-					local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, node.bodyFalse.statements)
+					local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, ifNode.bodyFalse.statements)
 					if not ok then  return nil, lastOutput  end
 
 					break
@@ -5066,66 +5157,69 @@ do
 			lastOutput = writeAlphanum(buffer, pretty, "end", lastOutput)
 
 		elseif nodeType == "while" then
-			lastOutput = writeAlphanum(buffer, pretty, "while", lastOutput)
+			local whileLoop = node
+			lastOutput      = writeAlphanum(buffer, pretty, "while", lastOutput)
 			if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
-			local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, node.condition, true)
+			local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, whileLoop.condition, true)
 			if not ok then  return nil, lastOutput  end
 
 			if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 			lastOutput = writeAlphanum(buffer, pretty, "do", lastOutput)
 			if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
 
-			local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, node.body.statements)
+			local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, whileLoop.body.statements)
 			if not ok then  return nil, lastOutput  end
 
 			lastOutput = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
 			lastOutput = writeAlphanum(buffer, pretty, "end", lastOutput)
 
 		elseif nodeType == "repeat" then
-			lastOutput = writeAlphanum(buffer, pretty, "repeat", lastOutput)
+			local repeatLoop = node
+			lastOutput       = writeAlphanum(buffer, pretty, "repeat", lastOutput)
 			if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
 
-			local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, node.body.statements)
+			local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, repeatLoop.body.statements)
 			if not ok then  return nil, lastOutput  end
 
 			lastOutput = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
 			lastOutput = writeAlphanum(buffer, pretty, "until", lastOutput)
 			if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
-			local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, node.condition, true)
+			local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, repeatLoop.condition, true)
 			if not ok then  return nil, lastOutput  end
 
 		elseif nodeType == "for" then
-			if not node.names[1]  then  return nil, "Error: AST: Missing name(s) for 'for' loop."   end
-			if not node.values[1] then  return nil, "Error: AST: Missing value(s) for 'for' loop."  end
+			local forLoop = node
+			if not forLoop.names[1]  then  return nil, "Error: AST: Missing name(s) for 'for' loop."   end
+			if not forLoop.values[1] then  return nil, "Error: AST: Missing value(s) for 'for' loop."  end
 
 			lastOutput = writeAlphanum(buffer, pretty, "for", lastOutput)
 			lastOutput = writeLua(buffer, " ", "")
 
-			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.names, false)
+			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, forLoop.names, false)
 			if not ok then  return nil, lastOutput  end
 
 			if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
-			if node.kind == "numeric" then
+			if forLoop.kind == "numeric" then
 				lastOutput = writeLua(buffer, "=", "")
-			elseif node.kind == "generic" then
+			elseif forLoop.kind == "generic" then
 				lastOutput = writeAlphanum(buffer, pretty, "in", lastOutput)
 			else
-				return nil, F("Error: Unknown 'for' loop kind '%s'.", node.kind)
+				return nil, F("Error: Unknown 'for' loop kind '%s'.", forLoop.kind)
 			end
 
 			if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
-			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, node.values, false)
+			local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, forLoop.values, false)
 			if not ok then  return nil, lastOutput  end
 
 			if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 			lastOutput = writeAlphanum(buffer, pretty, "do", lastOutput)
 			if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
 
-			local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, node.body.statements)
+			local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, forLoop.body.statements)
 			if not ok then  return nil, lastOutput  end
 
 			lastOutput = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
@@ -5407,6 +5501,16 @@ end
 
 
 
+function show(node, s, ...)
+	if s then
+		print(formatMessageAtNode("Info", node, "DEBUG", s, ...))
+	else
+		print(formatMessageAtNode("Info", node, "DEBUG", "Here!"))
+	end
+end
+
+
+
 parser = {
 	-- Constants.
 	VERSION             = PARSER_VERSION,
@@ -5451,6 +5555,8 @@ parser = {
 	printIds            = false,
 	printLocations      = false,
 	indentation         = "    ",
+
+	constantNameStringValueMaxLength = 200, -- @Undocumented  @Cleanup: Maybe use a better name.
 }
 
 return parser

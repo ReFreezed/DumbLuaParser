@@ -36,7 +36,7 @@ do
 
 	local a = 1 + 2 + 3
 	local b = "1".."2".."3"
-	local c = 1 + 2^3^4 * 5
+	local c = 1 + 4^3^2 * 5
 
 	local s = a   .. b
 	local s = 1.  .. x
@@ -44,7 +44,11 @@ do
 
 	local x = a and b and c or q and w or 5
 
-	foo() ; (f1 or f2).k, (f1 or f2).k = x, y
+	t.k1.k2       = x
+	;(t.k1).k2    = x
+	;(t1 or t2).k = x
+
+	;(t1 or t2).k, (t3 or t4).k = x, y
 
 	if x or y then foo() end
 
