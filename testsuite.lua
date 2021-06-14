@@ -511,11 +511,11 @@ test("Optimize", function()
 	-- Complete removal.
 	testOptimize(
 		[[
-		local n = 1 + 2
-		local function f()
-			local g = global
+		local unused1 = 1 + 2
+		local function unusedFunc()
+			local unused2 = global
 		end
-		f = nil
+		unusedFunc = nil
 		]],
 		[[ ]]
 	)
@@ -523,61 +523,68 @@ test("Optimize", function()
 	-- Complex removals.
 	testOptimize( -- Remove everything.
 		[[
-		local a    = 1
-		local a    = 1, 2
-		local a, b = 1
-		local a, b = 1, 2
+		local unused1          = 1
+		local unused1          = 1, 2
+		local unused1, unused2 = 1
+		local unused1, unused2 = 1, 2
 		]],
 		[[ ]]
 	)
 	testOptimize( -- Keep calls.
 		[[
-		local a = globalFunc1()
-		local a = globalFunc1(), 2
-		local a = 1, globalFunc2()
-		local a = 1, globalFunc2(), 3
-		local a = 1, 2, globalFunc3()
+		local unused = globalFunc1()
+		local unused = globalFunc1(), 2
+		local unused = 1, globalFunc2()
+		local unused = 1, globalFunc2(), 3
+		local unused = 1, 2, globalFunc3()
 		]],
 		[[ globalFunc1();globalFunc1();globalFunc2();globalFunc2();globalFunc3(); ]]
 	)
 	testOptimize( -- Keep all calls.
 		[[
-		local a = globalFunc1(), globalFunc2()
+		local unused = globalFunc1(), globalFunc2()
 		]],
-		[[ local a=globalFunc1(),globalFunc2(); ]] -- @Incomplete: Improve this.
+		[[ local unused=globalFunc1(),globalFunc2(); ]] -- @Incomplete: Improve this.
+	)
+	testOptimize( -- Assignments, keep all calls.
+		[[
+		local unused = 1
+		unused = globalFunc1(), globalFunc2()
+		]],
+		[[ local unused;unused=globalFunc1(),globalFunc2(); ]] -- @Incomplete: Improve this.
 	)
 	testOptimize( -- Keep call.
 		[[
-		local a, b, c = 1, globalFunc2(), 3, 4
-		c             = 1
+		local unused1, unused2, useless = 1, globalFunc2(), 3, 4
+		useless                         = 1
 		]],
-		[[ local b=globalFunc2(); ]] -- @Incomplete: Improve this.
+		[[ globalFunc2(); ]]
 	)
-	testOptimize( -- Keep call, c must be 3.
+	testOptimize( -- Keep call, 'THREE' must be 3.
 		[[
-		local a, b, c = 1, globalFunc2(), 3, 4
-		global        = c
+		local unused1, unused2, THREE = 1, globalFunc2(), 3, 4
+		global                        = THREE
 		]],
-		[[ local b=globalFunc2();global=3; ]] -- @Incomplete: Improve this.
+		[[ globalFunc2();global=3; ]]
 	)
-	testOptimize( -- c must be third value returned from call.
+	testOptimize( -- 'third' must be third value returned from call.
 		[[
-		local a, b, c = globalFunc123()
-		global        = c
+		local useless1, useless2, third = globalFunc123()
+		global                          = third
 		]],
-		[[ local a,b,c=globalFunc123();global=c; ]]
+		[[ local useless1,useless2,third=globalFunc123();global=third; ]]
 	)
-	testOptimize( -- Keep call, c must be nil.
+	testOptimize( -- Keep call, 'NIL' must be nil.
 		[[
-		local a, b, c = globalFunc1(), 2
-		global        = c
+		local unused1, unused2, NIL = globalFunc1(), 2
+		global                      = NIL
 		]],
 		[[ globalFunc1();global=nil; ]]
 	)
 	testOptimize( -- Assignments, keep call.
 		[[
-		local a = 11, 12
-		a       = 21, globalFunc2(), 23
+		local useless = 11, 12
+		useless       = 21, globalFunc2(), 23
 		]],
 		[[ globalFunc2(); ]]
 	)

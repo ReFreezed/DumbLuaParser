@@ -4023,7 +4023,9 @@ local function _optimize(theNode, stats)
 		end
 
 		-- Remove useless lvalues.
-		local statementIsRemoved = false
+		local wantToRemoveLvalue        = {}
+		local wantToRemoveValueIfExists = {}
+		local mayRemoveValueIfExists    = {}
 
 		for slot, lvalue in ipairsr(lvalues) do
 			local declIdent = (lvalue.type == "identifier") and lvalue.declarationIdentifier or nil
@@ -4039,79 +4041,93 @@ local function _optimize(theNode, stats)
 					if valueExprEffective and not isVariableValueList(valueExprEffective) then  valueExprEffective = nil  end
 				end
 
-				local wantToRemoveLvalue = isAssignment or declIdentAssignmentCount[declIdent] == 0
-				local wantToRemoveValue  = not (valueExpr and mayNodeBeInvolvedInJump(valueExpr))
-				local mayRemoveValue     = wantToRemoveValue and not (not valueExpr and lvalues[slot+1] and valueExprEffective)
+				wantToRemoveLvalue       [slot] = isAssignment or declIdentAssignmentCount[declIdent] == 0
+				wantToRemoveValueIfExists[slot] = not (valueExpr and mayNodeBeInvolvedInJump(valueExpr))
+				mayRemoveValueIfExists   [slot] = wantToRemoveValueIfExists[slot] and not (not valueExpr and lvalues[slot+1] and valueExprEffective)
 
-				if not wantToRemoveValue then
+				if not wantToRemoveValueIfExists[slot] then
 					significantValueCount = significantValueCount + 1
 					significantCall       = significantCall or (valueExpr and valueExpr.type == "call" and valueExpr) or nil
 				end
 
 				-- @Incomplete: Update funcInfo.locals and whatever else (if we end up using them at some point).
-				-- @Incomplete: Replace 'unused, useless = func()' with 'useless = func()' etc.
-				-- @Incomplete: Replace 'local unused, useless = func()' with 'local useless = func()' etc.
-				local canRemoveSlot = (wantToRemoveLvalue and mayRemoveValue)
+				-- @Incomplete: Replace 'unused,useless=func()' with 'useless=func()' etc.
+				local canRemoveSlot = (wantToRemoveLvalue[slot] and mayRemoveValueIfExists[slot])
 
-				-- Remove the whole statement.
-				if slot == 1 and canRemoveSlot and not (lvalues[2] or values[2]) then
-					unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, statement, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
-
-					local block = statement.parent
-
-					for i = statement.key, #block.statements do
-						local statement     = block.statements[i+1]
-						block.statements[i] = statement
-
-						if statement then  statement.key = i  end
-					end
-
-					statementIsRemoved = true
-
-				-- Replace 'unused = func()' or 'local unused = func()' with just 'func()'. This is a unique case as call expressions can also be statements.
-				elseif slot == 1 and wantToRemoveLvalue and not lvalues[2] and significantCall and significantValueCount == 1 then
+				-- Maybe remove lvalue.
+				if canRemoveSlot and #lvalues > 1 then
 					unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, lvalue, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
-
-					if statement.type ~= "assignment" then
-						declLikeWatchers[statement] = nil
+					tableRemove(lvalues, slot)
+					for slot = slot, #lvalues do
+						lvalues[slot].key = slot
 					end
+					wantToRemoveLvalue[slot] = wantToRemoveLvalue[slot+1] -- May become nil. We no longer care about the value of slot+1 and beyond after this point.
+				end
 
-					local block                     = statement.parent
-					block.statements[statement.key] = significantCall
-					significantCall.parent          = block
-					significantCall.container       = statement.container
-					significantCall.key             = statement.key
-
-					statementIsRemoved = true
-
-				-- Remove whatever we can.
-				else
-					if canRemoveSlot and #lvalues > 1 then
-						unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, lvalue, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
-						tableRemove(lvalues, slot)
-						for slot = slot, #lvalues do
-							lvalues[slot].key = slot
+				-- Maybe remove value.
+				if wantToRemoveValueIfExists[slot] and valueExpr then
+					if (canRemoveSlot or not values[slot+1]) and not (isAssignment and not values[2]) then
+						unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+						tableRemove(values, slot)
+						for slot = slot, #values do
+							values[slot].key = slot
 						end
-					end
+						wantToRemoveValueIfExists[slot] = wantToRemoveValueIfExists[slot+1] -- May become nil. We no longer care about the value of slot+1 and beyond after this point.
+						mayRemoveValueIfExists   [slot] = mayRemoveValueIfExists   [slot+1] -- May become nil. We no longer care about the value of slot+1 and beyond after this point.
 
-					if wantToRemoveValue and valueExpr then
-						if canRemoveSlot or not values[slot+1] then
-							unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
-							tableRemove(values, slot)
-							for slot = slot, #values do
-								values[slot].key = slot
-							end
-
-						elseif not (valueExpr.type == "literal" and valueExpr.value == nil) then
-							unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
-							replace(valueExpr, AstLiteral(dummyTokens, valueExpr.token, nil), valueExpr.parent, valueExpr.container, valueExpr.key, stats)
-						end
+					elseif not (valueExpr.type == "literal" and valueExpr.value == nil) then
+						unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+						replace(valueExpr, AstLiteral(dummyTokens, valueExpr.token, nil), valueExpr.parent, valueExpr.container, valueExpr.key, stats)
 					end
 				end
 			end--if lvalue is relevant
 		end--for lvalues
 
+		-- Maybe remove or replace the whole statement.
+		local statementIsRemoved = false
+
+		do
+			-- Remove the whole statement.
+			if
+				wantToRemoveLvalue[1]
+				and (
+					mayRemoveValueIfExists[1]
+					or not (isAssignment or values[1]) -- Declaration-likes may have no value - assignments must have at least one.
+				)
+				and not (lvalues[2] or values[2])
+			then
+				unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, statement, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+				if statement.type ~= "assignment" then  declLikeWatchers[statement] = nil  end
+
+				local block = statement.parent
+
+				for i = statement.key, #block.statements do
+					local statement     = block.statements[i+1]
+					block.statements[i] = statement
+
+					if statement then  statement.key = i  end
+				end
+
+				statementIsRemoved = true
+
+			-- Replace 'unused=func()' with just 'func()'. This is a unique case as call expressions can also be statements.
+			-- @Incomplete: Replace 'unused=func1(),func1()' or 'local unused=func1(),func2()' with 'func1();func2()'.
+			elseif wantToRemoveLvalue[1] and not lvalues[2] and significantCall and significantValueCount == 1 then
+				unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, lvalues[1], declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+				if statement.type ~= "assignment" then  declLikeWatchers[statement] = nil  end
+
+				local block                     = statement.parent
+				block.statements[statement.key] = significantCall
+				significantCall.parent          = block
+				significantCall.container       = statement.container
+				significantCall.key             = statement.key
+
+				statementIsRemoved = true
+			end
+		end
+
 		-- Restore or remove adjusted flags.
+		-- @Speed: Don't do anything if statementIsRemoved is set (and we don't need to for some other reason).
 		for i = 1, #values do
 			local valueExpr = values[i]
 			if (valueExpr.type == "call" or valueExpr.type == "vararg") then
