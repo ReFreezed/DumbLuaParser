@@ -3782,6 +3782,20 @@ local function isVariableValueList(node)
 	return (node.type == "call" or node.type == "vararg") and not node.adjustToOne
 end
 
+local function areAllLvaluesUnwantedAndAllValuesCalls(lvalues, values, wantToRemoveLvalue)
+	if not values[1] then  return false  end -- Need at least one call.
+
+	for slot = 1, #lvalues do
+		if not wantToRemoveLvalue[slot] then  return false  end
+	end
+
+	for _, valueExpr in ipairs(values) do
+		if valueExpr.type ~= "call" then  return false  end
+	end
+
+	return true
+end
+
 -- Note: References need to be updated after calling this!
 local function _optimize(theNode, stats)
 	_simplify(theNode, stats)
@@ -4003,16 +4017,10 @@ local function _optimize(theNode, stats)
 		end
 
 		-- Remove useless extra values.
-		local significantValueCount = 0
-		local significantCall       = nil
-
 		for i = #values, #lvalues+1, -1 do
 			local valueExpr = values[i]
 
-			if mayNodeBeInvolvedInJump(valueExpr) then
-				significantValueCount = significantValueCount + 1
-				significantCall       = significantCall or (valueExpr.type == "call" and valueExpr) or nil
-			else
+			if not mayNodeBeInvolvedInJump(valueExpr) then
 				unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
 				tableRemove(values, i)
 			end
@@ -4045,13 +4053,8 @@ local function _optimize(theNode, stats)
 				wantToRemoveValueIfExists[slot] = not (valueExpr and mayNodeBeInvolvedInJump(valueExpr))
 				mayRemoveValueIfExists   [slot] = wantToRemoveValueIfExists[slot] and not (not valueExpr and lvalues[slot+1] and valueExprEffective)
 
-				if not wantToRemoveValueIfExists[slot] then
-					significantValueCount = significantValueCount + 1
-					significantCall       = significantCall or (valueExpr and valueExpr.type == "call" and valueExpr) or nil
-				end
-
 				-- @Incomplete: Update funcInfo.locals and whatever else (if we end up using them at some point).
-				-- @Incomplete: Replace 'unused,useless=func()' with 'useless=func()' etc.
+				-- @Incomplete: Replace 'unused,useless=func()' with 'useless=func()'.
 				local canRemoveSlot = (wantToRemoveLvalue[slot] and mayRemoveValueIfExists[slot])
 
 				-- Maybe remove lvalue.
@@ -4111,16 +4114,21 @@ local function _optimize(theNode, stats)
 				statementIsRemoved = true
 
 			-- Replace 'unused=func()' with just 'func()'. This is a unique case as call expressions can also be statements.
-			-- @Incomplete: Replace 'unused=func1(),func1()' or 'local unused=func1(),func2()' with 'func1();func2()'.
-			elseif wantToRemoveLvalue[1] and not lvalues[2] and significantCall and significantValueCount == 1 then
-				unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, lvalues[1], declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+			elseif areAllLvaluesUnwantedAndAllValuesCalls(lvalues, values, wantToRemoveLvalue) then
+				for _, lvalue in ipairs(lvalues) do
+					unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, lvalue, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+				end
 				if statement.type ~= "assignment" then  declLikeWatchers[statement] = nil  end
 
-				local block                     = statement.parent
-				block.statements[statement.key] = significantCall
-				significantCall.parent          = block
-				significantCall.container       = statement.container
-				significantCall.key             = statement.key
+				table.remove(statement.container, statement.key) -- The parent ought to be a block!
+
+				for slot, call in ipairs(values) do
+					local i = statement.key + slot - 1
+					table.insert(statement.container, i, call)
+					call.parent    = statement.parent
+					call.container = statement.container
+					call.key       = i
+				end
 
 				statementIsRemoved = true
 			end

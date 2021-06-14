@@ -532,26 +532,31 @@ test("Optimize", function()
 	)
 	testOptimize( -- Keep calls.
 		[[
-		local unused = globalFunc1()
-		local unused = globalFunc1(), 2
-		local unused = 1, globalFunc2()
-		local unused = 1, globalFunc2(), 3
-		local unused = 1, 2, globalFunc3()
+		local unused = globalFunc11()
+		local unused = globalFunc12(), 2
+		local unused = globalFunc13(), 2, 3
+		local unused = 1, globalFunc21()
+		local unused = 1, globalFunc22(), 3
+		local unused = 1, 2, globalFunc31()
 		]],
-		[[ globalFunc1();globalFunc1();globalFunc2();globalFunc2();globalFunc3(); ]]
+		[[ globalFunc11();globalFunc12();globalFunc13();globalFunc21();globalFunc22();globalFunc31(); ]]
 	)
 	testOptimize( -- Keep all calls.
 		[[
+		before()
 		local unused = globalFunc1(), globalFunc2()
+		after()
 		]],
-		[[ local unused=globalFunc1(),globalFunc2(); ]] -- @Incomplete: Improve this.
+		[[ before();globalFunc1();globalFunc2();after(); ]]
 	)
 	testOptimize( -- Assignments, keep all calls.
 		[[
-		local unused = 1
-		unused = globalFunc1(), globalFunc2()
+		before()
+		local useless = 1
+		useless = globalFunc1(), globalFunc2()
+		after()
 		]],
-		[[ local unused;unused=globalFunc1(),globalFunc2(); ]] -- @Incomplete: Improve this.
+		[[ before();globalFunc1();globalFunc2();after(); ]]
 	)
 	testOptimize( -- Keep call.
 		[[
@@ -587,6 +592,13 @@ test("Optimize", function()
 		useless       = 21, globalFunc2(), 23
 		]],
 		[[ globalFunc2(); ]]
+	)
+	testOptimize( -- Keep all calls, 'x' must be what globalFunc2() returns.
+		[[
+		local unused, x = globalFunc1(), globalFunc2(), globalFunc3()
+		globalFuncX(x)
+		]],
+		[[ local unused,x=globalFunc1(),globalFunc2(),globalFunc3();globalFuncX(x); ]]
 	)
 
 	--
