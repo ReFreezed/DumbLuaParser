@@ -420,6 +420,17 @@ test("Simplify", function()
 		]],
 		[[ repeat repeatYes();repeatOnce();until false ]]
 	)
+	testSimplify(
+		[[
+		for x = 1, 2 do
+			forYes()
+			for y = 1, 2, -1 do  forNo()  end
+			for y = 2, 1     do  forNo()  end
+			for y = 2, 1,  1 do  forNo()  end
+		end
+		]],
+		[[ for x=1,2 do forYes();end ]]
+	)
 end)
 
 
@@ -453,7 +464,7 @@ test("Optimize", function()
 	-- Names.
 	--
 
-	-- Remove individual names.
+	-- Declarations.
 	testOptimize(
 		[[
 		local useless, keep, remove = globalFunc1()
@@ -461,14 +472,6 @@ test("Optimize", function()
 		]],
 		[[ local useless,keep=globalFunc1();globalFunc2(keep); ]]
 	)
-	-- testOptimize( -- @Incomplete
-	-- 	[[
-	-- 	for useless, keep, remove in globalFunc() do
-	-- 		globalFunc(keep)
-	-- 	end
-	-- 	]],
-	-- 	[[ for useless,keep in globalFunc()do globalFunc(keep);end ]]
-	-- )
 	testOptimize(
 		[[
 		local useless, keep, remove
@@ -506,6 +509,50 @@ test("Optimize", function()
 		end
 		]],
 		[[ local forward;local function localFunc()return forward();end function globalFunc()return localFunc();end do local n=0;function forward()n=n+1;return n;end end ]]
+	)
+
+	-- Functions.
+	testOptimize(
+		[[
+		function globalFunc(useless, keep, remove)
+			global = keep
+		end
+		]],
+		[[ function globalFunc(useless,keep)global=keep;end ]]
+	)
+	testOptimize(
+		[[
+		function globalFunc(useless1, useless2, ...)
+			global = ...
+		end
+		]],
+		[[ function globalFunc(useless1,useless2,...)global=...;end ]]
+	)
+	testOptimize(
+		[[
+		function globalFunc(useless1, useless2, ...)
+			-- void
+		end
+		]],
+		[[ function globalFunc()end ]]
+	)
+
+	-- For loops (generic).
+	testOptimize(
+		[[
+		for useless, keep, remove in iterator() do
+			global = keep
+		end
+		]],
+		[[ for useless,keep in iterator()do global=keep;end ]]
+	)
+	testOptimize(
+		[[
+		for useless in iterator() do
+			-- void
+		end
+		]],
+		[[ for useless in iterator()do end ]]
 	)
 
 	-- Complete removal.

@@ -140,7 +140,7 @@ traverseTreeReverse()
 updateReferences()
 	parser.updateReferences( astNode [, updateTopNodePosition=true ] )
 	Update references between nodes in the tree.
-	This function sets 'parent'+'container'+'key' for all nodes, and 'declaration'+'declarationIdentifier' for identifiers.
+	This function sets 'parent'+'container'+'key' for all nodes, 'declaration'+'declarationIdentifier' for identifiers, and 'declaration'+'declarationVararg' for vararg nodes.
 	If 'updateTopNodePosition' is false then 'parent', 'container' and 'key' will remain as-it for 'astNode' specifically.
 
 simplify()
@@ -422,8 +422,6 @@ do
 	MIN_INT   = math.mininteger or -MAX_INT-1
 end
 
-local EMPTY_TABLE = {}
-
 local nextSerialNumber = 1
 
 
@@ -452,15 +450,17 @@ end
 
 -- AST expressions.
 local function AstIdentifier (tokens,tok,name)return populateCommonNodeFields(tokens,tok,{
-	type        = "identifier",
-	name        = name,  -- String.
-	attribute   = "",    -- "" | "close" | "const"
-	declaration = nil,   -- AstDeclaration, AstFunction or AstFor. Updated by updateReferences(). This is nil for globals.
-	declarationIdentifier = nil, -- AstIdentifier. Updated by updateReferences(). This is nil for globals.
+	type                  = "identifier",
+	name                  = name, -- String.
+	attribute             = "",   -- "" | "close" | "const"
+	declaration           = nil,  -- AstDeclaration, AstFunction or AstFor. Updated by updateReferences(). This is nil for globals.
+	declarationIdentifier = nil,  -- AstIdentifier. Updated by updateReferences(). This is nil for globals.
 })end
 local function AstVararg (tokens,tok)return populateCommonNodeFields(tokens,tok,{
-	type        = "vararg",
-	adjustToOne = false, -- True if parentheses surround the vararg.
+	type              = "vararg",
+	declaration       = nil,   -- AstFunction. Updated by updateReferences(). This is nil in the main chunk (or in a non-vararg function, which is probably an error).
+	declarationVararg = nil,   -- AstVararg. Updated by updateReferences(). This is nil in the main chunk (or in a non-vararg function, which is probably an error).
+	adjustToOne       = false, -- True if parentheses surround the vararg.
 })end
 local function AstLiteral (tokens,tok,value)return populateCommonNodeFields(tokens,tok,{
 	type        = "literal",
@@ -2631,6 +2631,12 @@ do
 		elseif nodeType == "vararg" then
 			if node.adjustToOne then  ioWrite(" (adjustToOne)")  end
 
+			if node.declaration then
+				ioWrite(" (decl=", node.declaration.type)
+				if parser.printIds then  ioWrite("#", node.declaration.id)  end
+				ioWrite(")")
+			end
+
 		elseif nodeType == "literal" then
 			if node.value == nil or node.value == true or node.value == false then
 				ioWrite(" (", tostring(node.value), ")")
@@ -2713,7 +2719,8 @@ do
 
 		elseif nodeType == "function" then
 			for i, ident in ipairs(node.parameters) do  _printTree(ident, indent, "PARAM"..i)  end
-			if node.body then  _printTree(node.body, indent, "BODY")  end
+			if node.vararg then  _printTree(node.vararg, indent, "VARARG")  end
+			if node.body   then  _printTree(node.body,   indent, "BODY"  )  end
 
 		elseif nodeType == "return" then
 			for i, expr in ipairs(node.values) do  _printTree(expr, indent, tostring(i))  end
@@ -3012,8 +3019,8 @@ end
 
 
 
--- decl|func|forLoop|nil, declIdent = findDeclaration( ident )
-local function findDeclaration(ident)
+-- decl|func|forLoop|nil, declIdent|nil = findIdentifierDeclaration( ident )
+local function findIdentifierDeclaration(ident)
 	local name   = ident.name
 	local parent = ident
 
@@ -3075,6 +3082,24 @@ local function findDeclaration(ident)
 	end
 end
 
+-- func|nil, declVararg|nil = findVarargDeclaration( vararg )
+local function findVarargDeclaration(vararg)
+	local parent = vararg
+
+	while true do
+		parent = parent.parent
+		if not parent then  return nil  end
+
+		if parent.type == "function" then
+			if parent.vararg then
+				return parent, parent.vararg
+			else
+				return nil
+			end
+		end
+	end
+end
+
 local function findLabel(gotoNode)
 	local name   = gotoNode.name
 	local parent = gotoNode
@@ -3116,7 +3141,7 @@ function updateReferences(node, updateTopNodePosition)
 
 		if node.type == "identifier" then
 			local ident                                    = node
-			ident.declaration, ident.declarationIdentifier = findDeclaration(ident) -- We can call this because all parents and previous nodes already have their references updated at this point.
+			ident.declaration, ident.declarationIdentifier = findIdentifierDeclaration(ident) -- We can call this because all parents and previous nodes already have their references updated at this point.
 
 			--[[ DEBUG
 			print(F(
@@ -3124,6 +3149,19 @@ function updateReferences(node, updateTopNodePosition)
 				ident.name,
 				(        ident.declaration and ident.declaration.type or ""),
 				tostring(ident.declaration and ident.declaration.id   or "")
+			))
+			--]]
+
+		elseif node.type == "vararg" then
+			local vararg                                 = node
+			vararg.declaration, vararg.declarationVararg = findVarargDeclaration(vararg) -- We can call this because all relevant 'parent' references have been updated at this point.
+
+			--[[ DEBUG
+			print(F(
+				"%-10s  %-12s  %s",
+				"...",
+				(        vararg.declaration and vararg.declaration.type or ""),
+				tostring(vararg.declaration and vararg.declaration.id   or "")
 			))
 			--]]
 
@@ -3465,6 +3503,27 @@ local function simplifyNode(node, parent, container, key)
 			end
 		end
 
+	elseif node.type == "for" then
+		local forLoop = node
+
+		if
+			forLoop.kind == "numeric"
+			and forLoop.values[2]
+			and not forLoop.values[4] -- If this value exists then there will be an error when Lua tries to run the file, but it's not our job to handle that here.
+			and forLoop.values[1].type == "literal" and type(forLoop.values[1].value) == "number"
+			and forLoop.values[2].type == "literal" and type(forLoop.values[2].value) == "number"
+			and (not forLoop.values[3] or (forLoop.values[3].type == "literal" and type(forLoop.values[3].value) == "number"))
+		then
+			local from =                       forLoop.values[1].value
+			local to   =                       forLoop.values[2].value
+			local step = forLoop.values[3] and forLoop.values[3].value or 1
+
+			if (step > 0 and from > to) or (step < 0 and from < to) then
+				tableRemove(container, key)
+				statsForSimplify.nodeRemoveCount = statsForSimplify.nodeRemoveCount + 1
+			end
+		end
+
 	elseif node.type == "block" then
 		if parent.type == "block" then
 			local block           = node
@@ -3548,39 +3607,49 @@ local function lookForDeclarationLikesAndRegisterWatchers(declLikeWatchers, iden
 end
 
 local function getInformationAboutIdentifiersAndUpdateMostReferences(node)
-	local identInfos       = {--[[ [ident1]=identInfo1, identInfo1, ... ]]} -- identInfo = {ident=ident, visibleDeclLikes=declLikes}
-	local declLikeWatchers = {--[[ [declLike1]={ident1,...}, ... ]]}
+	local identInfos       = {--[[ [ident1]=identInfo1, identInfo1, ... ]]} -- identInfo = {ident=identOrVararg, visibleDeclLikes=declLikes}
+	local declLikeWatchers = {--[[ [declLike1]={identOrVararg1,...}, ... ]]}
 
 	traverseTree(node, function(node, parent, container, key)
 		node.parent    = parent
 		node.container = container
 		node.key       = key
 
-		if node.type == "identifier" then
-			local currentIdent                      = node
-			local currentDeclLike, currentDeclIdent = findDeclaration(currentIdent) -- We can call this because all parents and previous nodes already have their references updated at this point.
-			currentIdent.declaration                = currentDeclLike
-			currentIdent.declarationIdentifier      = currentDeclIdent
+		if node.type == "identifier" or node.type == "vararg" then
+			local currentIdentOrVararg = node
+			local currentDeclLike
+
+			if node.type == "identifier" then
+				local currentDeclIdent
+				currentDeclLike, currentDeclIdent          = findIdentifierDeclaration(currentIdentOrVararg) -- We can call this because all parents and previous nodes already have their references updated at this point.
+				currentIdentOrVararg.declaration           = currentDeclLike
+				currentIdentOrVararg.declarationIdentifier = currentDeclIdent
+			else
+				local currentDeclVararg
+				currentDeclLike, currentDeclVararg         = findVarargDeclaration(currentIdentOrVararg) -- We can call this because all relevant 'parent' references have been updated at this point.
+				currentIdentOrVararg.declaration           = currentDeclLike
+				currentIdentOrVararg.declarationVararg     = currentDeclVararg
+			end
 
 			local identType = (
 				(parent and (
-					(parent.type == "declaration" and container == parent.names     ) or
-					(parent.type == "assignment"  and container == parent.targets   ) or
-					(parent.type == "function"    and container == parent.parameters) or
-					(parent.type == "for"         and container == parent.names     )
+					(parent.type == "declaration" and (container == parent.names                        )) or
+					(parent.type == "assignment"  and (container == parent.targets                      )) or
+					(parent.type == "function"    and (container == parent.parameters or key == "vararg")) or
+					(parent.type == "for"         and (container == parent.names                        ))
 				))
 				and "lvalue"
 				or  "rvalue"
 			)
 
-			-- if currentDeclLike then  print(F("%s:%d: %s '%s'", currentIdent.sourcePath, currentIdent.line, identType, currentIdent.name))  end -- DEBUG
+			-- if currentDeclLike then  print(F("%s:%d: %s '%s'", currentIdentOrVararg.sourcePath, currentIdentOrVararg.line, identType, (currentIdentOrVararg.name or "...")))  end -- DEBUG
 
-			local identInfo = {ident=currentIdent, type=identType--[[, visibleDeclLikes={}]]}
+			local identInfo = {ident=currentIdentOrVararg, type=identType--[[, visibleDeclLikes={}]]}
 			tableInsert(identInfos, identInfo)
-			identInfos[currentIdent] = identInfo
+			identInfos[currentIdentOrVararg] = identInfo
 
 			-- Determine visible declarations for the identifier.
-			local block = currentIdent -- Start node for while loop.
+			local block = currentIdentOrVararg -- Start node for while loop.
 
 			while true do
 				local statementOrInterest
@@ -3607,7 +3676,7 @@ local function getInformationAboutIdentifiersAndUpdateMostReferences(node)
 
 					-- :DeclarationIdentifiersWatchTheirParent
 					declLikeWatchers[declLike] = declLikeWatchers[declLike] or {}
-					tableInsert(declLikeWatchers[declLike], currentIdent)
+					tableInsert(declLikeWatchers[declLike], currentIdentOrVararg)
 
 					if declLike == currentDeclLike then  break  end
 
@@ -3625,7 +3694,7 @@ local function getInformationAboutIdentifiersAndUpdateMostReferences(node)
 
 					-- :DeclarationIdentifiersWatchTheirParent
 					declLikeWatchers[declLike] = declLikeWatchers[declLike] or {}
-					tableInsert(declLikeWatchers[declLike], currentIdent)
+					tableInsert(declLikeWatchers[declLike], currentIdentOrVararg)
 
 					break
 				end
@@ -3715,9 +3784,9 @@ local function unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers,
 
 		stats.nodeRemoveCount = stats.nodeRemoveCount + 1
 
-		if node.type == "identifier" then
-			local currentIdent     = node
-			local currentIdentInfo = identInfos[currentIdent]
+		if node.type == "identifier" or node.type == "vararg" then
+			local currentIdentOrVararg = node
+			local currentIdentInfo     = identInfos[currentIdentOrVararg]
 			assert(currentIdentInfo)
 
 			-- Remove identifier info.
@@ -3727,12 +3796,12 @@ local function unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers,
 					break
 				end
 			end
-			identInfos[currentIdent] = nil
+			identInfos[currentIdentOrVararg] = nil
 
 			-- Remove as watcher.
 			for _, watcherIdents in pairs(declLikeWatchers) do -- @Speed
 				for i, watcherIdent in ipairs(watcherIdents) do
-					if watcherIdent == currentIdent then
+					if watcherIdent == currentIdentOrVararg then
 						removeUnordered(watcherIdents, i)
 						break
 					end
@@ -3740,21 +3809,21 @@ local function unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers,
 			end
 
 			-- Update access count.
-			if not currentIdent.declaration then
+			if not currentIdentOrVararg.declaration then
 				-- void
 			elseif currentIdentInfo.type == "rvalue" then
-				local declIdent               = currentIdent.declarationIdentifier
-				declIdentReadCount[declIdent] = declIdentReadCount[declIdent] - 1 -- :AccessCount
+				local declIdent                     = currentIdentOrVararg.declarationIdentifier or currentIdentOrVararg.declarationVararg -- @Cleanup: Use the same name for declarationIdentifier and declarationVararg.
+				declIdentReadCount[declIdent]       = declIdentReadCount[declIdent] - 1 -- :AccessCount
 				assert(declIdentReadCount[declIdent] >= 0)
 			elseif --[[currentIdentInfo.type == "lvalue" and]] currentIdentInfo.ident.parent.type == "assignment" then
-				local declIdent                     = currentIdent.declarationIdentifier
+				local declIdent                     = currentIdentOrVararg.declarationIdentifier or currentIdentOrVararg.declarationVararg
 				declIdentAssignmentCount[declIdent] = declIdentAssignmentCount[declIdent] - 1 -- :AccessCount
 				assert(declIdentAssignmentCount[declIdent] >= 0)
 			end
 
-			-- removeItemUnordered(currentFuncInfo.locals,   currentIdent)
-			-- removeItemUnordered(currentFuncInfo.upvalues, currentIdent)
-			-- removeItemUnordered(currentFuncInfo.globals,  currentIdent)
+			-- removeItemUnordered(currentFuncInfo.locals,   currentIdentOrVararg)
+			-- removeItemUnordered(currentFuncInfo.upvalues, currentIdentOrVararg)
+			-- removeItemUnordered(currentFuncInfo.globals,  currentIdentOrVararg)
 
 		elseif node.type == "assignment" then
 			local assignment = node
@@ -3839,7 +3908,7 @@ local function _optimize(theNode, stats)
 			if node      == funcInfo.node then  return                   end
 			if node.type == "function"    then  return "ignorechildren"  end
 
-			if node.type == "identifier" then
+			--[[if node.type == "identifier" then
 				local ident    = node
 				local declLike = ident.declaration
 
@@ -3857,13 +3926,13 @@ local function _optimize(theNode, stats)
 						parent = parent.parent
 					end
 
-					-- tableInsert((isInFunc and funcInfo.locals or funcInfo.upvalues), ident)
+					tableInsert((isInFunc and funcInfo.locals or funcInfo.upvalues), ident)
 
 				else
-					-- tableInsert(funcInfo.globals, ident)
+					tableInsert(funcInfo.globals, ident)
 				end
 
-			elseif node.type == "declaration" or node.type == "for" then
+			else]]if node.type == "declaration" or node.type == "for" then
 				tableInsert(funcInfo.declLikes, node)
 
 				-- for _, declIdent in ipairs(node.names) do
@@ -3901,12 +3970,18 @@ local function _optimize(theNode, stats)
 
 	for _, funcInfo in ipairs(funcInfos) do
 		for _, declLike in ipairs(funcInfo.declLikes) do
-			for _, declIdent in ipairs(getNameArrayOfDeclarationLike(declLike)) do
+			local declIdents = getNameArrayOfDeclarationLike(declLike)
+
+			if declLike.type == "function" and declLike.vararg then -- @Cleanup: Maybe store func.vararg in func.parameters instead, or have an iterator for names in declaration-likes that considers the vararg.
+				declIdents = {declLike.vararg, tableUnpack(declIdents)} -- @Speed
+			end
+
+			for _, declIdent in ipairs(declIdents) do
 				local readCount       = 0
 				local assignmentCount = 0
 
 				for _, watcherIdent in ipairs(declLikeWatchers[declLike]) do
-					if watcherIdent.declarationIdentifier == declIdent then
+					if watcherIdent.declarationIdentifier == declIdent or watcherIdent.declarationVararg == declIdent then
 						local identInfo = identInfos[watcherIdent]
 
 						if identInfo.type == "rvalue" then
@@ -3941,7 +4016,7 @@ local function _optimize(theNode, stats)
 						declIdentAssignmentCount[declIdent] == 0
 						and declIdentReadCount[declIdent] > 0
 						and (
-							(not valueExpr and not isVariableValueList(decl.values[#decl.values]))
+							(not valueExpr and not (decl.values[1] and isVariableValueList(decl.values[#decl.values])))
 							or (
 								valueExpr
 								and valueExpr.type == "literal"
@@ -3958,7 +4033,7 @@ local function _optimize(theNode, stats)
 						local valueIsZero  = (valueLiteral ~= nil and valueLiteral.value == 0)
 
 						for _, watcherIdent in ipairsr(declLikeWatchers[decl]) do
-							if watcherIdent.declarationIdentifier == declIdent then
+							if watcherIdent.declarationIdentifier == declIdent then -- Note: We don't care about any vararg here.
 								local identInfo = identInfos[watcherIdent]
 
 								if
@@ -3996,153 +4071,181 @@ local function _optimize(theNode, stats)
 	local function optimizeAssignmentOrDeclLike(statement, funcInfo)
 		local isDecl       = (statement.type == "declaration")
 		local isFunc       = (statement.type == "function")
-		local isFor        = (statement.type == "for")
+		local isForLoop    = (statement.type == "for")
 		local isAssignment = (statement.type == "assignment")
 
-		if not (isDecl or isAssignment) then  return  end -- @Incomplete: Handle other declaration-likes.
+		if isDecl or isAssignment then
+			local lvalues = statement.targets or statement.names
+			local values  = statement.values
 
-		local lvalues = statement.targets or getNameArrayOfDeclarationLike(statement)
-		local values  = statement.values
+			-- Save some adjustment information.
+			local madeToAdjusted = {}
 
-		-- Save some adjustment information.
-		local madeToAdjusted = {}
+			for slot = 1, #values-1 do -- Skip the last value.
+				local valueExpr = values[slot]
 
-		for i = 1, #values-1 do -- Skip the last value.
-			local valueExpr = values[i]
-
-			if isVariableValueList(valueExpr) then
-				valueExpr.adjustToOne     = true
-				madeToAdjusted[valueExpr] = true
-			end
-		end
-
-		-- Remove useless extra values.
-		for i = #values, #lvalues+1, -1 do
-			local valueExpr = values[i]
-
-			if not mayNodeBeInvolvedInJump(valueExpr) then
-				unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
-				tableRemove(values, i)
-			end
-		end
-
-		for i = #lvalues+1, #values do
-			values[i].key = i
-		end
-
-		-- Remove useless lvalues.
-		local wantToRemoveLvalue        = {}
-		local wantToRemoveValueIfExists = {}
-		local mayRemoveValueIfExists    = {}
-
-		for slot, lvalue in ipairsr(lvalues) do
-			local declIdent = (lvalue.type == "identifier") and lvalue.declarationIdentifier or nil
-
-			if declIdent and declIdentReadCount[declIdent] == 0 then
-				-- ioWrite("useless ") ; printNode(lvalue) -- DEBUG
-
-				local valueExpr          = values[slot]
-				local valueExprEffective = valueExpr
-
-				if not valueExprEffective then
-					valueExprEffective = values[#values]
-					if valueExprEffective and not isVariableValueList(valueExprEffective) then  valueExprEffective = nil  end
+				if isVariableValueList(valueExpr) then
+					valueExpr.adjustToOne     = true
+					madeToAdjusted[valueExpr] = true
 				end
+			end
 
-				wantToRemoveLvalue       [slot] = isAssignment or declIdentAssignmentCount[declIdent] == 0
-				wantToRemoveValueIfExists[slot] = not (valueExpr and mayNodeBeInvolvedInJump(valueExpr))
-				mayRemoveValueIfExists   [slot] = wantToRemoveValueIfExists[slot] and not (not valueExpr and lvalues[slot+1] and valueExprEffective)
+			-- Remove useless extra values.
+			for slot = #values, #lvalues+1, -1 do
+				local valueExpr = values[slot]
 
-				-- @Incomplete: Update funcInfo.locals and whatever else (if we end up using them at some point).
-				-- @Incomplete: Replace 'unused,useless=func()' with 'useless=func()'.
-				local canRemoveSlot = (wantToRemoveLvalue[slot] and mayRemoveValueIfExists[slot])
+				if not mayNodeBeInvolvedInJump(valueExpr) then
+					unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+					tableRemove(values, slot)
+				end
+			end
 
-				-- Maybe remove lvalue.
-				if canRemoveSlot and #lvalues > 1 then
-					unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, lvalue, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
-					tableRemove(lvalues, slot)
-					for slot = slot, #lvalues do
-						lvalues[slot].key = slot
+			for slot = #lvalues+1, #values do
+				values[slot].key = slot
+			end
+
+			-- Remove useless lvalues.
+			local wantToRemoveLvalue        = {}
+			local wantToRemoveValueIfExists = {}
+			local mayRemoveValueIfExists    = {}
+
+			for slot, lvalue in ipairsr(lvalues) do
+				local declIdent = (lvalue.type == "identifier") and lvalue.declarationIdentifier or nil
+
+				if declIdent and declIdentReadCount[declIdent] == 0 then
+					-- ioWrite("useless ") ; printNode(lvalue) -- DEBUG
+
+					local valueExpr          = values[slot]
+					local valueExprEffective = valueExpr
+
+					if not valueExprEffective then
+						valueExprEffective = values[#values]
+						if valueExprEffective and not isVariableValueList(valueExprEffective) then  valueExprEffective = nil  end
 					end
-					wantToRemoveLvalue[slot] = wantToRemoveLvalue[slot+1] -- May become nil. We no longer care about the value of slot+1 and beyond after this point.
-				end
 
-				-- Maybe remove value.
-				if wantToRemoveValueIfExists[slot] and valueExpr then
-					if (canRemoveSlot or not values[slot+1]) and not (isAssignment and not values[2]) then
-						unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
-						tableRemove(values, slot)
-						for slot = slot, #values do
-							values[slot].key = slot
+					wantToRemoveLvalue       [slot] = isAssignment or declIdentAssignmentCount[declIdent] == 0
+					wantToRemoveValueIfExists[slot] = not (valueExpr and mayNodeBeInvolvedInJump(valueExpr))
+					mayRemoveValueIfExists   [slot] = wantToRemoveValueIfExists[slot] and not (not valueExpr and lvalues[slot+1] and valueExprEffective)
+
+					-- @Incomplete: Update funcInfo.locals and whatever else (if we end up using them at some point).
+					-- @Incomplete: Replace 'unused,useless=func()' with 'useless=func()'.
+					local canRemoveSlot = (wantToRemoveLvalue[slot] and mayRemoveValueIfExists[slot])
+
+					-- Maybe remove lvalue.
+					if canRemoveSlot and #lvalues > 1 then
+						unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, lvalue, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+						tableRemove(lvalues, slot)
+						for slot = slot, #lvalues do
+							lvalues[slot].key = slot
 						end
-						wantToRemoveValueIfExists[slot] = wantToRemoveValueIfExists[slot+1] -- May become nil. We no longer care about the value of slot+1 and beyond after this point.
-						mayRemoveValueIfExists   [slot] = mayRemoveValueIfExists   [slot+1] -- May become nil. We no longer care about the value of slot+1 and beyond after this point.
+						wantToRemoveLvalue[slot] = wantToRemoveLvalue[slot+1] -- May become nil. We no longer care about the value of slot+1 and beyond after this point.
+					end
 
-					elseif not (valueExpr.type == "literal" and valueExpr.value == nil) then
-						unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
-						replace(valueExpr, AstLiteral(dummyTokens, valueExpr.token, nil), valueExpr.parent, valueExpr.container, valueExpr.key, stats)
+					-- Maybe remove value.
+					if wantToRemoveValueIfExists[slot] and valueExpr then
+						if (canRemoveSlot or not values[slot+1]) and not (isAssignment and not values[2]) then
+							unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+							tableRemove(values, slot)
+							for slot = slot, #values do
+								values[slot].key = slot
+							end
+							wantToRemoveValueIfExists[slot] = wantToRemoveValueIfExists[slot+1] -- May become nil. We no longer care about the value of slot+1 and beyond after this point.
+							mayRemoveValueIfExists   [slot] = mayRemoveValueIfExists   [slot+1] -- May become nil. We no longer care about the value of slot+1 and beyond after this point.
+
+						elseif not (valueExpr.type == "literal" and valueExpr.value == nil) then
+							unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+							replace(valueExpr, AstLiteral(dummyTokens, valueExpr.token, nil), valueExpr.parent, valueExpr.container, valueExpr.key, stats)
+						end
+					end
+				end--if lvalue is relevant
+			end--for lvalues
+
+			-- Maybe remove or replace the whole statement.
+			local statementIsRemoved = false
+
+			do
+				-- Remove the whole statement.
+				if
+					wantToRemoveLvalue[1]
+					and (
+						mayRemoveValueIfExists[1]
+						or not (isAssignment or values[1]) -- Declaration-likes may have no value - assignments must have at least one.
+					)
+					and not (lvalues[2] or values[2])
+				then
+					unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, statement, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+					if statement.type ~= "assignment" then  declLikeWatchers[statement] = nil  end
+
+					local block = statement.parent
+
+					for i = statement.key, #block.statements do
+						local statement     = block.statements[i+1]
+						block.statements[i] = statement
+
+						if statement then  statement.key = i  end
+					end
+
+					statementIsRemoved = true
+
+				-- Replace 'unused=func()' with just 'func()'. This is a unique case as call expressions can also be statements.
+				elseif areAllLvaluesUnwantedAndAllValuesCalls(lvalues, values, wantToRemoveLvalue) then
+					for _, lvalue in ipairs(lvalues) do
+						unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, lvalue, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+					end
+					if statement.type ~= "assignment" then  declLikeWatchers[statement] = nil  end
+
+					table.remove(statement.container, statement.key) -- The parent ought to be a block!
+
+					for slot, call in ipairs(values) do
+						local i = statement.key + slot - 1
+						table.insert(statement.container, i, call)
+
+						call.parent    = statement.parent
+						call.container = statement.container
+						call.key       = i
+					end
+
+					statementIsRemoved = true
+				end
+			end
+
+			-- Restore or remove adjusted flags.
+			-- @Speed: Don't do anything if statementIsRemoved is set (and we don't need to for some other reason).
+			for i = 1, #values do
+				local valueExpr = values[i]
+				if (valueExpr.type == "call" or valueExpr.type == "vararg") then
+					if statementIsRemoved or values[i+1] or not lvalues[i+1] or not madeToAdjusted[valueExpr] then
+						valueExpr.adjustToOne = false
 					end
 				end
-			end--if lvalue is relevant
-		end--for lvalues
-
-		-- Maybe remove or replace the whole statement.
-		local statementIsRemoved = false
-
-		do
-			-- Remove the whole statement.
-			if
-				wantToRemoveLvalue[1]
-				and (
-					mayRemoveValueIfExists[1]
-					or not (isAssignment or values[1]) -- Declaration-likes may have no value - assignments must have at least one.
-				)
-				and not (lvalues[2] or values[2])
-			then
-				unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, statement, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
-				if statement.type ~= "assignment" then  declLikeWatchers[statement] = nil  end
-
-				local block = statement.parent
-
-				for i = statement.key, #block.statements do
-					local statement     = block.statements[i+1]
-					block.statements[i] = statement
-
-					if statement then  statement.key = i  end
-				end
-
-				statementIsRemoved = true
-
-			-- Replace 'unused=func()' with just 'func()'. This is a unique case as call expressions can also be statements.
-			elseif areAllLvaluesUnwantedAndAllValuesCalls(lvalues, values, wantToRemoveLvalue) then
-				for _, lvalue in ipairs(lvalues) do
-					unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, lvalue, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
-				end
-				if statement.type ~= "assignment" then  declLikeWatchers[statement] = nil  end
-
-				table.remove(statement.container, statement.key) -- The parent ought to be a block!
-
-				for slot, call in ipairs(values) do
-					local i = statement.key + slot - 1
-					table.insert(statement.container, i, call)
-					call.parent    = statement.parent
-					call.container = statement.container
-					call.key       = i
-				end
-
-				statementIsRemoved = true
 			end
-		end
 
-		-- Restore or remove adjusted flags.
-		-- @Speed: Don't do anything if statementIsRemoved is set (and we don't need to for some other reason).
-		for i = 1, #values do
-			local valueExpr = values[i]
-			if (valueExpr.type == "call" or valueExpr.type == "vararg") then
-				if statementIsRemoved or values[i+1] or not lvalues[i+1] or not madeToAdjusted[valueExpr] then
-					valueExpr.adjustToOne = false
+		elseif isFunc or isForLoop then
+			if isFunc and statement.vararg and declIdentReadCount[statement.vararg] == 0 then
+				unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, statement.vararg, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+				statement.vararg = nil
+			end
+
+			if not (isFunc and statement.vararg) then
+				local declIdents = getNameArrayOfDeclarationLike(statement)
+
+				for slot = #declIdents, (isForLoop and 2 or 1), -1 do
+					local declIdent = declIdents[slot]
+					if declIdentReadCount[declIdent] == 0 and declIdentAssignmentCount[declIdent] == 0 then
+						unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, declIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+						tableRemove(declIdents)
+					else
+						break
+					end
+				end
+
+				for slot, declIdent in ipairs(declIdents) do
+					declIdent.key = slot
 				end
 			end
+
+		else
+			error(statement.type)
 		end
 	end
 
@@ -4223,7 +4326,7 @@ local function minify(node, optimize)
 	local declLikes_oldNameToIdent = {--[[ [declLike1]={[name1]=declIdent1,...}, ... ]]}
 
 	for i, identInfo in ipairs(identInfos) do
-		local declLike = identInfo.ident.declaration
+		local declLike = identInfo.ident.type == "identifier" and identInfo.ident.declaration or nil
 
 		if declLike and not declLikes_oldNameToIdent[declLike] then
 			local oldNameToIdent               = {}
@@ -4240,13 +4343,19 @@ local function minify(node, optimize)
 	--
 	--[[
 	tableSort(identInfos, function(a, b)
+		if a.ident.type == "vararg" or b.ident.type == "vararg" then
+			return a.ident.type < b.ident.type -- We don't care about these.
+		end
+
 		if #a.visibleDeclLikes ~= #b.visibleDeclLikes then
 			-- I feel this is kinda reversed - it should be how many can see you, not how many you can see. Does this matter? This sure is confusing!
 			return #a.visibleDeclLikes < #b.visibleDeclLikes
 		end
+
 		-- if (localCounts[a.ident.name] or 0) ~= (localCounts[b.ident.name] or 0) then -- This is most certainly incorrect, because the names are old!
 		-- 	return (localCounts[a.ident.name] or 0) > (localCounts[b.ident.name] or 0)
 		-- end
+
 		return a.ident.id < b.ident.id
 	end)
 	--]]
@@ -4258,7 +4367,7 @@ local function minify(node, optimize)
 	local maxNameGeneration = 0
 
 	for _, identInfo in ipairs(identInfos) do
-		local declLike = identInfo.ident.declaration
+		local declLike = identInfo.ident.type == "identifier" and identInfo.ident.declaration or nil
 
 		if declLike then
 			local oldName   = identInfo.ident.name
@@ -4271,11 +4380,11 @@ local function minify(node, optimize)
 					newName         = generateName(nameGeneration)
 					local collision = false
 
-					for _, watcherIdent in ipairs(declLikeWatchers[declLike] --[[or EMPTY_TABLE]]) do
+					for _, watcherIdent in ipairs(declLikeWatchers[declLike]) do
 						local watcherDeclLike = watcherIdent.declaration
 
 						if watcherDeclLike then
-							for _, watcherDeclIdent in ipairs(getNameArrayOfDeclarationLike(watcherDeclLike)) do
+							for _, watcherDeclIdent in ipairs(getNameArrayOfDeclarationLike(watcherDeclLike)) do -- Note: We don't care about any vararg here.
 								if renamed[watcherDeclIdent] and watcherDeclIdent.name == newName then
 									collision = true
 									break
