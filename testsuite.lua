@@ -673,6 +673,68 @@ end)
 
 
 
+test("Minify", function()
+	local function testMinify(lua, expectedLua, expectedLuaAlt)
+		local ast = assert(parser.parse(lua, "<luastring>"))
+		parser.minify(ast)
+
+		lua = assert(parser.toLua(ast))
+		-- print(lua)
+
+		if expectedLuaAlt then
+			assertLua(lua, expectedLua, expectedLuaAlt, 2)
+		else
+			assertLua(lua, expectedLua, 2)
+		end
+	end
+
+	-- Letter frequencies: etaoinshrdlcumwfgypbvkxjqz
+
+	testMinify(
+		[[
+		local x, y = 1, 2
+		global     = x + y
+		]],
+		[[ local e,t=1,2;global=e+t; ]]
+	)
+
+	testMinify(
+		[[
+		function globalFunc(unused, x, ...)
+			return x + ...
+		end
+		]],
+		[[ function globalFunc(e,e,...)return e+...;end ]]
+	)
+	testMinify(
+		[[
+		function globalFunc(x, unused, ...)
+			return x + ...
+		end
+		]],
+		[[ function globalFunc(e,t,...)return e+...;end ]]
+	)
+
+	testMinify(
+		[[
+		for i, v in ipairs(global) do
+			globalFunc1(v)
+			for i = i, #global do
+				globalFunc2(i)
+			end
+		end
+		]],
+		[[ for e,t in ipairs(global)do globalFunc1(t);for e=e,#global do globalFunc2(e);end end ]]
+	)
+end)
+
+
+
+test("Soft LuaJIT", function()
+	local ast = assert(parser.parse([[ x = 0b1001001111101011 ]], "<luastring>"))
+	assertLua(assert(parser.toLua(ast)), [[ x=37867; ]])
+end)
+
 if jit then
 	test("LuaJIT", function()
 		local ast = assert(parser.parse([[ x = 0x0fffffffffffffffLL ]], "<luastring>"))
@@ -689,11 +751,6 @@ if jit then
 		assertLua(assert(parser.toLua(ast)), [[ x=188LL; ]])
 	end)
 end
-
-test("Soft LuaJIT", function()
-	local ast = assert(parser.parse([[ x = 0b1001001111101011 ]], "<luastring>"))
-	assertLua(assert(parser.toLua(ast)), [[ x=37867; ]])
-end)
 
 
 

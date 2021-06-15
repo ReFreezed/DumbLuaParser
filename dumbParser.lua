@@ -587,7 +587,7 @@ local function Stats()
 		nodeRemoveCount    = 0,
 		nodeReplaceCount   = 0,
 		-- minify():
-		nameReplaceCount   = 0,
+		renameCount        = 0,
 		generatedNameCount = 0,
 	}
 end
@@ -3032,7 +3032,7 @@ local function findIdentifierDeclaration(ident)
 		if parent.type == "declaration" then
 			local decl = parent
 
-			if lastChild.container == decl.names then
+			if lastChild.container ~= decl.values then
 				local declIdent = lastItemWith1(decl.names, "name", name)
 				if declIdent then  return declIdent  end
 			end
@@ -3043,13 +3043,17 @@ local function findIdentifierDeclaration(ident)
 			if declIdent then  return declIdent  end
 
 		elseif parent.type == "for" then
-			local forLoop   = parent
-			local declIdent = lastItemWith1(forLoop.names, "name", name)
-			if declIdent then  return declIdent  end
+			local forLoop = parent
+
+			if lastChild.container ~= forLoop.values then
+				local declIdent = lastItemWith1(forLoop.names, "name", name)
+				if declIdent then  return declIdent  end
+			end
 
 		elseif parent.type == "block" then
 			local block = parent
 
+			-- Look through statements above lastChild.
 			for i = lastChild.key-1, 1, -1 do
 				local statement = block.statements[i]
 
@@ -3568,40 +3572,43 @@ end
 
 
 
--- (statement, block) | declLike | repeatLoop | func = findParentStatementAndBlockOrExpressionOfInterest( node, declLike )
-local function findParentStatementAndBlockOrExpressionOfInterest(node, declLike)
+-- (statement, block) | declIdent | repeatLoop | declLike = findParentStatementAndBlockOrNodeOfInterest( node, declIdent )
+local function findParentStatementAndBlockOrNodeOfInterest(node, declIdent)
 	while true do
+		if node == declIdent then  return declIdent, nil  end
+
 		local lastChild = node
 		node            = node.parent
 
-		if not node                then  return nil,       nil   end
-		if node == declLike        then  return declLike,  nil   end
-		if node.type == "block"    then  return lastChild, node  end
-		if node.type == "function" then  return node,      nil   end
-		if node.type == "for"      then  return node,      nil   end
+		if not node then  return nil  end
 
-		if node.type == "repeat" and lastChild == node.condition then  return node, nil  end
+		if node.type == "block"                                                 then  return lastChild, node  end
+		if node.type == "declaration" and lastChild.container ~= node.values    then  return node,      nil   end
+		if node.type == "function"                                              then  return node,      nil   end
+		if node.type == "for"         and lastChild.container ~= node.values    then  return node,      nil   end
+		if node.type == "repeat"      and lastChild           == node.condition then  return node,      nil   end
 	end
 end
 
--- foundCurrentDeclLike = lookForDeclarationLikesAndRegisterWatchers( declLikeWatchers, currentIdentInfo, block, statementStartIndex )
-local function lookForDeclarationLikesAndRegisterWatchers(declLikeWatchers, identInfo, block, iStart)
-	local statements      = block.statements
-	local currentDeclLike = (identInfo.ident.declaration or EMPTY_TABLE).parent
+-- foundCurrentDeclIdent = lookForCurrentDeclIdentAndRegisterCurrentIdentAsWatcherInBlock( declIdentWatchers, currentIdentInfo, block, statementStartIndex )
+local function lookForCurrentDeclIdentAndRegisterCurrentIdentAsWatcherInBlock(declIdentWatchers, identInfo, block, iStart)
+	local statements           = block.statements
+	local currentIdentOrVararg = identInfo.ident
+	local currentDeclIdent     = currentIdentOrVararg.declaration
 
 	for i = iStart, 1, -1 do
 		local statement = statements[i]
 
-		if statement.type == "declaration" or statement.type == "for" then
-			local declLike = statement
+		if statement.type == "declaration" then
+			local decl = statement
 
-			-- Note: Identifiers in declaration-likes also watch their own declaration-like. (Is this good?) :DeclarationIdentifiersWatchTheirParent
-			declLikeWatchers[declLike] = declLikeWatchers[declLike] or {}
-			tableInsert(declLikeWatchers[declLike], identInfo.ident)
+			for _, declIdent in ipairsr(decl.names) do
+				-- Note: Declaration identifiers also watch themselves. (Is this good?) :DeclarationIdentifiersWatchThemselves
+				declIdentWatchers[declIdent] = declIdentWatchers[declIdent] or {}
+				tableInsert(declIdentWatchers[declIdent], currentIdentOrVararg)
 
-			if declLike == currentDeclLike then  return true  end
-
-			-- tableInsert(identInfo.visibleDeclLikes, declLike)
+				if declIdent == currentDeclIdent then  return true  end
+			end
 		end
 	end
 
@@ -3609,8 +3616,8 @@ local function lookForDeclarationLikesAndRegisterWatchers(declLikeWatchers, iden
 end
 
 local function getInformationAboutIdentifiersAndUpdateMostReferences(node)
-	local identInfos       = {--[[ [ident1]=identInfo1, identInfo1, ... ]]} -- identInfo = {ident=identOrVararg, visibleDeclLikes=declLikes}
-	local declLikeWatchers = {--[[ [declLike1]={identOrVararg1,...}, ... ]]}
+	local identInfos        = {--[[ [ident1]=identInfo1, identInfo1, ... ]]} -- identInfo = {ident=identOrVararg, type=lrvalueType}
+	local declIdentWatchers = {--[[ [declIdent1]={identOrVararg1,...}, ... ]]}
 
 	traverseTree(node, function(node, parent, container, key)
 		node.parent    = parent
@@ -3620,8 +3627,8 @@ local function getInformationAboutIdentifiersAndUpdateMostReferences(node)
 		if node.type == "identifier" or node.type == "vararg" then
 			local currentIdentOrVararg       = node
 			local findDecl                   = (currentIdentOrVararg.type == "identifier") and findIdentifierDeclaration or findVarargDeclaration
-			currentIdentOrVararg.declaration = findDecl(currentIdentOrVararg) -- We can call this because all parents and previous nodes already have their references updated at this point.
-			local currentDeclLike            = currentIdentOrVararg.declaration and currentIdentOrVararg.declaration.parent
+			local currentDeclIdent           = findDecl(currentIdentOrVararg) -- We can call this because all parents and previous nodes already have their references updated at this point.
+			currentIdentOrVararg.declaration = currentDeclIdent
 
 			local identType = (
 				(parent and (
@@ -3634,9 +3641,9 @@ local function getInformationAboutIdentifiersAndUpdateMostReferences(node)
 				or  "rvalue"
 			)
 
-			-- if currentDeclLike then  print(F("%s:%d: %s '%s'", currentIdentOrVararg.sourcePath, currentIdentOrVararg.line, identType, (currentIdentOrVararg.name or "...")))  end -- DEBUG
+			-- if currentDeclIdent then  print(F("%s:%d: %s '%s'", currentIdentOrVararg.sourcePath, currentIdentOrVararg.line, identType, (currentIdentOrVararg.name or "...")))  end -- DEBUG
 
-			local identInfo = {ident=currentIdentOrVararg, type=identType--[[, visibleDeclLikes={}]]}
+			local identInfo = {ident=currentIdentOrVararg, type=identType}
 			tableInsert(identInfos, identInfo)
 			identInfos[currentIdentOrVararg] = identInfo
 
@@ -3645,11 +3652,11 @@ local function getInformationAboutIdentifiersAndUpdateMostReferences(node)
 
 			while true do
 				local statementOrInterest
-				statementOrInterest, block = findParentStatementAndBlockOrExpressionOfInterest(block, currentDeclLike)
+				statementOrInterest, block = findParentStatementAndBlockOrNodeOfInterest(block, currentDeclIdent)
 
 				if not statementOrInterest then
-					assert(not currentDeclLike)
-					break
+					assert(not currentDeclIdent)
+					return
 				end
 
 				if block then
@@ -3658,37 +3665,42 @@ local function getInformationAboutIdentifiersAndUpdateMostReferences(node)
 					assert(type(statement.key) == "number")
 					assert(statement.container == block.statements)
 
-					if lookForDeclarationLikesAndRegisterWatchers(declLikeWatchers, identInfo, block, statement.key-1) then
-						break
+					if lookForCurrentDeclIdentAndRegisterCurrentIdentAsWatcherInBlock(declIdentWatchers, identInfo, block, statement.key-1) then
+						return
 					end
 
-				elseif statementOrInterest.type == "function" or statementOrInterest.type == "for" then
+				-- We found the current declIdent - don't look for more other declIdents to watch!
+				elseif statementOrInterest == currentDeclIdent then
+					local declIdent = statementOrInterest
+
+					-- :DeclarationIdentifiersWatchThemselves
+					declIdentWatchers[declIdent] = declIdentWatchers[declIdent] or {}
+					tableInsert(declIdentWatchers[declIdent], currentIdentOrVararg)
+
+					return
+
+				-- We can jump from repeat loop conditions into the loop's body.
+				elseif statementOrInterest.type == "repeat" then
+					local repeatLoop = statementOrInterest
+					block            = repeatLoop.body -- Start node for while loop.
+
+					if lookForCurrentDeclIdentAndRegisterCurrentIdentAsWatcherInBlock(declIdentWatchers, identInfo, block, #block.statements) then
+						return
+					end
+
+				-- Declaration-likes have names we want to watch.
+				-- Note that findParentStatementAndBlockOrNodeOfInterest() is smart and skipped declaration-likes that we should completely ignore.
+				else
 					local declLike = statementOrInterest
 					block          = declLike -- Start node for while loop.
 
-					-- :DeclarationIdentifiersWatchTheirParent
-					declLikeWatchers[declLike] = declLikeWatchers[declLike] or {}
-					tableInsert(declLikeWatchers[declLike], currentIdentOrVararg)
+					for _, declIdent in ipairsr(getNameArrayOfDeclarationLike(declLike)) do
+						-- :DeclarationIdentifiersWatchThemselves
+						declIdentWatchers[declIdent] = declIdentWatchers[declIdent] or {}
+						tableInsert(declIdentWatchers[declIdent], currentIdentOrVararg)
 
-					if declLike == currentDeclLike then  break  end
-
-				elseif statementOrInterest.type == "repeat" then
-					local repeatLoop = statementOrInterest
-					block            = repeatLoop.body
-
-					if lookForDeclarationLikesAndRegisterWatchers(declLikeWatchers, identInfo, block, #block.statements) then
-						break
+						if declIdent == currentDeclIdent then  return  end
 					end
-
-				else
-					local declLike = statementOrInterest
-					assert(declLike == currentDeclLike)
-
-					-- :DeclarationIdentifiersWatchTheirParent
-					declLikeWatchers[declLike] = declLikeWatchers[declLike] or {}
-					tableInsert(declLikeWatchers[declLike], currentIdentOrVararg)
-
-					break
 				end
 			end
 
@@ -3698,7 +3710,7 @@ local function getInformationAboutIdentifiersAndUpdateMostReferences(node)
 		end
 	end, node.parent, node.container, node.key)
 
-	return identInfos, declLikeWatchers
+	return identInfos, declIdentWatchers
 end
 
 
@@ -3758,9 +3770,8 @@ end
 
 
 
--- unregisterWatchersBeforeNodeRemoval( identInfos, declLikeWatchers, theNode, declIdentReadCount, declIdentAssignmentCount, funcInfos, currentFuncInfo, stats )
--- unregisterWatchersBeforeNodeRemoval( identInfos, declLikeWatchers, theNode ) -- @Obsolete
-local function unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, theNode, declIdentReadCount, declIdentAssignmentCount, funcInfos, currentFuncInfo, stats)
+-- unregisterWatchersBeforeNodeRemoval( identInfos, declIdentWatchers, theNode, declIdentReadCount, declIdentAssignmentCount, funcInfos, currentFuncInfo, stats )
+local function unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, theNode, declIdentReadCount, declIdentAssignmentCount, funcInfos, currentFuncInfo, stats)
 	-- ioWrite("unregister ") ; printNode(theNode) -- DEBUG
 
 	traverseTree(theNode, true, function(node) -- @Speed
@@ -3791,13 +3802,19 @@ local function unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers,
 			identInfos[currentIdentOrVararg] = nil
 
 			-- Remove as watcher.
-			for _, watcherIdents in pairs(declLikeWatchers) do -- @Speed
+			for _, watcherIdents in pairs(declIdentWatchers) do -- @Speed
 				for i, watcherIdent in ipairs(watcherIdents) do
 					if watcherIdent == currentIdentOrVararg then
 						removeUnordered(watcherIdents, i)
 						break
 					end
 				end
+			end
+
+			-- Remove watcher list.
+			if declIdentWatchers[currentIdentOrVararg] then
+				declIdentWatchers[currentIdentOrVararg] = nil
+				removeItemUnordered(currentFuncInfo.declIdents, currentIdentOrVararg)
 			end
 
 			-- Update access count.
@@ -3818,13 +3835,10 @@ local function unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers,
 			-- removeItemUnordered(currentFuncInfo.globals,  currentIdentOrVararg)
 
 		elseif node.type == "assignment" then
-			local assignment = node
-			removeItemUnordered(currentFuncInfo.assignments, assignment)
+			removeItemUnordered(currentFuncInfo.assignments, node)
 
 		elseif node.type == "declaration" or node.type == "function" or node.type == "for" then -- @Cleanup: Maybe define isValueDeclLike().
-			local declLike = node
-			declLikeWatchers[declLike] = nil
-			removeItemUnordered(currentFuncInfo.declLikes, declLike)
+			removeItemUnordered(currentFuncInfo.declLikes, node)
 		end
 
 		if funcInfos[node] then
@@ -3857,20 +3871,13 @@ local function areAllLvaluesUnwantedAndAllValuesCalls(lvalues, values, wantToRem
 	return true
 end
 
--- Note: References need to be updated after calling this!
-local function _optimize(theNode, stats)
-	_simplify(theNode, stats)
-
-	local identInfos, declLikeWatchers = getInformationAboutIdentifiersAndUpdateMostReferences(theNode)
-
-	--
+local function getInformationAboutFunctions(theNode)
 	-- Gather functions.
-	--
 	local funcInfos = {}
 
 	do
 		-- We assume theNode is a block, but it's fine if it isn't.
-		local funcInfo = {node=theNode, declLikes={}, assignments={}--[[, locals={}, upvalues={}, globals={}]]}
+		local funcInfo = {node=theNode, declLikes={}, declIdents={}, assignments={}--[[, locals={}, upvalues={}, globals={}]]}
 		tableInsert(funcInfos, funcInfo)
 		funcInfos[theNode] = funcInfo
 	end
@@ -3879,27 +3886,31 @@ local function _optimize(theNode, stats)
 		if node == theNode then  return  end
 
 		if node.type == "function" then
-			local funcInfo = {node=node, declLikes={node}, assignments={}--[[, locals={}, upvalues={}, globals={}]]}
+			local funcInfo = {node=node, declLikes={node}, declIdents={}, assignments={}--[[, locals={}, upvalues={}, globals={}]]}
 			tableInsert(funcInfos, funcInfo)
 			funcInfos[node] = funcInfo
 		end
 	end)
 
-	--
 	-- Gather relevant nodes.
-	--
 	for _, funcInfo in ipairs(funcInfos) do
 		traverseTree(funcInfo.node, function(node)
 			if node      == funcInfo.node then  return                   end
 			if node.type == "function"    then  return "ignorechildren"  end
 
-			--[[if node.type == "identifier" then
-				local ident    = node
-				local declLike = (ident.declaration or EMPTY_TABLE).parent
+			if node.type == "identifier" or node.type == "vararg" then
+				local identOrVararg = node
+				local declIdent     = identOrVararg.declaration
 
-				if declLike then
+				if identOrVararg == declIdent then
+					tableInsert(funcInfo.declIdents, identOrVararg)
+				end
+
+				--[[
+				if declIdent then
+					local declLike = declIdent.parent
 					local isInFunc = true
-					local parent   = ident.parent
+					local parent   = identOrVararg.parent
 
 					while parent do
 						if parent == declLike then -- declLike may be a function itself.
@@ -3911,14 +3922,15 @@ local function _optimize(theNode, stats)
 						parent = parent.parent
 					end
 
-					tableInsert((isInFunc and funcInfo.locals or funcInfo.upvalues), ident)
+					tableInsert((isInFunc and funcInfo.locals or funcInfo.upvalues), identOrVararg)
 
 				else
-					tableInsert(funcInfo.globals, ident)
+					tableInsert(funcInfo.globals, identOrVararg)
 				end
+				]]
 
-			else]]if node.type == "declaration" or node.type == "for" then
-				tableInsert(funcInfo.declLikes, node)
+			elseif node.type == "declaration" or node.type == "for" then
+				tableInsert(funcInfo.declLikes, node) -- Note: Identifiers will be added to funcInfo.declIdents when we get to them.
 
 			elseif node.type == "assignment" then
 				tableInsert(funcInfo.assignments, node)
@@ -3943,35 +3955,45 @@ local function _optimize(theNode, stats)
 	end
 	--]==]
 
-	--
-	-- Figure out accesses of declared names.
-	--
+	return funcInfos
+end
+
+local function getAccessesOfDeclaredNames(funcInfos, identInfos, declIdentWatchers) -- @Cleanup: Don't require the funcInfos argument (unless it maybe speeds up something somwhere).
 	local declIdentReadCount       = {--[[ [declIdent1]=count, ... ]]}
 	local declIdentAssignmentCount = {--[[ [declIdent1]=count, ... ]]}
 
 	for _, funcInfo in ipairs(funcInfos) do
-		for _, declLike in ipairs(funcInfo.declLikes) do
-			for _, declIdent in ipairs(getNameArrayOfDeclarationLike(declLike)) do
-				local readCount       = 0
-				local assignmentCount = 0
+		for _, declIdent in ipairs(funcInfo.declIdents) do
+			local readCount       = 0
+			local assignmentCount = 0
 
-				for _, watcherIdent in ipairs(declLikeWatchers[declLike]) do
-					if watcherIdent.declaration == declIdent then
-						local identInfo = identInfos[watcherIdent]
+			for _, watcherIdent in ipairs(declIdentWatchers[declIdent]) do
+				if watcherIdent.declaration == declIdent then
+					local identInfo = identInfos[watcherIdent]
 
-						if identInfo.type == "rvalue" then
-							readCount = readCount + 1 -- :AccessCount
-						elseif --[[identInfo.type == "lvalue" and]] identInfo.ident.parent.type == "assignment" then
-							assignmentCount = assignmentCount + 1 -- :AccessCount
-						end
+					if identInfo.type == "rvalue" then
+						readCount = readCount + 1 -- :AccessCount
+					elseif --[[identInfo.type == "lvalue" and]] identInfo.ident.parent.type == "assignment" then
+						assignmentCount = assignmentCount + 1 -- :AccessCount
 					end
 				end
-
-				declIdentReadCount      [declIdent] = readCount
-				declIdentAssignmentCount[declIdent] = assignmentCount
 			end
+
+			declIdentReadCount      [declIdent] = readCount
+			declIdentAssignmentCount[declIdent] = assignmentCount
 		end
 	end
+
+	return declIdentReadCount, declIdentAssignmentCount
+end
+
+-- Note: References need to be updated after calling this!
+local function _optimize(theNode, stats)
+	_simplify(theNode, stats)
+
+	local identInfos, declIdentWatchers                = getInformationAboutIdentifiersAndUpdateMostReferences(theNode)
+	local funcInfos                                    = getInformationAboutFunctions(theNode)
+	local declIdentReadCount, declIdentAssignmentCount = getAccessesOfDeclaredNames(funcInfos, identInfos, declIdentWatchers)
 
 	--
 	-- Replace variables that are effectively constants with literals.
@@ -4007,7 +4029,7 @@ local function _optimize(theNode, stats)
 						local valueLiteral = valueExpr
 						local valueIsZero  = (valueLiteral ~= nil and valueLiteral.value == 0)
 
-						for _, watcherIdent in ipairsr(declLikeWatchers[decl]) do
+						for _, watcherIdent in ipairsr(declIdentWatchers[declIdent]) do
 							if watcherIdent.declaration == declIdent then -- Note: declIdent is never a vararg here (because we only process declarations).
 								local identInfo = identInfos[watcherIdent]
 
@@ -4021,13 +4043,13 @@ local function _optimize(theNode, stats)
 									local v                  = valueLiteral and valueLiteral.value
 									local replacementLiteral = AstLiteral(dummyTokens, watcherIdent.token, v)
 
-									unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, watcherIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+									unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, watcherIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
 									replace(watcherIdent, replacementLiteral, watcherIdent.parent, watcherIdent.container, watcherIdent.key, stats)
 
 									replacedConstants = true
 								end
 							end
-						end--for declLikeWatchers
+						end--for declIdentWatchers
 					end
 				end--for declIdents
 			end
@@ -4070,7 +4092,7 @@ local function _optimize(theNode, stats)
 				local valueExpr = values[slot]
 
 				if not mayNodeBeInvolvedInJump(valueExpr) then
-					unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+					unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
 					tableRemove(values, slot)
 				end
 			end
@@ -4108,7 +4130,7 @@ local function _optimize(theNode, stats)
 
 					-- Maybe remove lvalue.
 					if canRemoveSlot and #lvalues > 1 then
-						unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, lvalue, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+						unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, lvalue, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
 						tableRemove(lvalues, slot)
 						for slot = slot, #lvalues do
 							lvalues[slot].key = slot
@@ -4119,7 +4141,7 @@ local function _optimize(theNode, stats)
 					-- Maybe remove value.
 					if wantToRemoveValueIfExists[slot] and valueExpr then
 						if (canRemoveSlot or not values[slot+1]) and not (isAssignment and not values[2]) then
-							unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+							unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
 							tableRemove(values, slot)
 							for slot = slot, #values do
 								values[slot].key = slot
@@ -4128,7 +4150,7 @@ local function _optimize(theNode, stats)
 							mayRemoveValueIfExists   [slot] = mayRemoveValueIfExists   [slot+1] -- May become nil. We no longer care about the value of slot+1 and beyond after this point.
 
 						elseif not (valueExpr.type == "literal" and valueExpr.value == nil) then
-							unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+							unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
 							replace(valueExpr, AstLiteral(dummyTokens, valueExpr.token, nil), valueExpr.parent, valueExpr.container, valueExpr.key, stats)
 						end
 					end
@@ -4148,13 +4170,12 @@ local function _optimize(theNode, stats)
 					)
 					and not (lvalues[2] or values[2])
 				then
-					unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, statement, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
-					if statement.type ~= "assignment" then  declLikeWatchers[statement] = nil  end
+					unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, statement, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
 
 					local block = statement.parent
 
 					for i = statement.key, #block.statements do
-						local statement     = block.statements[i+1]
+						local statement     = block.statements[i+1] -- This be nil for the last 'i'.
 						block.statements[i] = statement
 
 						if statement then  statement.key = i  end
@@ -4165,15 +4186,14 @@ local function _optimize(theNode, stats)
 				-- Replace 'unused=func()' with just 'func()'. This is a unique case as call expressions can also be statements.
 				elseif areAllLvaluesUnwantedAndAllValuesCalls(lvalues, values, wantToRemoveLvalue) then
 					for _, lvalue in ipairs(lvalues) do
-						unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, lvalue, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+						unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, lvalue, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
 					end
-					if statement.type ~= "assignment" then  declLikeWatchers[statement] = nil  end
 
 					table.remove(statement.container, statement.key) -- The parent ought to be a block!
 
 					for slot, call in ipairs(values) do
 						local i = statement.key + slot - 1
-						table.insert(statement.container, i, call)
+						tableInsert(statement.container, i, call)
 
 						call.parent    = statement.parent
 						call.container = statement.container
@@ -4201,7 +4221,7 @@ local function _optimize(theNode, stats)
 			for slot = #declIdents, (isForLoop and 2 or 1), -1 do
 				local declIdent = declIdents[slot]
 				if declIdentReadCount[declIdent] == 0 and declIdentAssignmentCount[declIdent] == 0 then
-					unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, declIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+					unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, declIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
 					tableRemove(declIdents)
 				else
 					break
@@ -4279,6 +4299,7 @@ do
 	-- for pow = 0, 32 do  print(generateName(2^pow))  end ; error("TEST")
 end
 
+-- minify( node [, optimize=false ] )
 local function minify(node, optimize)
 	local stats = Stats()
 
@@ -4286,27 +4307,9 @@ local function minify(node, optimize)
 		_optimize(node, stats)
 	end
 
-	local identInfos, declLikeWatchers = getInformationAboutIdentifiersAndUpdateMostReferences(node)
-
-	--
-	-- Remember old declaration info before we start modifying things.
-	--
-	local declLikes_oldNameToIdent = {--[[ [declLike1]={[name1]=declIdent1,...}, ... ]]}
-
-	for i, identInfo in ipairs(identInfos) do
-		local declLike = (identInfo.ident.type == "identifier") and (identInfo.ident.declaration or EMPTY_TABLE).parent or nil
-
-		if declLike and not declLikes_oldNameToIdent[declLike] then
-			local oldNameToIdent               = {}
-			declLikes_oldNameToIdent[declLike] = oldNameToIdent
-
-			for _, declIdent in ipairs(getNameArrayOfDeclarationLike(declLike)) do
-				if declIdent.type == "identifier" then
-					oldNameToIdent[declIdent.name] = declIdent
-				end
-			end
-		end
-	end
+	local identInfos, declIdentWatchers                   = getInformationAboutIdentifiersAndUpdateMostReferences(node)
+	-- local funcInfos                                    = getInformationAboutFunctions(node)
+	-- local declIdentReadCount, declIdentAssignmentCount = getAccessesOfDeclaredNames(funcInfos, identInfos, declIdentWatchers)
 
 	--
 	-- Make sure frequencies affect who gets shorter names first. @Incomplete
@@ -4318,7 +4321,7 @@ local function minify(node, optimize)
 		end
 
 		if #a.visibleDeclLikes ~= #b.visibleDeclLikes then
-			-- I feel this is kinda reversed - it should be how many can see you, not how many you can see. Does this matter? This sure is confusing!
+			-- I feel this is kinda reversed - it should be how many can see you, not how many you can see. Does this matter? This sure is confusing! Also, visibleDeclLikes is @Obsolete.
 			return #a.visibleDeclLikes < #b.visibleDeclLikes
 		end
 
@@ -4337,12 +4340,10 @@ local function minify(node, optimize)
 	local maxNameGeneration = 0
 
 	for _, identInfo in ipairs(identInfos) do
-		local declLike = (identInfo.ident.type == "identifier") and (identInfo.ident.declaration or EMPTY_TABLE).parent or nil
+		local ident     = identInfo.ident -- Could be a vararg.
+		local declIdent = (ident.type == "identifier") and ident.declaration or nil
 
-		if declLike then
-			local oldName   = identInfo.ident.name
-			local declIdent = declLikes_oldNameToIdent[declLike][oldName]
-
+		if declIdent then
 			if not renamed[declIdent] then
 				local newName
 
@@ -4350,22 +4351,22 @@ local function minify(node, optimize)
 					newName         = generateName(nameGeneration)
 					local collision = false
 
-					for _, watcherIdent in ipairs(declLikeWatchers[declLike]) do
-						local watcherDeclLike = (watcherIdent.declaration or EMPTY_TABLE).parent
+					for _, watcherIdent in ipairs(declIdentWatchers[declIdent]) do
+						local watcherDeclIdent = watcherIdent.declaration
 
-						if watcherDeclLike then
-							for _, watcherDeclIdent in ipairs(getNameArrayOfDeclarationLike(watcherDeclLike)) do
-								if renamed[watcherDeclIdent] and watcherDeclIdent.name == newName then -- Note: We don't care about any vararg watcher here.
-									collision = true
-									break
-								end
-							end--for names
+						-- Local watcher.
+						if watcherDeclIdent then
+							if renamed[watcherDeclIdent] and watcherDeclIdent.name == newName then
+								collision = true
+								break
+							end
 
+						-- Global watcher.
 						elseif watcherIdent.name == newName then
 							collision = true
 							break
 						end
-					end--for declLikeWatchers
+					end--for declIdentWatchers
 
 					if not collision then
 						maxNameGeneration = mathMax(maxNameGeneration, nameGeneration)
@@ -4373,13 +4374,17 @@ local function minify(node, optimize)
 					end
 				end--for nameGeneration
 
-				declIdent.name         = newName
-				renamed[declIdent]     = true
-				stats.nameReplaceCount = stats.nameReplaceCount + 1 -- @Polish: Don't count when old and new name are the same.
+				if declIdent.name ~= newName then
+					declIdent.name    = newName
+					stats.renameCount = stats.renameCount + 1
+				end
+				renamed[declIdent] = true
 			end
 
-			identInfo.ident.name   = declIdent.name
-			stats.nameReplaceCount = stats.nameReplaceCount + 1 -- @Polish: Don't count when old and new name are the same.
+			if ident.name ~= declIdent.name then
+				ident.name        = declIdent.name
+				stats.renameCount = stats.renameCount + 1
+			end
 		end
 	end--for identInfos
 
@@ -5353,11 +5358,11 @@ end
 
 function where(node, s, ...)
 	if not node then
-		print("Where: [DEBUG] No node here!")
+		print("[Where] No node here!")
 	elseif s then
-		print(formatMessageAtNode("Where", node, "DEBUG", s, ...))
+		print(formatMessageAtNode("Info", node, "Where", s, ...))
 	else
-		print(formatMessageAtNode("Where", node, "DEBUG", "Here!"))
+		print(formatMessageAtNode("Info", node, "Where", "Here!"))
 	end
 end
 
