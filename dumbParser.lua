@@ -140,7 +140,7 @@ traverseTreeReverse()
 updateReferences()
 	parser.updateReferences( astNode [, updateTopNodePosition=true ] )
 	Update references between nodes in the tree.
-	This function sets 'parent'+'container'+'key' for all nodes, 'declaration'+'declarationIdentifier' for identifiers, and 'declaration'+'declarationVararg' for vararg nodes.
+	This function sets 'parent'+'container'+'key' for all nodes, 'declaration' for identifiers and vararg nodes, and 'label' for goto nodes.
 	If 'updateTopNodePosition' is false then 'parent', 'container' and 'key' will remain as-it for 'astNode' specifically.
 
 simplify()
@@ -422,6 +422,8 @@ do
 	MIN_INT   = math.mininteger or -MAX_INT-1
 end
 
+local EMPTY_TABLE = {}
+
 local nextSerialNumber = 1
 
 
@@ -450,17 +452,15 @@ end
 
 -- AST expressions.
 local function AstIdentifier (tokens,tok,name)return populateCommonNodeFields(tokens,tok,{
-	type                  = "identifier",
-	name                  = name, -- String.
-	attribute             = "",   -- "" | "close" | "const"
-	declaration           = nil,  -- AstDeclaration, AstFunction or AstFor. Updated by updateReferences(). This is nil for globals.
-	declarationIdentifier = nil,  -- AstIdentifier. Updated by updateReferences(). This is nil for globals.
+	type        = "identifier",
+	name        = name, -- String.
+	attribute   = "",   -- "" | "close" | "const"
+	declaration = nil,  -- AstIdentifier (whose parent is an AstDeclaration, AstFunction or AstFor). Updated by updateReferences(). This is nil for globals.
 })end
 local function AstVararg (tokens,tok)return populateCommonNodeFields(tokens,tok,{
-	type              = "vararg",
-	declaration       = nil,   -- AstFunction. Updated by updateReferences(). This is nil in the main chunk (or in a non-vararg function, which is probably an error).
-	declarationVararg = nil,   -- AstVararg. Updated by updateReferences(). This is nil in the main chunk (or in a non-vararg function, which is probably an error).
-	adjustToOne       = false, -- True if parentheses surround the vararg.
+	type        = "vararg",
+	declaration = nil,   -- AstVararg (whose parent is an AstFunction). Updated by updateReferences(). This is nil in the main chunk (or in a non-vararg function, which is probably an error).
+	adjustToOne = false, -- True if parentheses surround the vararg.
 })end
 local function AstLiteral (tokens,tok,value)return populateCommonNodeFields(tokens,tok,{
 	type        = "literal",
@@ -3019,7 +3019,8 @@ end
 
 
 
--- decl|func|forLoop|nil, declIdent|nil = findIdentifierDeclaration( ident )
+-- declIdent|nil    = findIdentifierDeclaration( ident )
+-- declIdent.parent = decl|func|forLoop
 local function findIdentifierDeclaration(ident)
 	local name   = ident.name
 	local parent = ident
@@ -3035,18 +3036,18 @@ local function findIdentifierDeclaration(ident)
 
 			if lastChild.container == decl.names then
 				local declIdent = lastItemWith1(decl.names, "name", name)
-				if declIdent then  return decl, declIdent  end
+				if declIdent then  return declIdent  end
 			end
 
 		elseif parent.type == "function" then
 			local func      = parent
 			local declIdent = lastItemWith1(func.parameters, "name", name)
-			if declIdent then  return func, declIdent  end
+			if declIdent then  return declIdent  end
 
 		elseif parent.type == "for" then
 			local forLoop   = parent
 			local declIdent = lastItemWith1(forLoop.names, "name", name)
-			if declIdent then  return forLoop, declIdent  end
+			if declIdent then  return declIdent  end
 
 		elseif parent.type == "block" then
 			local block = parent
@@ -3057,7 +3058,7 @@ local function findIdentifierDeclaration(ident)
 				if statement.type == "declaration" then
 					local decl      = statement
 					local declIdent = lastItemWith1(decl.names, "name", name)
-					if declIdent then  return decl, declIdent  end
+					if declIdent then  return declIdent  end
 				end
 			end
 
@@ -3074,7 +3075,7 @@ local function findIdentifierDeclaration(ident)
 					if statement.type == "declaration" then
 						local decl      = statement
 						local declIdent = lastItemWith1(decl.names, "name", name)
-						if declIdent then  return decl, declIdent  end
+						if declIdent then  return declIdent  end
 					end
 				end
 			end
@@ -3082,7 +3083,8 @@ local function findIdentifierDeclaration(ident)
 	end
 end
 
--- func|nil, declVararg|nil = findVarargDeclaration( vararg )
+-- declVararg|nil    = findVarargDeclaration( vararg )
+-- declVararg.parent = func
 local function findVarargDeclaration(vararg)
 	local parent = vararg
 
@@ -3092,7 +3094,7 @@ local function findVarargDeclaration(vararg)
 
 		if parent.type == "function" then
 			if parent.vararg then
-				return parent, parent.vararg
+				return parent.vararg
 			else
 				return nil
 			end
@@ -3140,8 +3142,8 @@ function updateReferences(node, updateTopNodePosition)
 		node.key       = key
 
 		if node.type == "identifier" then
-			local ident                                    = node
-			ident.declaration, ident.declarationIdentifier = findIdentifierDeclaration(ident) -- We can call this because all parents and previous nodes already have their references updated at this point.
+			local ident       = node
+			ident.declaration = findIdentifierDeclaration(ident) -- We can call this because all parents and previous nodes already have their references updated at this point.
 
 			--[[ DEBUG
 			print(F(
@@ -3153,8 +3155,8 @@ function updateReferences(node, updateTopNodePosition)
 			--]]
 
 		elseif node.type == "vararg" then
-			local vararg                                 = node
-			vararg.declaration, vararg.declarationVararg = findVarargDeclaration(vararg) -- We can call this because all relevant 'parent' references have been updated at this point.
+			local vararg       = node
+			vararg.declaration = findVarargDeclaration(vararg) -- We can call this because all relevant 'parent' references have been updated at this point.
 
 			--[[ DEBUG
 			print(F(
@@ -3585,7 +3587,7 @@ end
 -- foundCurrentDeclLike = lookForDeclarationLikesAndRegisterWatchers( declLikeWatchers, currentIdentInfo, block, statementStartIndex )
 local function lookForDeclarationLikesAndRegisterWatchers(declLikeWatchers, identInfo, block, iStart)
 	local statements      = block.statements
-	local currentDeclLike = identInfo.ident.declaration
+	local currentDeclLike = (identInfo.ident.declaration or EMPTY_TABLE).parent
 
 	for i = iStart, 1, -1 do
 		local statement = statements[i]
@@ -3616,20 +3618,10 @@ local function getInformationAboutIdentifiersAndUpdateMostReferences(node)
 		node.key       = key
 
 		if node.type == "identifier" or node.type == "vararg" then
-			local currentIdentOrVararg = node
-			local currentDeclLike
-
-			if node.type == "identifier" then
-				local currentDeclIdent
-				currentDeclLike, currentDeclIdent          = findIdentifierDeclaration(currentIdentOrVararg) -- We can call this because all parents and previous nodes already have their references updated at this point.
-				currentIdentOrVararg.declaration           = currentDeclLike
-				currentIdentOrVararg.declarationIdentifier = currentDeclIdent
-			else
-				local currentDeclVararg
-				currentDeclLike, currentDeclVararg         = findVarargDeclaration(currentIdentOrVararg) -- We can call this because all relevant 'parent' references have been updated at this point.
-				currentIdentOrVararg.declaration           = currentDeclLike
-				currentIdentOrVararg.declarationVararg     = currentDeclVararg
-			end
+			local currentIdentOrVararg       = node
+			local findDecl                   = (currentIdentOrVararg.type == "identifier") and findIdentifierDeclaration or findVarargDeclaration
+			currentIdentOrVararg.declaration = findDecl(currentIdentOrVararg) -- We can call this because all parents and previous nodes already have their references updated at this point.
+			local currentDeclLike            = currentIdentOrVararg.declaration and currentIdentOrVararg.declaration.parent
 
 			local identType = (
 				(parent and (
@@ -3812,11 +3804,11 @@ local function unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers,
 			if not currentIdentOrVararg.declaration then
 				-- void
 			elseif currentIdentInfo.type == "rvalue" then
-				local declIdent                     = currentIdentOrVararg.declarationIdentifier or currentIdentOrVararg.declarationVararg -- @Cleanup: Use the same name for declarationIdentifier and declarationVararg.
+				local declIdent                     = currentIdentOrVararg.declaration
 				declIdentReadCount[declIdent]       = declIdentReadCount[declIdent] - 1 -- :AccessCount
 				assert(declIdentReadCount[declIdent] >= 0)
 			elseif --[[currentIdentInfo.type == "lvalue" and]] currentIdentInfo.ident.parent.type == "assignment" then
-				local declIdent                     = currentIdentOrVararg.declarationIdentifier or currentIdentOrVararg.declarationVararg
+				local declIdent                     = currentIdentOrVararg.declaration
 				declIdentAssignmentCount[declIdent] = declIdentAssignmentCount[declIdent] - 1 -- :AccessCount
 				assert(declIdentAssignmentCount[declIdent] >= 0)
 			end
@@ -3910,7 +3902,7 @@ local function _optimize(theNode, stats)
 
 			--[[if node.type == "identifier" then
 				local ident    = node
-				local declLike = ident.declaration
+				local declLike = (ident.declaration or EMPTY_TABLE).parent
 
 				if declLike then
 					local isInFunc = true
@@ -3981,7 +3973,7 @@ local function _optimize(theNode, stats)
 				local assignmentCount = 0
 
 				for _, watcherIdent in ipairs(declLikeWatchers[declLike]) do
-					if watcherIdent.declarationIdentifier == declIdent or watcherIdent.declarationVararg == declIdent then
+					if watcherIdent.declaration == declIdent then
 						local identInfo = identInfos[watcherIdent]
 
 						if identInfo.type == "rvalue" then
@@ -4033,7 +4025,7 @@ local function _optimize(theNode, stats)
 						local valueIsZero  = (valueLiteral ~= nil and valueLiteral.value == 0)
 
 						for _, watcherIdent in ipairsr(declLikeWatchers[decl]) do
-							if watcherIdent.declarationIdentifier == declIdent then -- Note: We don't care about any vararg here.
+							if watcherIdent.declaration == declIdent then -- Note: declIdent is never a vararg here.
 								local identInfo = identInfos[watcherIdent]
 
 								if
@@ -4110,7 +4102,7 @@ local function _optimize(theNode, stats)
 			local mayRemoveValueIfExists    = {}
 
 			for slot, lvalue in ipairsr(lvalues) do
-				local declIdent = (lvalue.type == "identifier") and lvalue.declarationIdentifier or nil
+				local declIdent = (lvalue.type == "identifier") and lvalue.declaration or nil
 
 				if declIdent and declIdentReadCount[declIdent] == 0 then
 					-- ioWrite("useless ") ; printNode(lvalue) -- DEBUG
@@ -4326,7 +4318,7 @@ local function minify(node, optimize)
 	local declLikes_oldNameToIdent = {--[[ [declLike1]={[name1]=declIdent1,...}, ... ]]}
 
 	for i, identInfo in ipairs(identInfos) do
-		local declLike = identInfo.ident.type == "identifier" and identInfo.ident.declaration or nil
+		local declLike = (identInfo.ident.type == "identifier") and (identInfo.ident.declaration or EMPTY_TABLE).parent or nil
 
 		if declLike and not declLikes_oldNameToIdent[declLike] then
 			local oldNameToIdent               = {}
@@ -4367,7 +4359,7 @@ local function minify(node, optimize)
 	local maxNameGeneration = 0
 
 	for _, identInfo in ipairs(identInfos) do
-		local declLike = identInfo.ident.type == "identifier" and identInfo.ident.declaration or nil
+		local declLike = (identInfo.ident.type == "identifier") and (identInfo.ident.declaration or EMPTY_TABLE).parent or nil
 
 		if declLike then
 			local oldName   = identInfo.ident.name
@@ -4381,7 +4373,7 @@ local function minify(node, optimize)
 					local collision = false
 
 					for _, watcherIdent in ipairs(declLikeWatchers[declLike]) do
-						local watcherDeclLike = watcherIdent.declaration
+						local watcherDeclLike = (watcherIdent.declaration or EMPTY_TABLE).parent
 
 						if watcherDeclLike then
 							for _, watcherDeclIdent in ipairs(getNameArrayOfDeclarationLike(watcherDeclLike)) do -- Note: We don't care about any vararg here.
