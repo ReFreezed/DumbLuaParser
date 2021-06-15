@@ -495,8 +495,7 @@ local function AstCall (tokens,tok)return populateCommonNodeFields(tokens,tok,{ 
 })end
 local function AstFunction (tokens,tok)return populateCommonNodeFields(tokens,tok,{
 	type        = "function",
-	parameters  = {},    -- Array of AstIdentifier.
-	vararg      = nil,   -- AstVararg or nil.
+	parameters  = {},    -- Array of AstIdentifier and maybe an AstVararg at the end.
 	body        = nil,   -- AstBlock.
 })end
 
@@ -566,7 +565,7 @@ local CHILD_FIELDS = {
 	["unary"]       = {expressions="node"},
 	["binary"]      = {left="node", right="node"},
 	["call"]        = {callee="node", arguments="nodearray"},
-	["function"]    = {parameters="nodearray", vararg="node", body="node"},
+	["function"]    = {parameters="nodearray", body="node"},
 	["break"]       = {},
 	["return"]      = {values="nodearray"},
 	["label"]       = {},
@@ -1421,12 +1420,15 @@ local function parseIdentifier(tokens, tok) --> ident, token, error
 	return ident, tok
 end
 
-local function parseNameList(tokens, tok, names, allowVararg, allowAttributes) --> success, token, vararg|error|nil
+local function parseNameList(tokens, tok, names, allowVararg, allowAttributes) --> success, token, error|nil
 	while true do
 		if allowVararg and isToken(tokens, tok, "punctuation", "...") then
 			local vararg = AstVararg(tokens, tok)
 			tok          = tok + 1 -- '...'
-			return true, tok, vararg
+
+			tableInsert(names, vararg)
+
+			return true, tok
 		end
 
 		local ident, tokNext, err = parseIdentifier(tokens, tok)
@@ -1881,11 +1883,10 @@ function parseFunctionParametersAndBody(tokens, tokStart, funcTok) --> func, tok
 	tok = tok + 1 -- '('
 
 	if not isToken(tokens, tok, "punctuation", ")") then
-		local ok, tokNext, varargOrErr = parseNameList(tokens, tok, func.parameters, true, false)
-		if not ok then  return nil, tok, varargOrErr  end
+		local ok, tokNext, err = parseNameList(tokens, tok, func.parameters, true, false)
+		if not ok then  return nil, tok, err  end
 		tok = tokNext
-
-		func.vararg = varargOrErr
+		-- @Cleanup: Move the vararg parameter parsing here.
 	end
 
 	if not isToken(tokens, tok, "punctuation", ")") then
@@ -2659,7 +2660,7 @@ do
 			if node.adjustToOne then  ioWrite(" (adjustToOne)")  end
 
 		elseif nodeType == "function" then
-			if node.vararg then  ioWrite(" (vararg)")  end
+			if node.parameters[1] and node.parameters[#node.parameters].type == "vararg" then  ioWrite(" (vararg)")  end
 
 		elseif nodeType == "for" then
 			ioWrite(" (", node.kind, ")")
@@ -2719,8 +2720,7 @@ do
 
 		elseif nodeType == "function" then
 			for i, ident in ipairs(node.parameters) do  _printTree(ident, indent, "PARAM"..i)  end
-			if node.vararg then  _printTree(node.vararg, indent, "VARARG")  end
-			if node.body   then  _printTree(node.body,   indent, "BODY"  )  end
+			if node.body then  _printTree(node.body, indent, "BODY")  end
 
 		elseif nodeType == "return" then
 			for i, expr in ipairs(node.values) do  _printTree(expr, indent, tostring(i))  end
@@ -2835,8 +2835,7 @@ function traverseTree(node, leavesFirst, cb, parent, container, k)
 		for i, name in ipairs(node.parameters) do
 			if traverseTree(name, leavesFirst, cb, node, node.parameters, i) then  return true  end
 		end
-		if node.vararg and traverseTree(node.vararg, leavesFirst, cb, node, node, "vararg") then  return true  end
-		if node.body   and traverseTree(node.body,   leavesFirst, cb, node, node, "body")   then  return true  end
+		if node.body and traverseTree(node.body, leavesFirst, cb, node, node, "body") then  return true  end
 
 	elseif nodeType == "return" then
 		for i, expr in ipairs(node.values) do
@@ -2949,8 +2948,7 @@ function traverseTreeReverse(node, leavesFirst, cb, parent, container, k)
 		if node.callee and traverseTreeReverse(node.callee, leavesFirst, cb, node, node, "callee") then  return true  end
 
 	elseif nodeType == "function" then
-		if node.body   and traverseTreeReverse(node.body,   leavesFirst, cb, node, node, "body")   then  return true  end
-		if node.vararg and traverseTreeReverse(node.vararg, leavesFirst, cb, node, node, "vararg") then  return true  end
+		if node.body and traverseTreeReverse(node.body, leavesFirst, cb, node, node, "body") then  return true  end
 		for i, name in ipairsr(node.parameters) do
 			if traverseTreeReverse(name, leavesFirst, cb, node, node.parameters, i) then  return true  end
 		end
@@ -3041,7 +3039,7 @@ local function findIdentifierDeclaration(ident)
 
 		elseif parent.type == "function" then
 			local func      = parent
-			local declIdent = lastItemWith1(func.parameters, "name", name)
+			local declIdent = lastItemWith1(func.parameters, "name", name) -- Note: This will ignore any vararg parameter.
 			if declIdent then  return declIdent  end
 
 		elseif parent.type == "for" then
@@ -3093,8 +3091,10 @@ local function findVarargDeclaration(vararg)
 		if not parent then  return nil  end
 
 		if parent.type == "function" then
-			if parent.vararg then
-				return parent.vararg
+			local lastParam = parent.parameters[#parent.parameters]
+
+			if lastParam and lastParam.type == "vararg" then
+				return lastParam
 			else
 				return nil
 			end
@@ -3625,10 +3625,10 @@ local function getInformationAboutIdentifiersAndUpdateMostReferences(node)
 
 			local identType = (
 				(parent and (
-					(parent.type == "declaration" and (container == parent.names                        )) or
-					(parent.type == "assignment"  and (container == parent.targets                      )) or
-					(parent.type == "function"    and (container == parent.parameters or key == "vararg")) or
-					(parent.type == "for"         and (container == parent.names                        ))
+					(parent.type == "declaration" and (container == parent.names     )) or
+					(parent.type == "assignment"  and (container == parent.targets   )) or
+					(parent.type == "function"    and (container == parent.parameters)) or
+					(parent.type == "for"         and (container == parent.names     ))
 				))
 				and "lvalue"
 				or  "rvalue"
@@ -3866,8 +3866,7 @@ local function _optimize(theNode, stats)
 	--
 	-- Gather functions.
 	--
-	local funcInfos        = {}
-	-- local allDeclIdents = {}
+	local funcInfos = {}
 
 	do
 		-- We assume theNode is a block, but it's fine if it isn't.
@@ -3890,12 +3889,6 @@ local function _optimize(theNode, stats)
 	-- Gather relevant nodes.
 	--
 	for _, funcInfo in ipairs(funcInfos) do
-		-- if funcInfo.node.type == "function" then
-		-- 	for _, declIdent in ipairs(funcInfo.node.parameters) do
-		-- 		table.insert(allDeclIdents, declIdent)
-		-- 	end
-		-- end
-
 		traverseTree(funcInfo.node, function(node)
 			if node      == funcInfo.node then  return                   end
 			if node.type == "function"    then  return "ignorechildren"  end
@@ -3926,10 +3919,6 @@ local function _optimize(theNode, stats)
 
 			else]]if node.type == "declaration" or node.type == "for" then
 				tableInsert(funcInfo.declLikes, node)
-
-				-- for _, declIdent in ipairs(node.names) do
-				-- 	table.insert(allDeclIdents, declIdent)
-				-- end
 
 			elseif node.type == "assignment" then
 				tableInsert(funcInfo.assignments, node)
@@ -3962,13 +3951,7 @@ local function _optimize(theNode, stats)
 
 	for _, funcInfo in ipairs(funcInfos) do
 		for _, declLike in ipairs(funcInfo.declLikes) do
-			local declIdents = getNameArrayOfDeclarationLike(declLike)
-
-			if declLike.type == "function" and declLike.vararg then -- @Cleanup: Maybe store func.vararg in func.parameters instead, or have an iterator for names in declaration-likes that considers the vararg.
-				declIdents = {declLike.vararg, tableUnpack(declIdents)} -- @Speed
-			end
-
-			for _, declIdent in ipairs(declIdents) do
+			for _, declIdent in ipairs(getNameArrayOfDeclarationLike(declLike)) do
 				local readCount       = 0
 				local assignmentCount = 0
 
@@ -4025,7 +4008,7 @@ local function _optimize(theNode, stats)
 						local valueIsZero  = (valueLiteral ~= nil and valueLiteral.value == 0)
 
 						for _, watcherIdent in ipairsr(declLikeWatchers[decl]) do
-							if watcherIdent.declaration == declIdent then -- Note: declIdent is never a vararg here.
+							if watcherIdent.declaration == declIdent then -- Note: declIdent is never a vararg here (because we only process declarations).
 								local identInfo = identInfos[watcherIdent]
 
 								if
@@ -4213,27 +4196,20 @@ local function _optimize(theNode, stats)
 			end
 
 		elseif isFunc or isForLoop then
-			if isFunc and statement.vararg and declIdentReadCount[statement.vararg] == 0 then
-				unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, statement.vararg, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
-				statement.vararg = nil
+			local declIdents = getNameArrayOfDeclarationLike(statement)
+
+			for slot = #declIdents, (isForLoop and 2 or 1), -1 do
+				local declIdent = declIdents[slot]
+				if declIdentReadCount[declIdent] == 0 and declIdentAssignmentCount[declIdent] == 0 then
+					unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, declIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+					tableRemove(declIdents)
+				else
+					break
+				end
 			end
 
-			if not (isFunc and statement.vararg) then
-				local declIdents = getNameArrayOfDeclarationLike(statement)
-
-				for slot = #declIdents, (isForLoop and 2 or 1), -1 do
-					local declIdent = declIdents[slot]
-					if declIdentReadCount[declIdent] == 0 and declIdentAssignmentCount[declIdent] == 0 then
-						unregisterWatchersBeforeNodeRemoval(identInfos, declLikeWatchers, declIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
-						tableRemove(declIdents)
-					else
-						break
-					end
-				end
-
-				for slot, declIdent in ipairs(declIdents) do
-					declIdent.key = slot
-				end
+			for slot, declIdent in ipairs(declIdents) do
+				declIdent.key = slot
 			end
 
 		else
@@ -4324,8 +4300,10 @@ local function minify(node, optimize)
 			local oldNameToIdent               = {}
 			declLikes_oldNameToIdent[declLike] = oldNameToIdent
 
-			for _, ident in ipairs(getNameArrayOfDeclarationLike(declLike)) do
-				oldNameToIdent[ident.name] = ident
+			for _, declIdent in ipairs(getNameArrayOfDeclarationLike(declLike)) do
+				if declIdent.type == "identifier" then
+					oldNameToIdent[declIdent.name] = declIdent
+				end
 			end
 		end
 	end
@@ -4376,8 +4354,8 @@ local function minify(node, optimize)
 						local watcherDeclLike = (watcherIdent.declaration or EMPTY_TABLE).parent
 
 						if watcherDeclLike then
-							for _, watcherDeclIdent in ipairs(getNameArrayOfDeclarationLike(watcherDeclLike)) do -- Note: We don't care about any vararg here.
-								if renamed[watcherDeclIdent] and watcherDeclIdent.name == newName then
+							for _, watcherDeclIdent in ipairs(getNameArrayOfDeclarationLike(watcherDeclLike)) do
+								if renamed[watcherDeclIdent] and watcherDeclIdent.name == newName then -- Note: We don't care about any vararg watcher here.
 									collision = true
 									break
 								end
@@ -4518,14 +4496,6 @@ do
 
 		local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, explicitParams, false)
 		if not ok then  return nil, lastOutput  end
-
-		if func.vararg then
-			if explicitParams[1] then
-				lastOutput = writeLua(buffer, ",",   "")
-				if pretty then  lastOutput = writeLua(buffer, " ", "")  end
-			end
-			lastOutput = writeLua(buffer, "...", "")
-		end
 
 		lastOutput = writeLua(buffer, ")", "")
 		if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
@@ -4952,11 +4922,12 @@ do
 				lastOutput = writeAlphanum(buffer, pretty, "function", lastOutput)
 				lastOutput = writeLua(buffer, " ", "")
 
-				local implicitSelfParam
-					=   #func.parameters >= 1
+				local implicitSelfParam = (
+					func.parameters[1] ~= nil
 					and func.parameters[1].name == "self"
 					and assignment.targets[1].type == "lookup"
 					and canNodeBeName(assignment.targets[1].member)
+				)
 
 				if implicitSelfParam then
 					local ok;ok, lastOutput = writeLookup(buffer, pretty, indent, lastOutput, assignment.targets[1], true)
