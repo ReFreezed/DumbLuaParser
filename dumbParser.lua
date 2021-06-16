@@ -346,7 +346,7 @@ local maybeWrapInt = (
 local assertArg1, assertArg, errorf
 local countString, countSubString
 local formatErrorInFile, formatErrorAtToken, formatErrorAfterToken, formatErrorAtNode
-local formatMessageInFile, formatMessageAtToken, formatMessageAfterToken, formatMessageAtNode -- @Incomplete: Should we expose these functions?
+local formatMessageInFile, formatMessageAtToken, formatMessageAfterToken, formatMessageAtNode, formatMessage
 local formatNumber
 local getChild, setChild, addChild, removeChild
 local getLineNumber
@@ -432,7 +432,7 @@ do
 	MIN_INT   = math.mininteger or -MAX_INT-1
 end
 
-local EMPTY_TABLE = {}
+-- local EMPTY_TABLE = {}
 
 local nextSerialNumber = 1
 
@@ -594,12 +594,32 @@ local CHILD_FIELDS = {
 local function Stats()
 	return {
 		-- simplify() and optimize():
+		nodeReplacements   = {--[[ location1, ... ]]},
+		nodeRemovals       = {--[[ location1, ... ]]},
 		nodeRemoveCount    = 0,
-		nodeReplaceCount   = 0,
+
 		-- minify():
 		renameCount        = 0,
 		generatedNameCount = 0,
 	}
+end
+
+-- location = Location( sourceLocation [, extraKey, extraValue ] )
+-- location = Location( sourceNode     [, extraKey, extraValue ] )
+local function Location(sourceLocOrNode, extraK, extraV)
+	local loc = {
+		sourcePath   = sourceLocOrNode.sourcePath,
+		sourceString = sourceLocOrNode.sourceString,
+
+		line     = sourceLocOrNode.line,
+		position = sourceLocOrNode.position,
+
+		node = sourceLocOrNode.type and sourceLocOrNode or nil,
+	}
+	if extraK then
+		loc[extraK] = extraV
+	end
+	return loc
 end
 
 
@@ -716,6 +736,17 @@ end
 
 function formatMessageAtNode(prefix, node, agent, s, ...)
 	return (formatMessageInFile(prefix, node.sourceString, node.sourcePath, node.position, agent, s, ...))
+end
+
+-- message = formatMessage( [ prefix="Info", ] tokens, tok, agent, s, ... )
+-- message = formatMessage( [ prefix="Info", ] astNode,     agent, s, ... )
+-- message = formatMessage( [ prefix="Info", ] location,    agent, s, ... )
+function formatMessage(prefix, nodeOrLocOrTokens, tokOrAgent, ...)
+	if type(prefix) ~= "string" then
+		return (formatMessage("Info", prefix, nodeOrLocOrTokens, tokOrAgent, ...))
+	end
+	local formatter = type(tokOrAgent) == "number" and formatMessageAtToken or formatMessageAtNode
+	return (formatter(prefix, nodeOrLocOrTokens, tokOrAgent, ...))
 end
 
 
@@ -3191,6 +3222,8 @@ end
 
 
 local function replace(node, replacement, parent, container, key, stats)
+	tableInsert(stats.nodeReplacements, Location(container[key], "replacement", replacement))
+
 	container[key] = replacement
 
 	replacement.sourcePath   = node.sourcePath
@@ -3203,8 +3236,6 @@ local function replace(node, replacement, parent, container, key, stats)
 	replacement.parent    = parent
 	replacement.container = container
 	replacement.key       = key
-
-	stats.nodeReplaceCount = stats.nodeReplaceCount + 1
 end
 
 
@@ -3491,6 +3522,7 @@ local function simplifyNode(node, parent, container, key)
 				return simplifyNode(replacement, parent, container, key)
 			else
 				tableRemove(container, key)
+				tableInsert(statsForSimplify.nodeRemovals, Location(ifNode))
 				statsForSimplify.nodeRemoveCount = statsForSimplify.nodeRemoveCount + 1
 			end
 		end
@@ -3503,6 +3535,7 @@ local function simplifyNode(node, parent, container, key)
 				whileLoop.condition.value = true
 			else
 				tableRemove(container, key)
+				tableInsert(statsForSimplify.nodeRemovals, Location(whileLoop))
 				statsForSimplify.nodeRemoveCount = statsForSimplify.nodeRemoveCount + 1
 			end
 		end
@@ -3536,6 +3569,7 @@ local function simplifyNode(node, parent, container, key)
 
 			if (step > 0 and from > to) or (step < 0 and from < to) then
 				tableRemove(container, key)
+				tableInsert(statsForSimplify.nodeRemovals, Location(forLoop))
 				statsForSimplify.nodeRemoveCount = statsForSimplify.nodeRemoveCount + 1
 			end
 		end
@@ -3555,7 +3589,7 @@ local function simplifyNode(node, parent, container, key)
 			if not hasDeclarations then
 				-- Blocks without declarations don't need a scope.
 				tableRemove(parent.statements, key)
-				statsForSimplify.nodeRemoveCount = statsForSimplify.nodeRemoveCount + 1
+				tableInsert(statsForSimplify.nodeReplacements, Location(block, "replacement", nil)) -- We replace the block with its contents.
 
 				for i, statement in ipairs(block.statements) do
 					tableInsert(parent.statements, key+i-1, statement)
@@ -3780,9 +3814,13 @@ end
 
 
 
--- unregisterWatchersBeforeNodeRemoval( identInfos, declIdentWatchers, theNode, declIdentReadCount, declIdentAssignmentCount, funcInfos, currentFuncInfo, stats )
-local function unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, theNode, declIdentReadCount, declIdentAssignmentCount, funcInfos, currentFuncInfo, stats)
+local function unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, theNode, declIdentReadCount, declIdentAssignmentCount, funcInfos, currentFuncInfo, stats, registerRemoval)
 	-- ioWrite("unregister ") ; printNode(theNode) -- DEBUG
+
+	if registerRemoval then
+		tableInsert(stats.nodeRemovals, Location(theNode)) -- There's no need to register the location every child node.
+		stats.nodeRemoveCount = stats.nodeRemoveCount - 1 -- To counteract the +1 below.
+	end
 
 	traverseTree(theNode, true, function(node) -- @Speed
 		--[[ DEBUG
@@ -3863,7 +3901,7 @@ local function unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers
 	end)
 end
 
-local function isVariableValueList(node)
+local function isNodeValueList(node)
 	return (node.type == "call" or node.type == "vararg") and not node.adjustToOne
 end
 
@@ -4023,7 +4061,7 @@ local function _optimize(theNode, stats)
 						declIdentAssignmentCount[declIdent] == 0
 						and declIdentReadCount[declIdent] > 0
 						and (
-							(not valueExpr and not (decl.values[1] and isVariableValueList(decl.values[#decl.values])))
+							(not valueExpr and not (decl.values[1] and isNodeValueList(decl.values[#decl.values])))
 							or (
 								valueExpr
 								and valueExpr.type == "literal"
@@ -4053,7 +4091,7 @@ local function _optimize(theNode, stats)
 									local v                  = valueLiteral and valueLiteral.value
 									local replacementLiteral = AstLiteral(dummyTokens, watcherIdent.token, v)
 
-									unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, watcherIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+									unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, watcherIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats, false)
 									replace(watcherIdent, replacementLiteral, watcherIdent.parent, watcherIdent.container, watcherIdent.key, stats)
 
 									replacedConstants = true
@@ -4091,7 +4129,7 @@ local function _optimize(theNode, stats)
 			for slot = 1, #values-1 do -- Skip the last value.
 				local valueExpr = values[slot]
 
-				if isVariableValueList(valueExpr) then
+				if isNodeValueList(valueExpr) then
 					valueExpr.adjustToOne     = true
 					madeToAdjusted[valueExpr] = true
 				end
@@ -4102,7 +4140,7 @@ local function _optimize(theNode, stats)
 				local valueExpr = values[slot]
 
 				if not mayNodeBeInvolvedInJump(valueExpr) then
-					unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+					unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats, true)
 					tableRemove(values, slot)
 				end
 			end
@@ -4127,7 +4165,7 @@ local function _optimize(theNode, stats)
 
 					if not valueExprEffective then
 						valueExprEffective = values[#values]
-						if valueExprEffective and not isVariableValueList(valueExprEffective) then  valueExprEffective = nil  end
+						if valueExprEffective and not isNodeValueList(valueExprEffective) then  valueExprEffective = nil  end
 					end
 
 					wantToRemoveLvalue       [slot] = isAssignment or declIdentAssignmentCount[declIdent] == 0
@@ -4140,7 +4178,7 @@ local function _optimize(theNode, stats)
 
 					-- Maybe remove lvalue.
 					if canRemoveSlot and #lvalues > 1 then
-						unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, lvalue, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+						unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, lvalue, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats, true)
 						tableRemove(lvalues, slot)
 						for slot = slot, #lvalues do
 							lvalues[slot].key = slot
@@ -4151,7 +4189,7 @@ local function _optimize(theNode, stats)
 					-- Maybe remove value.
 					if wantToRemoveValueIfExists[slot] and valueExpr then
 						if (canRemoveSlot or not values[slot+1]) and not (isAssignment and not values[2]) then
-							unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+							unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats, true)
 							tableRemove(values, slot)
 							for slot = slot, #values do
 								values[slot].key = slot
@@ -4160,7 +4198,7 @@ local function _optimize(theNode, stats)
 							mayRemoveValueIfExists   [slot] = mayRemoveValueIfExists   [slot+1] -- May become nil. We no longer care about the value of slot+1 and beyond after this point.
 
 						elseif not (valueExpr.type == "literal" and valueExpr.value == nil) then
-							unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+							unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats, false)
 							replace(valueExpr, AstLiteral(dummyTokens, valueExpr.token, nil), valueExpr.parent, valueExpr.container, valueExpr.key, stats)
 						end
 					end
@@ -4180,7 +4218,7 @@ local function _optimize(theNode, stats)
 					)
 					and not (lvalues[2] or values[2])
 				then
-					unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, statement, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+					unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, statement, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats, true)
 
 					local block = statement.parent
 
@@ -4196,7 +4234,7 @@ local function _optimize(theNode, stats)
 				-- Replace 'unused=func()' with just 'func()'. This is a unique case as call expressions can also be statements.
 				elseif areAllLvaluesUnwantedAndAllValuesCalls(lvalues, values, wantToRemoveLvalue) then
 					for _, lvalue in ipairs(lvalues) do
-						unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, lvalue, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+						unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, lvalue, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats, true)
 					end
 
 					tableRemove(statement.container, statement.key) -- The parent ought to be a block!
@@ -4231,7 +4269,7 @@ local function _optimize(theNode, stats)
 			for slot = #declIdents, (isForLoop and 2 or 1), -1 do
 				local declIdent = declIdents[slot]
 				if declIdentReadCount[declIdent] == 0 and declIdentAssignmentCount[declIdent] == 0 then
-					unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, declIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
+					unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, declIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats, true)
 					tableRemove(declIdents)
 				else
 					break
@@ -5462,6 +5500,8 @@ parser = {
 	printTokens         = printTokens,
 	printNode           = printNode,
 	printTree           = printTree,
+
+	formatMessage       = formatMessage, -- @Undocumented
 
 	-- Settings.
 	printIds            = false,

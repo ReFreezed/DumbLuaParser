@@ -57,22 +57,38 @@ end
 
 
 
-local function printStats(stats)
-	local keys    = {}
-	local kMaxLen = 0
-
-	for k, v in pairs(stats) do
-		table.insert(keys, k)
-		kMaxLen = math.max(kMaxLen, #k)
-	end
-
-	table.sort(keys)
-
+local function printStats(stats, locLevel)
 	print("Stats:")
-	local format = "  %-"..kMaxLen.."s = %s"
+	print("  nodeRemoveCount:    "..stats.nodeRemoveCount)
+	print("  renameCount:        "..stats.renameCount)
+	print("  generatedNameCount: "..stats.generatedNameCount)
 
-	for _, k in ipairs(keys) do
-		print(string.format(format, k, tostring(stats[k])))
+	if locLevel == 1 then
+		print("  nodeReplacements:   "..#stats.nodeReplacements)
+		print("  nodeRemovals:       "..#stats.nodeRemovals)
+	else
+		print("  nodeReplacements:")
+		for i, loc in ipairs(stats.nodeReplacements) do
+			if locLevel == 2 then
+				print("    "..loc.sourcePath..":"..loc.line)
+			else
+				print("    "..parser.formatMessage(
+					loc, "Stats", "Node replacement %d/%d (%s -> %s)",
+					i, #stats.nodeReplacements, loc.node.type, (loc.replacement and loc.replacement.type or "?")
+				):gsub("\n", "\n    "))
+			end
+		end
+		print("  nodeRemovals:")
+		for i, loc in ipairs(stats.nodeRemovals) do
+			if locLevel == 2 then
+				print("    "..loc.sourcePath..":"..loc.line)
+			else
+				print("    "..parser.formatMessage(
+					loc, "Stats", "Node removal %d/%d (%s)",
+					i, #stats.nodeRemovals, loc.node.type
+				):gsub("\n", "\n    "))
+			end
+		end
 	end
 end
 
@@ -135,12 +151,12 @@ test("Test file / misc.", function()
 	-- print(parser.toLua(ast, 1==1))
 	-- debugExit()
 
-	-- local stats = parser.optimize(ast) ; printStats(stats)
+	-- local stats = parser.optimize(ast) ; printStats(stats, 3)
 	-- parser.printTree(ast)
 	-- print(parser.toLua(ast, 1==1))
 	-- debugExit()
 
-	-- local stats = parser.minify(ast, 1==1) ; printStats(stats)
+	-- local stats = parser.minify(ast, 1==1) ; printStats(stats, 3)
 	-- parser.printTree(ast)
 	-- print(parser.toLua(ast, 1==1))
 	-- debugExit()
@@ -350,6 +366,13 @@ test("Simplify", function()
 		end
 	end
 
+	local ast = assert(parser.parseFile("test.lua"))
+	parser.simplify(ast)
+	assert(parser.toLua(ast))
+	local ast = assert(parser.parseFile("dumbParser.lua"))
+	parser.simplify(ast)
+	assert(parser.toLua(ast))
+
 	testSimplify([[ x = -0 ]], [[ x=0; ]])
 
 	testSimplify([[ x = 1+2   ]], [[ x=3; ]])
@@ -449,6 +472,13 @@ test("Optimize", function()
 			assertLua(lua, expectedLua, 2)
 		end
 	end
+
+	local ast = assert(parser.parseFile("test.lua"))
+	parser.optimize(ast)
+	assert(parser.toLua(ast))
+	-- local ast = assert(parser.parseFile("dumbParser.lua"))
+	-- parser.optimize(ast)
+	-- assert(parser.toLua(ast))
 
 	-- Unpack 'do' block.
 	testOptimize(
@@ -687,6 +717,13 @@ test("Minify", function()
 			assertLua(lua, expectedLua, 2)
 		end
 	end
+
+	local ast = assert(parser.parseFile("test.lua"))
+	parser.minify(ast)
+	assert(parser.toLua(ast))
+	-- local ast = assert(parser.parseFile("dumbParser.lua"))
+	-- parser.minify(ast)
+	-- assert(parser.toLua(ast))
 
 	-- Letter frequencies: etaoinshrdlcumwfgypbvkxjqz
 
