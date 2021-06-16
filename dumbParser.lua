@@ -70,11 +70,11 @@ newTokenStream()
 	Create a new token stream table. (See more info below.)
 
 insertToken()
-	parser.insertToken( tokens, [ index=tokens.n+1, ] tokenType, tokenValue )
+	parser.insertToken( tokens, [ index=#tokens+1, ] tokenType, tokenValue )
 	Insert a new token. (Search for 'TokenInsertion' for more info.)
 
 removeToken()
-	parser.removeToken( tokens [, index=tokens.n ] )
+	parser.removeToken( tokens [, index=#tokens ] )
 	Remove a token.
 
 concatTokens()
@@ -231,6 +231,8 @@ indentation
 3 - Tokens
 ================================================================
 
+@Obsolete @Incomplete: Update this!
+
 Token stream table fields:
 
 	n              -- Token count.
@@ -343,8 +345,9 @@ local maybeWrapInt = (
 	or function(n)  return n  end
 )
 
-local assertArg1, assertArg, errorf
+local assertArg1, assertArg2, errorf
 local countString, countSubString
+local ensurePrintable
 local formatErrorInFile, formatErrorAtToken, formatErrorAfterToken, formatErrorAtNode
 local formatMessageInFile, formatMessageAtToken, formatMessageAfterToken, formatMessageAtNode, formatMessage
 local formatNumber
@@ -352,9 +355,9 @@ local getChild, setChild, addChild, removeChild
 local getLineNumber
 local getNameArrayOfDeclarationLike
 local getRelativeLocationText, getRelativeLocationTextForToken, getRelativeLocationTextForNode
+local indexOf, itemWith1, lastItemWith1
 local ipairsr
 local isToken, isTokenType, isTokenAnyValue
-local itemWith1, lastItemWith1
 local mayNodeBeInvolvedInJump, mayAnyNodeBeInvolvedInJump
 local newTokenStream, dummyTokens
 local parse, parseFile
@@ -377,6 +380,9 @@ local function newSet(values)
 		set[v] = true
 	end
 	return set
+end
+local function newCharSet(chars)
+	return newSet{ stringByte(chars, 1, #chars) }
 end
 
 local KEYWORDS = newSet{
@@ -414,15 +420,29 @@ local OPERATOR_PRECEDENCE = {
 	["^"]   = 12,
 }
 
-local NUM_HEX_FRAC_EXP = stringGsub("^( 0[Xx] (%x*) %.(%x+) [Pp]([-+]?%x+) )", " +", "")
-local NUM_HEX_FRAC     = stringGsub("^( 0[Xx] (%x*) %.(%x+)                )", " +", "")
-local NUM_HEX_EXP      = stringGsub("^( 0[Xx] (%x+) %.?     [Pp]([-+]?%x+) )", " +", "")
-local NUM_HEX          = stringGsub("^( 0[Xx]  %x+  %.?                    )", " +", "")
-local NUM_BIN          = stringGsub("^( 0[Bb]  [01]+                       )", " +", "")
-local NUM_DEC_FRAC_EXP = stringGsub("^(        %d*  %.%d+   [Ee][-+]?%d+   )", " +", "")
-local NUM_DEC_FRAC     = stringGsub("^(        %d*  %.%d+                  )", " +", "")
-local NUM_DEC_EXP      = stringGsub("^(        %d+  %.?     [Ee][-+]?%d+   )", " +", "")
-local NUM_DEC          = stringGsub("^(        %d+  %.?                    )", " +", "")
+local TOKEN_BYTES = {
+	NAME_START      = newCharSet"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_",
+	DASH            = newCharSet"-",
+	NUM             = newCharSet"0123456789",
+	NUM_OR_DOT      = newCharSet"0123456789.",
+	QUOTE           = newCharSet"\"'",
+	SQUARE          = newCharSet"[",
+	DOT             = newCharSet".",
+	PUNCT_TWO_CHARS = newCharSet".=~<>:/<>",
+	PUNCT_ONE_CHAR  = newCharSet"+-*/%^#<>=(){}[];:,.&~|",
+}
+
+local NUMERAL_PATTERNS = {
+	HEX_FRAC_EXP = stringGsub("^( 0[Xx] (%x*) %.(%x+) [Pp]([-+]?%x+) )", " +", ""),
+	HEX_FRAC     = stringGsub("^( 0[Xx] (%x*) %.(%x+)                )", " +", ""),
+	HEX_EXP      = stringGsub("^( 0[Xx] (%x+) %.?     [Pp]([-+]?%x+) )", " +", ""),
+	HEX          = stringGsub("^( 0[Xx]  %x+  %.?                    )", " +", ""),
+	BIN          = stringGsub("^( 0[Bb]  [01]+                       )", " +", ""),
+	DEC_FRAC_EXP = stringGsub("^(        %d*  %.%d+   [Ee][-+]?%d+   )", " +", ""),
+	DEC_FRAC     = stringGsub("^(        %d*  %.%d+                  )", " +", ""),
+	DEC_EXP      = stringGsub("^(        %d+  %.?     [Ee][-+]?%d+   )", " +", ""),
+	DEC          = stringGsub("^(        %d+  %.?                    )", " +", ""),
+}
 
 local INT_SIZE, MAX_INT, MIN_INT
 do
@@ -440,17 +460,17 @@ local nextSerialNumber = 1
 
 -- :NodeFields
 
-local function populateCommonNodeFields(tokens, tok, node)
+local function populateCommonNodeFields(token, node)
 	-- All nodes have these fields.
 	node.id          = nextSerialNumber
 	nextSerialNumber = nextSerialNumber + 1
 
-	node.sourcePath   = tokens.sourcePath
-	node.sourceString = tokens.sourceString
+	node.sourcePath   = token and token.sourcePath   or "?"
+	node.sourceString = token and token.sourceString or ""
 
-	node.token    = tok
-	node.line     = tokens.lineStart    [tok] or 0
-	node.position = tokens.positionStart[tok] or 0
+	node.token    = token
+	node.line     = token and token.lineStart     or 0
+	node.position = token and token.positionStart or 0
 
 	-- These fields are set by updateReferences():
 	-- node.parent    = nil -- Refers to the node's parent in the tree.
@@ -461,102 +481,102 @@ local function populateCommonNodeFields(tokens, tok, node)
 end
 
 -- AST expressions.
-local function AstIdentifier (tokens,tok,name)return populateCommonNodeFields(tokens,tok,{
+local function AstIdentifier (token,name)return populateCommonNodeFields(token,{
 	type        = "identifier",
 	name        = name, -- String.
-	attribute   = "",   -- "" | "close" | "const"
+	attribute   = "",   -- "" | "close" | "const"  -- Only used in declarations.
 	declaration = nil,  -- AstIdentifier (whose parent is an AstDeclaration, AstFunction or AstFor). Updated by updateReferences(). This is nil for globals.
 })end
-local function AstVararg (tokens,tok)return populateCommonNodeFields(tokens,tok,{
+local function AstVararg (token)return populateCommonNodeFields(token,{
 	type        = "vararg",
 	declaration = nil,   -- AstVararg (whose parent is an AstFunction). Updated by updateReferences(). This is nil in the main chunk (or in a non-vararg function, which is probably an error).
 	adjustToOne = false, -- True if parentheses surround the vararg.
 })end
-local function AstLiteral (tokens,tok,value)return populateCommonNodeFields(tokens,tok,{
+local function AstLiteral (token,value)return populateCommonNodeFields(token,{
 	type        = "literal",
 	value       = value, -- Number, string, boolean or nil.
 })end
-local function AstTable (tokens,tok)return populateCommonNodeFields(tokens,tok,{
+local function AstTable (token)return populateCommonNodeFields(token,{
 	type        = "table",
 	fields      = {},    -- Array of {key=expression, value=expression, generatedKey=bool}.
 })end
-local function AstLookup (tokens,tok)return populateCommonNodeFields(tokens,tok,{
+local function AstLookup (token)return populateCommonNodeFields(token,{
 	type        = "lookup",
 	object      = nil,   -- Expression.
 	member      = nil,   -- Expression.
 })end
-local function AstUnary (tokens,tok)return populateCommonNodeFields(tokens,tok,{
+local function AstUnary (token)return populateCommonNodeFields(token,{
 	type        = "unary",
 	operator    = "",    -- "-" | "not" | "#" | "~"
 	expression  = nil,   -- Expression.
 })end
-local function AstBinary (tokens,tok)return populateCommonNodeFields(tokens,tok,{
+local function AstBinary (token)return populateCommonNodeFields(token,{
 	type        = "binary",
 	operator    = "",    -- "+" | "-" | "*" | "/" | "//" | "^" | "%" | "&" | "~" | "|" | ">>" | "<<" | ".." | "<" | "<=" | ">" | ">=" | "==" | "~=" | "and" | "or"
 	left        = nil,   -- Expression.
 	right       = nil,   -- Expression.
 })end
-local function AstCall (tokens,tok)return populateCommonNodeFields(tokens,tok,{ -- Calls can be both expressions and statements.
+local function AstCall (token)return populateCommonNodeFields(token,{ -- Calls can be both expressions and statements.
 	type        = "call",
 	callee      = nil,   -- Expression.
 	arguments   = {},    -- Array of expressions.
 	method      = false, -- True if the call is a method call. Method calls must have a callee that is a lookup with a member expression that is a string literal that can pass as an identifier.
 	adjustToOne = false, -- True if parentheses surround the call.
 })end
-local function AstFunction (tokens,tok)return populateCommonNodeFields(tokens,tok,{
+local function AstFunction (token)return populateCommonNodeFields(token,{
 	type        = "function",
 	parameters  = {},    -- Array of AstIdentifier and maybe an AstVararg at the end.
 	body        = nil,   -- AstBlock.
 })end
 
 -- AST statements.
-local function AstBreak (tokens,tok)return populateCommonNodeFields(tokens,tok,{
+local function AstBreak (token)return populateCommonNodeFields(token,{
 	type        = "break",
 })end
-local function AstReturn (tokens,tok)return populateCommonNodeFields(tokens,tok,{
+local function AstReturn (token)return populateCommonNodeFields(token,{
 	type        = "return",
 	values      = {},    -- Array of expressions.
 })end
-local function AstLabel (tokens,tok)return populateCommonNodeFields(tokens,tok,{
+local function AstLabel (token)return populateCommonNodeFields(token,{
 	type        = "label",
 	name        = "",    -- The value must be able to pass as an identifier
 })end
-local function AstGoto (tokens,tok)return populateCommonNodeFields(tokens,tok,{
+local function AstGoto (token)return populateCommonNodeFields(token,{
 	type        = "goto",
 	name        = "",    -- The value must be able to pass as an identifier
 	label       = nil,   -- AstLabel. Updated by updateReferences().
 })end
-local function AstBlock (tokens,tok)return populateCommonNodeFields(tokens,tok,{
+local function AstBlock (token)return populateCommonNodeFields(token,{
 	type        = "block",
 	statements  = {},    -- Array of statements.
 })end
-local function AstDeclaration (tokens,tok)return populateCommonNodeFields(tokens,tok,{
+local function AstDeclaration (token)return populateCommonNodeFields(token,{
 	type        = "declaration",
 	names       = {},    -- Array of AstIdentifier.
 	values      = {},    -- Array of expressions.
 })end
-local function AstAssignment (tokens,tok)return populateCommonNodeFields(tokens,tok,{
+local function AstAssignment (token)return populateCommonNodeFields(token,{
 	type        = "assignment",
 	targets     = {},    -- Mixed array of AstIdentifier and AstLookup.
 	values      = {},    -- Array of expressions.
 })end
-local function AstIf (tokens,tok)return populateCommonNodeFields(tokens,tok,{
+local function AstIf (token)return populateCommonNodeFields(token,{
 	type        = "if",
 	condition   = nil,   -- Expression.
 	bodyTrue    = nil,   -- AstBlock.
 	bodyFalse   = nil,   -- AstBlock or nil.
 })end
-local function AstWhile (tokens,tok)return populateCommonNodeFields(tokens,tok,{
+local function AstWhile (token)return populateCommonNodeFields(token,{
 	type        = "while",
 	condition   = nil,   -- Expression.
 	body        = nil,   -- AstBlock.
 })end
-local function AstRepeat (tokens,tok)return populateCommonNodeFields(tokens,tok,{
+local function AstRepeat (token)return populateCommonNodeFields(token,{
 	type        = "repeat",
 	body        = nil,   -- AstBlock.
 	condition   = nil,   -- Expression.
 })end
-local function AstFor (tokens,tok)return populateCommonNodeFields(tokens,tok,{
+local function AstFor (token)return populateCommonNodeFields(token,{
 	type        = "for",
 	kind        = "",    -- "numeric" | "generic"
 	names       = {},    -- Array of AstIdentifier.
@@ -725,28 +745,28 @@ do
 	end
 end
 
-function formatMessageAtToken(prefix, tokens, tok, agent, s, ...)
-	local pos = tokens.positionStart[tok] or (tok == 1 and 1 or #tokens.sourceString+1)
-	return (formatMessageInFile(prefix, tokens.sourceString, tokens.sourcePath, pos, agent, s, ...))
+function formatMessageAtToken(prefix, token, agent, s, ...)
+	local pos = (token and token.positionStart or 1)
+	return (formatMessageInFile(prefix, token.sourceString, token.sourcePath, pos, agent, s, ...))
 end
-function formatMessageAfterToken(prefix, tokens, tok, agent, s, ...)
-	local pos = (tokens.positionStart[tok] and tokens.positionEnd[tok]+1) or (tok == 1 and 1 or #tokens.sourceString+1)
-	return (formatMessageInFile(prefix, tokens.sourceString, tokens.sourcePath, pos, agent, s, ...))
+function formatMessageAfterToken(prefix, token, agent, s, ...)
+	local pos = (token and token.positionEnd+1 or #token.sourceString)
+	return (formatMessageInFile(prefix, token.sourceString, token.sourcePath, pos, agent, s, ...))
 end
 
 function formatMessageAtNode(prefix, node, agent, s, ...)
 	return (formatMessageInFile(prefix, node.sourceString, node.sourcePath, node.position, agent, s, ...))
 end
 
--- message = formatMessage( [ prefix="Info", ] tokens, tok, agent, s, ... )
--- message = formatMessage( [ prefix="Info", ] astNode,     agent, s, ... )
--- message = formatMessage( [ prefix="Info", ] location,    agent, s, ... )
-function formatMessage(prefix, nodeOrLocOrTokens, tokOrAgent, ...)
+-- message = formatMessage( [ prefix="Info", ] token,    agent, s, ... )
+-- message = formatMessage( [ prefix="Info", ] astNode,  agent, s, ... )
+-- message = formatMessage( [ prefix="Info", ] location, agent, s, ... )
+function formatMessage(prefix, nodeOrLocOrToken, ...)
 	if type(prefix) ~= "string" then
-		return (formatMessage("Info", prefix, nodeOrLocOrTokens, tokOrAgent, ...))
+		return (formatMessage("Info", prefix, nodeOrLocOrToken, ...))
 	end
-	local formatter = type(tokOrAgent) == "number" and formatMessageAtToken or formatMessageAtNode
-	return (formatter(prefix, nodeOrLocOrTokens, tokOrAgent, ...))
+	local formatter = nodeOrLocOrToken.representation and formatMessageAtToken or formatMessageAtNode
+	return (formatter(prefix, nodeOrLocOrToken, ...))
 end
 
 
@@ -778,7 +798,7 @@ end
 
 -- text = getRelativeLocationTextForToken( tokens, tokenOfInterest, otherToken )
 function getRelativeLocationTextForToken(tokens, tokOfInterest, otherTok)
-	return getRelativeLocationText((tokens.lineStart[tokOfInterest] or 0), (tokens.lineStart[otherTok] or 0))
+	return getRelativeLocationText((tokens[tokOfInterest] and tokens[tokOfInterest].lineStart or 0), (tokens[otherTok] and tokens[otherTok].lineStart or 0))
 end
 
 -- text = getRelativeLocationTextForNode( nodeOfInterest, otherNode )
@@ -797,446 +817,465 @@ end
 
 
 
-local ERROR_UNFINISHED_VALUE = {}
+do
+	local ERROR_UNFINISHED_VALUE = {}
 
--- success, equalSignCountIfLong|errorCode, ptr = parseStringlikeToken( s, ptr )
-local function parseStringlikeToken(s, ptr)
-	local longEqualSigns       = stringMatch(s, "^%[(=*)%[", ptr)
-	local equalSignCountIfLong = longEqualSigns and #longEqualSigns
+	-- success, equalSignCountIfLong|errorCode, ptr = parseStringlikeToken( s, ptr )
+	local function parseStringlikeToken(s, ptr)
+		local longEqualSigns       = stringMatch(s, "^%[(=*)%[", ptr)
+		local equalSignCountIfLong = longEqualSigns and #longEqualSigns
 
-	-- Single line (comment).
-	if not equalSignCountIfLong then
-		local i1, i2 = stringFind(s, "\n", ptr)
-		ptr          = i2 and i2 + 1 or #s + 1
+		-- Single line (comment).
+		if not equalSignCountIfLong then
+			local i1, i2 = stringFind(s, "\n", ptr)
+			ptr          = i2 and i2 + 1 or #s + 1
 
-	-- Multiline.
-	else
-		ptr = ptr + 1 + #longEqualSigns + 1
+		-- Multiline.
+		else
+			ptr = ptr + 1 + #longEqualSigns + 1
 
-		local i1, i2 = stringFind(s, "%]"..longEqualSigns.."%]", ptr)
-		if not i1 then
-			return false, ERROR_UNFINISHED_VALUE, 0
+			local i1, i2 = stringFind(s, "%]"..longEqualSigns.."%]", ptr)
+			if not i1 then
+				return false, ERROR_UNFINISHED_VALUE, 0
+			end
+
+			ptr = i2 + 1
 		end
 
-		ptr = i2 + 1
+		return true, equalSignCountIfLong, ptr
 	end
 
-	return true, equalSignCountIfLong, ptr
-end
+	local function codepointToString(cp, buffer)
+		if cp < 0 or cp > 0x10ffff then
+			-- This error is actually incorrect as Lua supports codepoints up to 2^31.
+			-- This is probably an issue that no one will ever encounter!
+			return false, F("Codepoint 0x%X (%.0f) is outside the valid range (0..10FFFF).", cp, cp)
+		end
 
-local function codepointToString(cp, buffer)
-	if cp < 0 or cp > 0x10ffff then
-		-- This error is actually incorrect as Lua supports codepoints up to 2^31.
-		-- This is probably an issue that no one will ever encounter!
-		return false, F("Codepoint 0x%X (%.0f) is outside the valid range (0..10FFFF).", cp, cp)
-	end
+		if cp < 128 then
+			tableInsert(buffer, stringChar(cp))
+			return true
+		end
 
-	if cp < 128 then
-		tableInsert(buffer, stringChar(cp))
-		return true
-	end
+		local suffix = cp % 64
+		local c4     = 128 + suffix
+		cp           = (cp - suffix) / 64
 
-	local suffix = cp % 64
-	local c4     = 128 + suffix
-	cp           = (cp - suffix) / 64
+		if cp < 32 then
+			tableInsert(buffer, stringChar(192+cp))
+			tableInsert(buffer, stringChar(c4))
+			return true
+		end
 
-	if cp < 32 then
-		tableInsert(buffer, stringChar(192+cp))
-		tableInsert(buffer, stringChar(c4))
-		return true
-	end
+		suffix   = cp % 64
+		local c3 = 128 + suffix
+		cp       = (cp - suffix) / 64
 
-	suffix   = cp % 64
-	local c3 = 128 + suffix
-	cp       = (cp - suffix) / 64
+		if cp < 16 then
+			tableInsert(buffer, stringChar(224+cp))
+			tableInsert(buffer, stringChar(c3))
+			tableInsert(buffer, stringChar(c4))
+			return true
+		end
 
-	if cp < 16 then
-		tableInsert(buffer, stringChar(224+cp))
+		suffix = cp % 64
+		cp     = (cp - suffix) / 64
+
+		tableInsert(buffer, stringChar(240+cp))
+		tableInsert(buffer, stringChar(128+suffix))
 		tableInsert(buffer, stringChar(c3))
 		tableInsert(buffer, stringChar(c4))
 		return true
 	end
 
-	suffix = cp % 64
-	cp     = (cp - suffix) / 64
+	local function parseStringContents(s, path, ptrStart, ptrEnd)
+		local ptr    = ptrStart
+		local buffer = {}
 
-	tableInsert(buffer, stringChar(240+cp))
-	tableInsert(buffer, stringChar(128+suffix))
-	tableInsert(buffer, stringChar(c3))
-	tableInsert(buffer, stringChar(c4))
-	return true
-end
+		while ptr <= ptrEnd do
+			local i1 = stringFind(s, "\\", ptr, true)
+			if not i1 or i1 > ptrEnd then  break  end
 
-local function parseStringContents(s, path, ptrStart, ptrEnd)
-	local ptr    = ptrStart
-	local buffer = {}
-
-	while ptr <= ptrEnd do
-		local i1 = stringFind(s, "\\", ptr, true)
-		if not i1 or i1 > ptrEnd then  break  end
-
-		if i1 > ptr then
-			tableInsert(buffer, stringSub(s, ptr, i1-1))
-		end
-		ptr = i1 + 1
-
-		-- local b1, b2, b3 = stringByte(s, ptr, ptr+2)
-
-		if     stringFind(s, "^a", ptr) then  tableInsert(buffer, "\a") ; ptr = ptr + 1
-		elseif stringFind(s, "^b", ptr) then  tableInsert(buffer, "\b") ; ptr = ptr + 1
-		elseif stringFind(s, "^t", ptr) then  tableInsert(buffer, "\t") ; ptr = ptr + 1
-		elseif stringFind(s, "^n", ptr) then  tableInsert(buffer, "\n") ; ptr = ptr + 1
-		elseif stringFind(s, "^v", ptr) then  tableInsert(buffer, "\v") ; ptr = ptr + 1
-		elseif stringFind(s, "^f", ptr) then  tableInsert(buffer, "\f") ; ptr = ptr + 1
-		elseif stringFind(s, "^r", ptr) then  tableInsert(buffer, "\r") ; ptr = ptr + 1
-		elseif stringFind(s, "^\\",ptr) then  tableInsert(buffer, "\\") ; ptr = ptr + 1
-		elseif stringFind(s, '^"', ptr) then  tableInsert(buffer, "\"") ; ptr = ptr + 1
-		elseif stringFind(s, "^'", ptr) then  tableInsert(buffer, "\'") ; ptr = ptr + 1
-		elseif stringFind(s, "^\n",ptr) then  tableInsert(buffer, "\n") ; ptr = ptr + 1
-
-		elseif stringFind(s, "^z", ptr) then
-			local i1, i2 = stringFind(s, "^%s*", ptr+1)
-			ptr          = i2 + 1
-
-		elseif stringFind(s, "^%d", ptr) then
-			local nStr = stringMatch(s, "^%d%d?%d?", ptr)
-			local byte = tonumber(nStr)
-
-			if byte > 255 then
-				return nil, formatErrorInFile(
-					s, path, ptr, "Tokenizer",
-					"Byte value '%s' is out-of-range in decimal escape sequence. (String starting %s)",
-					nStr, getRelativeLocationText(getLineNumber(s, ptrStart), getLineNumber(s, ptr))
-				)
+			if i1 > ptr then
+				tableInsert(buffer, stringSub(s, ptr, i1-1))
 			end
+			ptr = i1 + 1
 
-			tableInsert(buffer, stringChar(byte))
-			ptr = ptr + #nStr
+			-- local b1, b2, b3 = stringByte(s, ptr, ptr+2)
 
-		elseif stringFind(s, "^x%x%x", ptr) then
-			local hexStr = stringSub(s, ptr+1, ptr+2)
-			local byte   = tonumber(hexStr, 16)
+			if     stringFind(s, "^a", ptr) then  tableInsert(buffer, "\a") ; ptr = ptr + 1
+			elseif stringFind(s, "^b", ptr) then  tableInsert(buffer, "\b") ; ptr = ptr + 1
+			elseif stringFind(s, "^t", ptr) then  tableInsert(buffer, "\t") ; ptr = ptr + 1
+			elseif stringFind(s, "^n", ptr) then  tableInsert(buffer, "\n") ; ptr = ptr + 1
+			elseif stringFind(s, "^v", ptr) then  tableInsert(buffer, "\v") ; ptr = ptr + 1
+			elseif stringFind(s, "^f", ptr) then  tableInsert(buffer, "\f") ; ptr = ptr + 1
+			elseif stringFind(s, "^r", ptr) then  tableInsert(buffer, "\r") ; ptr = ptr + 1
+			elseif stringFind(s, "^\\",ptr) then  tableInsert(buffer, "\\") ; ptr = ptr + 1
+			elseif stringFind(s, '^"', ptr) then  tableInsert(buffer, "\"") ; ptr = ptr + 1
+			elseif stringFind(s, "^'", ptr) then  tableInsert(buffer, "\'") ; ptr = ptr + 1
+			elseif stringFind(s, "^\n",ptr) then  tableInsert(buffer, "\n") ; ptr = ptr + 1
 
-			tableInsert(buffer, stringChar(byte))
-			ptr = ptr + 3
+			elseif stringFind(s, "^z", ptr) then
+				local i1, i2 = stringFind(s, "^%s*", ptr+1)
+				ptr          = i2 + 1
 
-		elseif stringFind(s, "^u{%x+}", ptr) then
-			local hexStr = stringMatch(s, "^%x+", ptr+2)
-			local cp     = tonumber(hexStr, 16)
+			elseif stringFind(s, "^%d", ptr) then
+				local nStr = stringMatch(s, "^%d%d?%d?", ptr)
+				local byte = tonumber(nStr)
 
-			local ok, err = codepointToString(cp, buffer)
-			if not ok then
-				return nil, formatErrorInFile(
-					s, path, ptr+2, "Tokenizer",
-					"%s (String starting %s)",
-					err, getRelativeLocationText(getLineNumber(s, ptrStart), getLineNumber(s, ptr))
-				)
-			end
-
-			ptr = ptr + 3 + #hexStr
-
-		else
-			return nil, formatErrorInFile(
-				s, path, ptr-1, "Tokenizer",
-				"Invalid escape sequence. (String starting %s)",
-				getRelativeLocationText(getLineNumber(s, ptrStart), getLineNumber(s, ptr))
-			)
-		end
-
-	end
-
-	if ptr <= ptrEnd then
-		tableInsert(buffer, stringSub(s, ptr, ptrEnd))
-	end
-
-	return tableConcat(buffer)
-end
-
--- tokens, error = tokenize( luaString [, pathForErrorMessages="?" ] )
-function tokenize(s, path)
-	assertArg1("tokenize", 1, s,    "string")
-	assertArg ("tokenize", 2, path, "string","nil")
-
-	if stringFind(s, "\r", 1, true) then
-		s = stringGsub(s, "\r\n?", "\n")
-	end
-	path = path or "?"
-
-	local tokens        = newTokenStream()
-	tokens.sourceString = s
-	tokens.sourcePath   = path
-
-	local tokTypes  = tokens.type
-	local tokValues = tokens.value
-	local tokReprs  = tokens.representation
-	local tokLine1  = tokens.lineStart
-	local tokLine2  = tokens.lineEnd
-	local tokPos1   = tokens.positionStart
-	local tokPos2   = tokens.positionEnd
-
-	local count = 0
-	local ptr   = 1
-	local ln    = 1
-
-	while true do
-		local i1, i2 = stringFind(s, "^%s+", ptr)
-		if i1 then
-			ln  = ln + countSubString(s, i1, i2, "\n", true)
-			ptr = i2 + 1
-		end
-
-		if ptr > #s then  break  end
-
-		local ptrStart = ptr
-		local lnStart  = ln
-		local tokType, tokRepr, tokValue
-
-		-- Identifier/keyword.
-		if stringFind(s, "^[%a_]", ptr) then
-			local i1, i2, word = stringFind(s, "^([%a_][%w_]*)", ptr)
-			ptr      = i2+1
-			tokType  = KEYWORDS[word] and "keyword" or "identifier"
-			tokRepr  = stringSub(s, ptrStart, ptr-1)
-			tokValue = tokRepr
-
-		-- Comment.
-		elseif stringFind(s, "^%-%-", ptr) then
-			ptr = ptr + 2
-
-			local ok, equalSignCountIfLong
-			ok, equalSignCountIfLong, ptr = parseStringlikeToken(s, ptr)
-
-			if not ok then
-				local errCode = equalSignCountIfLong
-				if errCode == ERROR_UNFINISHED_VALUE then
-					return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Unfinished long comment.")
-				else
-					return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Invalid comment.")
-				end
-			end
-
-			-- Check for nesting of [[...]] which is deprecated in Lua. Sigh...
-			if equalSignCountIfLong and equalSignCountIfLong == 0 then
-				local pos = stringFind(s, "[[", ptrStart+4, true)
-				if pos and pos < ptr then
-					return nil, formatErrorInFile(s, path, pos, "Tokenizer", "Cannot have nested comments. (Comment starting %s)", getRelativeLocationText(lnStart, getLineNumber(s, pos)))
-				end
-			end
-
-			tokType  = "comment"
-			tokRepr  = stringSub(s, ptrStart, ptr-1)
-			tokRepr  = equalSignCountIfLong and tokRepr or (stringFind(tokRepr, "\n$") and tokRepr or tokRepr.."\n") -- Make sure there's a newline at the end of single-line comments. (It may be missing if we've reached EOF.)
-			tokValue = equalSignCountIfLong and stringSub(tokRepr, 5+equalSignCountIfLong, -3-equalSignCountIfLong) or stringSub(tokRepr, 3)
-
-		-- Number.
-		elseif stringFind(s, "^%.?%d", ptr) then
-			local               pat, maybeInt, kind, i1, i2, numStr = NUM_HEX_FRAC_EXP, false, "lua52hex",  stringFind(s, NUM_HEX_FRAC_EXP, ptr)
-			if not i1     then  pat, maybeInt, kind, i1, i2, numStr = NUM_HEX_FRAC,     false, "lua52hex",  stringFind(s, NUM_HEX_FRAC,     ptr)
-			if not i1     then  pat, maybeInt, kind, i1, i2, numStr = NUM_HEX_EXP,      false, "lua52hex",  stringFind(s, NUM_HEX_EXP,      ptr)
-			if not i1     then  pat, maybeInt, kind, i1, i2, numStr = NUM_HEX,          true,  "",          stringFind(s, NUM_HEX,          ptr)
-			if not i1     then  pat, maybeInt, kind, i1, i2, numStr = NUM_BIN,          true,  "binary",    stringFind(s, NUM_BIN,          ptr) -- LuaJIT supports these, so why not.
-			if not i1     then  pat, maybeInt, kind, i1, i2, numStr = NUM_DEC_FRAC_EXP, false, "",          stringFind(s, NUM_DEC_FRAC_EXP, ptr)
-			if not i1     then  pat, maybeInt, kind, i1, i2, numStr = NUM_DEC_FRAC,     false, "",          stringFind(s, NUM_DEC_FRAC,     ptr)
-			if not i1     then  pat, maybeInt, kind, i1, i2, numStr = NUM_DEC_EXP,      false, "",          stringFind(s, NUM_DEC_EXP,      ptr)
-			if not i1     then  pat, maybeInt, kind, i1, i2, numStr = NUM_DEC,          true,  "",          stringFind(s, NUM_DEC,          ptr)
-			if not numStr then  return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Malformed number.")
-			end end end end end end end end end
-
-			local numStrFallback = numStr
-
-			if jit then
-				if stringFind(s, "^[Ii]", i2+1) then -- Imaginary part of complex number.
-					numStr = stringSub(s, i1, i2+1)
-					i2     = i2 + 1
-
-				elseif not maybeInt or stringFind(numStr, ".", 1, true) then
-					-- void
-				elseif stringFind(s, "^[Uu][Ll][Ll]", i2+1) then -- Unsigned 64-bit integer.
-					numStr = stringSub(s, i1, i2+3)
-					i2     = i2 + 3
-				elseif stringFind(s, "^[Ll][Ll]", i2+1) then -- Signed 64-bit integer.
-					numStr = stringSub(s, i1, i2+2)
-					i2     = i2 + 2
-				end
-			end
-
-			local n = tonumber(numStr)
-
-			if not n and jit then
-				local chunk = loadstring("return "..numStr)
-				n           = chunk and chunk() or n
-			end
-
-			n = n or tonumber(numStrFallback)
-
-			if not n then
-				-- Note: We know we're not running LuaJIT here as it supports hexadecimal floats and binary notation, thus we use numStrFallback instead of numStr.
-
-				-- Support hexadecimal floats if we're running Lua 5.1.
-				if kind == "lua52hex" then
-					local                                _, intStr, fracStr, expStr
-					if     pat == NUM_HEX_FRAC_EXP then  _, intStr, fracStr, expStr = stringMatch(numStrFallback, NUM_HEX_FRAC_EXP)
-					elseif pat == NUM_HEX_FRAC     then  _, intStr, fracStr         = stringMatch(numStrFallback, NUM_HEX_FRAC) ; expStr  = "0"
-					elseif pat == NUM_HEX_EXP      then  _, intStr,          expStr = stringMatch(numStrFallback, NUM_HEX_EXP)  ; fracStr = ""
-					else return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Internal error parsing the number '%s'.", numStrFallback) end
-
-					n = tonumber(intStr, 16) or 0 -- intStr may be "".
-
-					local fracValue = 1
-					for i = 1, #fracStr do
-						fracValue = fracValue / 16
-						n         = n + tonumber(stringSub(fracStr, i, i), 16) * fracValue
-					end
-
-					n = n * 2 ^ stringGsub(expStr, "^+", "")
-
-				elseif kind == "binary" then
-					n = tonumber(stringSub(numStrFallback, 3), 2)
-				end
-			end
-
-			if not n then
-				return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Invalid number.")
-			end
-
-			ptr      = i2+1
-			tokType  = "number"
-			tokRepr  = numStr
-			tokValue = n
-
-			if stringFind(s, "^[%w_.]", ptr) then
-				local after = stringMatch(s, "^%.?%d+", ptr) or stringMatch(s, "^[%w_.][%w_.]?", ptr)
-				return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Malformed number near '%s%s'.", numStr, after)
-			end
-
-		-- Quoted string.
-		elseif stringFind(s, "^[\"']", ptr) then
-			local quote     = stringSub(s, ptr, ptr)
-			local quoteByte = stringByte(quote)
-			ptr             = ptr + 1
-
-			local pat = "["..quote.."\\\n]"
-
-			while true do
-				local i1 = stringFind(s, pat, ptr)
-				if not i1 then
-					return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Unfinished string.")
+				if byte > 255 then
+					return nil, formatErrorInFile(
+						s, path, ptr, "Tokenizer",
+						"Byte value '%s' is out-of-range in decimal escape sequence. (String starting %s)",
+						nStr, getRelativeLocationText(getLineNumber(s, ptrStart), getLineNumber(s, ptr))
+					)
 				end
 
-				ptr          = i1
-				local b1, b2 = stringByte(s, ptr, ptr+1)
+				tableInsert(buffer, stringChar(byte))
+				ptr = ptr + #nStr
 
-				-- '"'
-				if b1 == quoteByte then
-					ptr = ptr + 1
-					break
+			elseif stringFind(s, "^x%x%x", ptr) then
+				local hexStr = stringSub(s, ptr+1, ptr+2)
+				local byte   = tonumber(hexStr, 16)
 
-				-- '\'
-				elseif b1 == 92 then
-					ptr = ptr + 1
+				tableInsert(buffer, stringChar(byte))
+				ptr = ptr + 3
 
-					if b2 == 122 then -- 'z'
-						ptr         = ptr + 1
-						local _, i2 = stringFind(s, "^%s*", ptr)
-						ptr         = i2 + 1
-					else
-						-- Note: We don't have to look for multiple characters after the escape, like \nnn - this algorithm works anyway.
-						if ptr > #s then
-							return nil, formatErrorInFile(
-								s, path, ptr, "Tokenizer",
-								"Unfinished string after escape character. (String starting %s)",
-								getRelativeLocationText(lnStart, getLineNumber(s, ptr))
-							)
-						end
-						ptr = ptr + 1 -- Just skip the next character, whatever it might be.
-					end
+			elseif stringFind(s, "^u{%x+}", ptr) then
+				local hexStr = stringMatch(s, "^%x+", ptr+2)
+				local cp     = tonumber(hexStr, 16)
 
-				-- '\n'
-				elseif b1 == 10 then
-					-- Lua, this is silly!
-					return nil, formatErrorInFile(s, path, ptr, "Tokenizer", "Unescaped newline in string (starting %s).", getRelativeLocationText(lnStart, getLineNumber(s, ptr)))
-
-				else
-					assert(false)
+				local ok, err = codepointToString(cp, buffer)
+				if not ok then
+					return nil, formatErrorInFile(
+						s, path, ptr+2, "Tokenizer",
+						"%s (String starting %s)",
+						err, getRelativeLocationText(getLineNumber(s, ptrStart), getLineNumber(s, ptr))
+					)
 				end
-			end
 
-			tokType = "string"
-			tokRepr = stringSub(s, ptrStart, ptr-1)
+				ptr = ptr + 3 + #hexStr
 
-			local chunk = loadstring("return "..tokRepr, "@") -- Try to make Lua parse the string value before we fall back to our own parser which is probably slower.
-			if chunk then
-				tokValue = chunk()
-				assert(type(tokValue) == "string")
 			else
-				local stringValue, err = parseStringContents(s, path, ptrStart+1, ptr-2)
-				if not stringValue then  return nil, err  end
-				tokValue = stringValue
+				return nil, formatErrorInFile(
+					s, path, ptr-1, "Tokenizer",
+					"Invalid escape sequence. (String starting %s)",
+					getRelativeLocationText(getLineNumber(s, ptrStart), getLineNumber(s, ptr))
+				)
 			end
 
-		-- Long string.
-		elseif stringFind(s, "^%[=*%[", ptr) then
-			local ok, equalSignCountIfLong
-			ok, equalSignCountIfLong, ptr = parseStringlikeToken(s, ptr)
-
-			if not ok then
-				local errCode = equalSignCountIfLong
-				if errCode == ERROR_UNFINISHED_VALUE then
-					return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Unfinished long string.")
-				else
-					return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Invalid long string.")
-				end
-			end
-
-			tokType = "string"
-			tokRepr = stringSub(s, ptrStart, ptr-1)
-
-			local chunk, err = loadstring("return "..tokRepr, "@")
-			if not chunk then
-				err = stringGsub(err, "^:%d+: ", "")
-				return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Could not convert long string token to value. (%s)", err)
-			end
-			tokValue = assert(chunk)()
-			assert(type(tokValue) == "string")
-
-		-- Punctuation.
-		elseif stringFind(s, "^%.%.%.", ptr) then
-			ptr      = ptr + 3
-			tokType  = "punctuation"
-			tokRepr  = stringSub(s, ptrStart, ptr-1)
-			tokValue = tokRepr
-		elseif stringFind(s, "^%.%.", ptr) or stringFind(s, "^[=~<>]=", ptr) or stringFind(s, "^::", ptr) or stringFind(s, "^//", ptr) or stringFind(s, "^<<", ptr) or stringFind(s, "^>>", ptr) then
-			ptr      = ptr + 2
-			tokType  = "punctuation"
-			tokRepr  = stringSub(s, ptrStart, ptr-1)
-			tokValue = tokRepr
-		elseif stringFind(s, "^[-+*/%%^#<>=(){}[%];:,.&~|]", ptr) then
-			ptr      = ptr + 1
-			tokType  = "punctuation"
-			tokRepr  = stringSub(s, ptrStart, ptr-1)
-			tokValue = tokRepr
-
-		else
-			return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Unknown character.")
 		end
-		assert(tokType)
 
-		ln = ln + countString(tokRepr, "\n", true)
+		if ptr <= ptrEnd then
+			tableInsert(buffer, stringSub(s, ptr, ptrEnd))
+		end
 
-		count            = count + 1
-		tokTypes [count] = tokType
-		tokValues[count] = tokValue
-		tokReprs [count] = tokRepr
-		tokLine1 [count] = lnStart
-		tokLine2 [count] = ln
-		tokPos1  [count] = ptrStart
-		tokPos2  [count] = ptr - 1
-
-		-- print(F("%4d %-11s '%s'", count, tokType, (stringGsub(tokRepr, "\n", "\\n"))))
+		return tableConcat(buffer)
 	end
 
-	tokens.n = count
-	return tokens
+	-- tokens, error = tokenize( luaString [, pathForErrorMessages="?" ] )
+	function tokenize(s, path)
+		assertArg1("tokenize", 1, s,    "string")
+		assertArg2("tokenize", 2, path, "string","nil")
+
+		if stringFind(s, "\r", 1, true) then
+			s = stringGsub(s, "\r\n?", "\n")
+		end
+		path = path or "?"
+
+		local tokens        = newTokenStream()
+		tokens.sourceString = s
+		tokens.sourcePath   = path
+
+		local count = 0
+		local ptr   = 1
+		local ln    = 1
+
+		local BYTES_NAME_START      = TOKEN_BYTES.NAME_START
+		local BYTES_DASH            = TOKEN_BYTES.DASH
+		local BYTES_NUM             = TOKEN_BYTES.NUM
+		local BYTES_NUM_OR_DOT      = TOKEN_BYTES.NUM_OR_DOT
+		local BYTES_QUOTE           = TOKEN_BYTES.QUOTE
+		local BYTES_SQUARE          = TOKEN_BYTES.SQUARE
+		local BYTES_DOT             = TOKEN_BYTES.DOT
+		local BYTES_PUNCT_TWO_CHARS = TOKEN_BYTES.PUNCT_TWO_CHARS
+		local BYTES_PUNCT_ONE_CHAR  = TOKEN_BYTES.PUNCT_ONE_CHAR
+
+		local NUM_HEX_FRAC_EXP      = NUMERAL_PATTERNS.HEX_FRAC_EXP
+		local NUM_HEX_FRAC          = NUMERAL_PATTERNS.HEX_FRAC
+		local NUM_HEX_EXP           = NUMERAL_PATTERNS.HEX_EXP
+		local NUM_HEX               = NUMERAL_PATTERNS.HEX
+		local NUM_BIN               = NUMERAL_PATTERNS.BIN
+		local NUM_DEC_FRAC_EXP      = NUMERAL_PATTERNS.DEC_FRAC_EXP
+		local NUM_DEC_FRAC          = NUMERAL_PATTERNS.DEC_FRAC
+		local NUM_DEC_EXP           = NUMERAL_PATTERNS.DEC_EXP
+		local NUM_DEC               = NUMERAL_PATTERNS.DEC
+
+		while true do
+			local i1, i2 = stringFind(s, "^%s+", ptr)
+			if i1 then
+				ln  = ln + countSubString(s, i1, i2, "\n", true)
+				ptr = i2 + 1
+			end
+
+			if ptr > #s then  break  end
+
+			local ptrStart = ptr
+			local lnStart  = ln
+			local b1, b2   = stringByte(s, ptr, ptr+1)
+			local tokType, tokRepr, tokValue
+
+			-- Identifier/keyword.
+			if BYTES_NAME_START[b1] then
+				local i1, i2, word = stringFind(s, "^(.[%w_]*)", ptr)
+				ptr      = i2+1
+				tokType  = KEYWORDS[word] and "keyword" or "identifier"
+				tokRepr  = stringSub(s, ptrStart, ptr-1)
+				tokValue = tokRepr
+
+			-- Comment.
+			elseif BYTES_DASH[b1] and BYTES_DASH[b2] then
+				ptr = ptr + 2
+
+				local ok, equalSignCountIfLong
+				ok, equalSignCountIfLong, ptr = parseStringlikeToken(s, ptr)
+
+				if not ok then
+					local errCode = equalSignCountIfLong
+					if errCode == ERROR_UNFINISHED_VALUE then
+						return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Unfinished long comment.")
+					else
+						return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Invalid comment.")
+					end
+				end
+
+				-- Check for nesting of [[...]] which is deprecated in Lua. Sigh...
+				if equalSignCountIfLong and equalSignCountIfLong == 0 then
+					local pos = stringFind(s, "[[", ptrStart+4, true)
+					if pos and pos < ptr then
+						return nil, formatErrorInFile(s, path, pos, "Tokenizer", "Cannot have nested comments. (Comment starting %s)", getRelativeLocationText(lnStart, getLineNumber(s, pos)))
+					end
+				end
+
+				tokType  = "comment"
+				tokRepr  = stringSub(s, ptrStart, ptr-1)
+				tokRepr  = equalSignCountIfLong and tokRepr or (stringFind(tokRepr, "\n$") and tokRepr or tokRepr.."\n") -- Make sure there's a newline at the end of single-line comments. (It may be missing if we've reached EOF.)
+				tokValue = equalSignCountIfLong and stringSub(tokRepr, 5+equalSignCountIfLong, -3-equalSignCountIfLong) or stringSub(tokRepr, 3, -2)
+
+			-- Number.
+			elseif BYTES_NUM[b1] or (BYTES_DOT[b1] and BYTES_NUM[b2]) then
+				local               pat, maybeInt, kind, i1, i2, numStr = NUM_HEX_FRAC_EXP, false, "lua52hex",  stringFind(s, NUM_HEX_FRAC_EXP, ptr)
+				if not i1     then  pat, maybeInt, kind, i1, i2, numStr = NUM_HEX_FRAC,     false, "lua52hex",  stringFind(s, NUM_HEX_FRAC,     ptr)
+				if not i1     then  pat, maybeInt, kind, i1, i2, numStr = NUM_HEX_EXP,      false, "lua52hex",  stringFind(s, NUM_HEX_EXP,      ptr)
+				if not i1     then  pat, maybeInt, kind, i1, i2, numStr = NUM_HEX,          true,  "",          stringFind(s, NUM_HEX,          ptr)
+				if not i1     then  pat, maybeInt, kind, i1, i2, numStr = NUM_BIN,          true,  "binary",    stringFind(s, NUM_BIN,          ptr) -- LuaJIT supports these, so why not.
+				if not i1     then  pat, maybeInt, kind, i1, i2, numStr = NUM_DEC_FRAC_EXP, false, "",          stringFind(s, NUM_DEC_FRAC_EXP, ptr)
+				if not i1     then  pat, maybeInt, kind, i1, i2, numStr = NUM_DEC_FRAC,     false, "",          stringFind(s, NUM_DEC_FRAC,     ptr)
+				if not i1     then  pat, maybeInt, kind, i1, i2, numStr = NUM_DEC_EXP,      false, "",          stringFind(s, NUM_DEC_EXP,      ptr)
+				if not i1     then  pat, maybeInt, kind, i1, i2, numStr = NUM_DEC,          true,  "",          stringFind(s, NUM_DEC,          ptr)
+				if not numStr then  return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Malformed number.")
+				end end end end end end end end end
+
+				local numStrFallback = numStr
+
+				if jit then
+					if stringFind(s, "^[Ii]", i2+1) then -- Imaginary part of complex number.
+						numStr = stringSub(s, i1, i2+1)
+						i2     = i2 + 1
+
+					elseif not maybeInt or stringFind(numStr, ".", 1, true) then
+						-- void
+					elseif stringFind(s, "^[Uu][Ll][Ll]", i2+1) then -- Unsigned 64-bit integer.
+						numStr = stringSub(s, i1, i2+3)
+						i2     = i2 + 3
+					elseif stringFind(s, "^[Ll][Ll]", i2+1) then -- Signed 64-bit integer.
+						numStr = stringSub(s, i1, i2+2)
+						i2     = i2 + 2
+					end
+				end
+
+				local n = tonumber(numStr)
+
+				if not n and jit then
+					local chunk = loadstring("return "..numStr)
+					n           = chunk and chunk() or n
+				end
+
+				n = n or tonumber(numStrFallback)
+
+				if not n then
+					-- Note: We know we're not running LuaJIT here as it supports hexadecimal floats and binary notation, thus we use numStrFallback instead of numStr.
+
+					-- Support hexadecimal floats if we're running Lua 5.1.
+					if kind == "lua52hex" then
+						local                                _, intStr, fracStr, expStr
+						if     pat == NUM_HEX_FRAC_EXP then  _, intStr, fracStr, expStr = stringMatch(numStrFallback, NUM_HEX_FRAC_EXP)
+						elseif pat == NUM_HEX_FRAC     then  _, intStr, fracStr         = stringMatch(numStrFallback, NUM_HEX_FRAC) ; expStr  = "0"
+						elseif pat == NUM_HEX_EXP      then  _, intStr,          expStr = stringMatch(numStrFallback, NUM_HEX_EXP)  ; fracStr = ""
+						else return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Internal error parsing the number '%s'.", numStrFallback) end
+
+						n = tonumber(intStr, 16) or 0 -- intStr may be "".
+
+						local fracValue = 1
+						for i = 1, #fracStr do
+							fracValue = fracValue / 16
+							n         = n + tonumber(stringSub(fracStr, i, i), 16) * fracValue
+						end
+
+						n = n * 2 ^ stringGsub(expStr, "^+", "")
+
+					elseif kind == "binary" then
+						n = tonumber(stringSub(numStrFallback, 3), 2)
+					end
+				end
+
+				if not n then
+					return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Invalid number.")
+				end
+
+				ptr      = i2+1
+				tokType  = "number"
+				tokRepr  = numStr
+				tokValue = n
+
+				if stringFind(s, "^[%w_.]", ptr) then
+					local after = stringMatch(s, "^%.?%d+", ptr) or stringMatch(s, "^[%w_.][%w_.]?", ptr)
+					return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Malformed number near '%s%s'.", numStr, after)
+				end
+
+			-- Quoted string.
+			elseif BYTES_QUOTE[b1] then
+				local quote     = stringSub(s, ptr, ptr)
+				local quoteByte = stringByte(quote)
+				ptr             = ptr + 1
+
+				local pat = "["..quote.."\\\n]"
+
+				while true do
+					local i1 = stringFind(s, pat, ptr)
+					if not i1 then
+						return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Unfinished string.")
+					end
+
+					ptr          = i1
+					local b1, b2 = stringByte(s, ptr, ptr+1)
+
+					-- '"'
+					if b1 == quoteByte then
+						ptr = ptr + 1
+						break
+
+					-- '\'
+					elseif b1 == 92 then
+						ptr = ptr + 1
+
+						if b2 == 122 then -- 'z'
+							ptr         = ptr + 1
+							local _, i2 = stringFind(s, "^%s*", ptr)
+							ptr         = i2 + 1
+						else
+							-- Note: We don't have to look for multiple characters after the escape, like \nnn - this algorithm works anyway.
+							if ptr > #s then
+								return nil, formatErrorInFile(
+									s, path, ptr, "Tokenizer",
+									"Unfinished string after escape character. (String starting %s)",
+									getRelativeLocationText(lnStart, getLineNumber(s, ptr))
+								)
+							end
+							ptr = ptr + 1 -- Just skip the next character, whatever it might be.
+						end
+
+					-- '\n'
+					elseif b1 == 10 then
+						-- Lua, this is silly!
+						return nil, formatErrorInFile(s, path, ptr, "Tokenizer", "Unescaped newline in string (starting %s).", getRelativeLocationText(lnStart, getLineNumber(s, ptr)))
+
+					else
+						assert(false)
+					end
+				end
+
+				tokType = "string"
+				tokRepr = stringSub(s, ptrStart, ptr-1)
+
+				local chunk = loadstring("return "..tokRepr, "@") -- Try to make Lua parse the string value before we fall back to our own parser which is probably slower.
+				if chunk then
+					tokValue = chunk()
+					assert(type(tokValue) == "string")
+				else
+					local stringValue, err = parseStringContents(s, path, ptrStart+1, ptr-2)
+					if not stringValue then  return nil, err  end
+					tokValue = stringValue
+				end
+
+			-- Long string.
+			elseif BYTES_SQUARE[b1] and stringFind(s, "^=*%[", ptr+1) then
+				local ok, equalSignCountIfLong
+				ok, equalSignCountIfLong, ptr = parseStringlikeToken(s, ptr)
+
+				if not ok then
+					local errCode = equalSignCountIfLong
+					if errCode == ERROR_UNFINISHED_VALUE then
+						return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Unfinished long string.")
+					else
+						return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Invalid long string.")
+					end
+				end
+
+				tokType = "string"
+				tokRepr = stringSub(s, ptrStart, ptr-1)
+
+				local chunk, err = loadstring("return "..tokRepr, "@")
+				if not chunk then
+					err = stringGsub(err, "^:%d+: ", "")
+					return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Could not convert long string token to value. (%s)", err)
+				end
+				tokValue = assert(chunk)()
+				assert(type(tokValue) == "string")
+
+			-- Punctuation.
+			elseif BYTES_DOT[b1] and stringFind(s, "^%.%.", ptr+1) then
+				ptr      = ptr + 3
+				tokType  = "punctuation"
+				tokRepr  = stringSub(s, ptrStart, ptr-1)
+				tokValue = tokRepr
+			elseif BYTES_PUNCT_TWO_CHARS[b1] and stringFind(s, "^%.%.", ptr) or stringFind(s, "^[=~<>]=", ptr) or stringFind(s, "^::", ptr) or stringFind(s, "^//", ptr) or stringFind(s, "^<<", ptr) or stringFind(s, "^>>", ptr) then
+				ptr      = ptr + 2
+				tokType  = "punctuation"
+				tokRepr  = stringSub(s, ptrStart, ptr-1)
+				tokValue = tokRepr
+			elseif BYTES_PUNCT_ONE_CHAR[b1] then
+				ptr      = ptr + 1
+				tokType  = "punctuation"
+				tokRepr  = stringSub(s, ptrStart, ptr-1)
+				tokValue = tokRepr
+
+			else
+				return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Unknown character.")
+			end
+			assert(tokType)
+
+			ln    = ln + countString(tokRepr, "\n", true)
+			count = count + 1
+
+			tokens[count] = {
+				type           = tokType,
+				value          = tokValue,
+				representation = tokRepr,
+
+				sourceString   = s,
+				sourcePath     = path,
+				lineStart      = lnStart,
+				lineEnd        = ln,
+				positionStart  = ptrStart,
+				positionEnd    = ptr - 1,
+			}
+
+			-- print(F("%4d %-11s '%s'", count, tokType, (stringGsub(tokRepr, "\n", "\\n"))))
+		end
+
+		return tokens
+	end
 end
 
 -- tokens, error = tokenizeFile( path )
@@ -1256,17 +1295,10 @@ end
 
 function newTokenStream()
 	return {
-		n            = 0, -- Token count.
 		sourceString = "",
 		sourcePath   = "?",
 
-		type           = {},
-		value          = {},
-		representation = {},
-		lineStart      = {},
-		lineEnd        = {},
-		positionStart  = {},
-		positionEnd    = {},
+		-- [1]=token1, ...
 	}
 end
 dummyTokens = newTokenStream()
@@ -1285,7 +1317,7 @@ local function insertToken(tokens, i, tokType, tokValue)
 	if type(i) == "string" then
 		i, tokType, tokValue = 1/0, i, tokType
 	end
-	i = mathMin(mathMax(i, 1), tokens.n+1)
+	i = mathMin(mathMax(i, 1), #tokens+1)
 
 	local tokRepr
 
@@ -1341,69 +1373,30 @@ local function insertToken(tokens, i, tokType, tokValue)
 		errorf(2, "Invalid token type '%s'.", tostring(tokType))
 	end
 
-	local tokTypes  = tokens.type
-	local tokValues = tokens.value
-	local tokReprs  = tokens.representation
-	local tokLine1  = tokens.lineStart
-	local tokLine2  = tokens.lineEnd
-	local tokPos1   = tokens.positionStart
-	local tokPos2   = tokens.positionEnd
+	tableInsert(tokens, i, {
+		type           = tokType,
+		value          = tokValue,
+		representation = tokRepr,
 
-	for tok = tokens.n, i, -1 do
-		tokTypes [tok+1] = tokTypes [tok]
-		tokValues[tok+1] = tokValues[tok]
-		tokReprs [tok+1] = tokReprs [tok]
-		tokLine1 [tok+1] = tokLine1 [tok]
-		tokLine2 [tok+1] = tokLine2 [tok]
-		tokPos1  [tok+1] = tokPos1  [tok]
-		tokPos2  [tok+1] = tokPos2  [tok]
-	end
-
-	tokTypes [i] = tokType
-	tokValues[i] = tokValue
-	tokReprs [i] = tokRepr
-	tokLine1 [i] = 0
-	tokLine2 [i] = 0
-	tokPos1  [i] = 0
-	tokPos2  [i] = 0
-
-	tokens.n = tokens.n + 1
+		sourceString   = "",
+		sourcePath     = "?",
+		lineStart      = 0,
+		lineEnd        = 0,
+		positionStart  = 0,
+		positionEnd    = 0,
+	})
 end
 
 local function removeToken(tokens, i)
-	i = i or tokens.n
-
-	if i < 1 or i > tokens.n then  return  end
-
-	local tokTypes  = tokens.type
-	local tokValues = tokens.value
-	local tokReprs  = tokens.representation
-	local tokLine1  = tokens.lineStart
-	local tokLine2  = tokens.lineEnd
-	local tokPos1   = tokens.positionStart
-	local tokPos2   = tokens.positionEnd
-
-	for tok = i, tokens.n do
-		tokTypes [tok] = tokTypes [tok+1]
-		tokValues[tok] = tokValues[tok+1]
-		tokReprs [tok] = tokReprs [tok+1]
-		tokLine1 [tok] = tokLine1 [tok+1]
-		tokLine2 [tok] = tokLine2 [tok+1]
-		tokPos1  [tok] = tokPos1  [tok+1]
-		tokPos2  [tok] = tokPos2  [tok+1]
-	end
-
-	tokens.n = tokens.n - 1
+	tableRemove(tokens, i)
 end
 
 local function concatTokens(tokens)
-	local tokReprs = tokens.representation
-	local tokTypes = tokens.type
-	local parts    = {}
+	local parts = {}
 
-	for tok = 1, tokens.n do
-		local tokRepr     = tokReprs[tok]
-		local lastTokRepr = tokReprs[tok-1]
+	for tok = 1, #tokens do
+		local tokRepr     =             tokens[tok  ].representation
+		local lastTokRepr = tok > 1 and tokens[tok-1].representation
 
 		if lastTokRepr and (
 			(stringFind(tokRepr, "^[%w_]") and stringFind(lastTokRepr, "[%w_]$")) or
@@ -1411,8 +1404,8 @@ local function concatTokens(tokens)
 			(stringFind(tokRepr, "^%-"   ) and stringFind(lastTokRepr, "%-$"   )) or
 			(stringFind(tokRepr, "^/"    ) and stringFind(lastTokRepr, "/$"    )) or
 
-			(tokTypes[tok-1] == "number" and stringFind(tokRepr,     "^[%w_.]")) or
-			(tokTypes[tok  ] == "number" and stringFind(lastTokRepr, "%.$") and not stringFind(lastTokRepr, "%.%.$"))
+			(tok > 1 and tokens[tok-1].type == "number" and stringFind(tokRepr,     "^[%w_.]")) or
+			(            tokens[tok  ].type == "number" and stringFind(lastTokRepr, "%.$") and not stringFind(lastTokRepr, "%.%.$"))
 		) then
 			tableInsert(parts, " ")
 		end
@@ -1424,16 +1417,16 @@ end
 
 
 
-function isToken(tokens, tok, tokType, tokValue)
-	return tokens.type[tok] == tokType and tokens.value[tok] == tokValue
+function isToken(token, tokType, tokValue)
+	return token ~= nil and token.type == tokType and token.value == tokValue
 end
 
-function isTokenType(tokens, tok, tokType)
-	return tokens.type[tok] == tokType
+function isTokenType(token, tokType)
+	return token ~= nil and token.type == tokType
 end
 
-function isTokenAnyValue(tokens, tok, tokValueSet)
-	return tokValueSet[tokens.value[tok]] == true
+function isTokenAnyValue(token, tokValueSet)
+	return token ~= nil and tokValueSet[token.value] == true
 end
 
 
@@ -1451,11 +1444,11 @@ end
 local parseExpression, parseExpressionList, parseFunctionParametersAndBody, parseBlock
 
 local function parseIdentifier(tokens, tok) --> ident, token, error
-	if not isTokenType(tokens, tok, "identifier") then
-		return nil, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected an identifier.")
+	if not isTokenType(tokens[tok], "identifier") then
+		return nil, tok, formatErrorAtToken(tokens[tok], "Parser", "Expected an identifier.")
 	end
 
-	local ident = AstIdentifier(tokens, tok, tokens.value[tok])
+	local ident = AstIdentifier(tokens[tok], tokens[tok].value)
 	tok         = tok + 1
 
 	return ident, tok
@@ -1463,8 +1456,8 @@ end
 
 local function parseNameList(tokens, tok, names, allowVararg, allowAttributes) --> success, token, error|nil
 	while true do
-		if allowVararg and isToken(tokens, tok, "punctuation", "...") then
-			local vararg = AstVararg(tokens, tok)
+		if allowVararg and isToken(tokens[tok], "punctuation", "...") then
+			local vararg = AstVararg(tokens[tok])
 			tok          = tok + 1 -- '...'
 
 			tableInsert(names, vararg)
@@ -1476,28 +1469,28 @@ local function parseNameList(tokens, tok, names, allowVararg, allowAttributes) -
 		if not ident then  return false, tok, err  end
 		tok = tokNext
 
-		if allowAttributes and isToken(tokens, tok, "punctuation", "<") then
+		if allowAttributes and isToken(tokens[tok], "punctuation", "<") then
 			tok = tok + 1 -- '<'
 
 			local attrIdent, tokNext, err = parseIdentifier(tokens, tok)
 			if not attrIdent then
 				return false, tok, err
 			elseif not (attrIdent.name == "close" or attrIdent.name == "const") then
-				return false, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected 'close' or 'const' for attribute name.")
+				return false, tok, formatErrorAtToken(tokens[tok], "Parser", "Expected 'close' or 'const' for attribute name.")
 			end
 			tok = tokNext
 
 			ident.attribute = attrIdent.name
 
-			if not isToken(tokens, tok, "punctuation", ">") then
-				return nil, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected '>' after attribute name.")
+			if not isToken(tokens[tok], "punctuation", ">") then
+				return nil, tok, formatErrorAfterToken(tokens[tok-1], "Parser", "Expected '>' after attribute name.")
 			end
 			tok = tok + 1 -- '>'
 		end
 
 		tableInsert(names, ident)
 
-		if not isToken(tokens, tok, "punctuation", ",") then
+		if not isToken(tokens[tok], "punctuation", ",") then
 			return true, tok
 		end
 		tok = tok + 1 -- ','
@@ -1508,30 +1501,30 @@ end
 
 local function parseTable(tokens, tokStart) --> tableNode, token, error
 	local tok       = tokStart
-	local tableNode = AstTable(tokens, tok)
+	local tableNode = AstTable(tokens[tok])
 	tok             = tok + 1 -- '{'
 
 	local generatedIndex = 0
 
 	while true do
-		if isToken(tokens, tok, "punctuation", "}") then
+		if isToken(tokens[tok], "punctuation", "}") then
 			tok = tok + 1 -- '}'
 			break
 
-		elseif isToken(tokens, tok, "punctuation", "[") then
+		elseif isToken(tokens[tok], "punctuation", "[") then
 			tok = tok + 1 -- '['
 
 			local keyExpr, tokNext, err = parseExpression(tokens, tok, 0)
 			if not keyExpr then  return nil, tok, err  end
 			tok = tokNext
 
-			if not isToken(tokens, tok, "punctuation", "]") then
-				return nil, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected ']' after key value.")
+			if not isToken(tokens[tok], "punctuation", "]") then
+				return nil, tok, formatErrorAfterToken(tokens[tok-1], "Parser", "Expected ']' after key value.")
 			end
 			tok = tok + 1 -- ']'
 
-			if not isToken(tokens, tok, "punctuation", "=") then
-				return nil, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected '=' after key.")
+			if not isToken(tokens[tok], "punctuation", "=") then
+				return nil, tok, formatErrorAfterToken(tokens[tok-1], "Parser", "Expected '=' after key.")
 			end
 			tok = tok + 1 -- '='
 
@@ -1542,12 +1535,12 @@ local function parseTable(tokens, tokStart) --> tableNode, token, error
 			local tableField = {key=keyExpr, value=valueExpr, generatedKey=false}
 			tableInsert(tableNode.fields, tableField)
 
-		elseif isTokenType(tokens, tok, "identifier") and isToken(tokens, tok+1, "punctuation", "=") then
-			local keyExpr = AstLiteral(tokens, tok, tokens.value[tok])
+		elseif isTokenType(tokens[tok], "identifier") and isToken(tokens[tok+1], "punctuation", "=") then
+			local keyExpr = AstLiteral(tokens[tok], tokens[tok].value)
 			tok           = tok + 1 -- identifier
 
-			if not isToken(tokens, tok, "punctuation", "=") then
-				return nil, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected '=' after key name.")
+			if not isToken(tokens[tok], "punctuation", "=") then
+				return nil, tok, formatErrorAfterToken(tokens[tok-1], "Parser", "Expected '=' after key name.")
 			end
 			tok = tok + 1 -- '='
 
@@ -1560,7 +1553,7 @@ local function parseTable(tokens, tokStart) --> tableNode, token, error
 
 		else
 			generatedIndex = generatedIndex + 1
-			local keyExpr  = AstLiteral(tokens, tok, generatedIndex)
+			local keyExpr  = AstLiteral(tokens[tok], generatedIndex)
 
 			local valueExpr, tokNext, err = parseExpression(tokens, tok, 0)
 			if not valueExpr then  return nil, tok, err  end
@@ -1570,17 +1563,17 @@ local function parseTable(tokens, tokStart) --> tableNode, token, error
 			tableInsert(tableNode.fields, tableField)
 		end
 
-		if isToken(tokens, tok, "punctuation", ",") or isToken(tokens, tok, "punctuation", ";") then
+		if isToken(tokens[tok], "punctuation", ",") or isToken(tokens[tok], "punctuation", ";") then
 			tok = tok + 1 -- ',' or ';'
 			-- Continue...
 
-		elseif isToken(tokens, tok, "punctuation", "}") then
+		elseif isToken(tokens[tok], "punctuation", "}") then
 			tok = tok + 1 -- '}'
 			break
 
 		else
 			return nil, tok, formatErrorAfterToken(
-				tokens, tok-1, "Parser",
+				tokens[tok-1], "Parser",
 				"Expected ',' or '}' after value in table constructor (starting %s).",
 				getRelativeLocationTextForToken(tokens, tokStart, tok-1)
 			)
@@ -1593,10 +1586,11 @@ end
 function parseExpression(tokens, tokStart, lastPrecedence) --> expression, token, error
 	local tok                  = tokStart
 	local canParseLookupOrCall = false
+	local currentToken         = tokens[tok]
 	local expr
 
 	-- identifier
-	if isTokenType(tokens, tok, "identifier") then
+	if isTokenType(currentToken, "identifier") then
 		local ident, tokNext, err = parseIdentifier(tokens, tok)
 		if not ident then  return nil, tok, err  end
 		tok = tokNext
@@ -1605,36 +1599,36 @@ function parseExpression(tokens, tokStart, lastPrecedence) --> expression, token
 		canParseLookupOrCall = true
 
 	-- ...
-	elseif isToken(tokens, tok, "punctuation", "...") then
-		local vararg = AstVararg(tokens, tok)
+	elseif isToken(currentToken, "punctuation", "...") then
+		local vararg = AstVararg(currentToken)
 		tok          = tok + 1 -- '...'
 		expr         = vararg
 
 	-- literal
-	elseif isTokenType(tokens, tok, "string") or isTokenType(tokens, tok, "number") then
-		local literal = AstLiteral(tokens, tok, tokens.value[tok])
+	elseif isTokenType(currentToken, "string") or isTokenType(currentToken, "number") then
+		local literal = AstLiteral(currentToken, currentToken.value)
 		tok           = tok + 1 -- literal
 		expr          = literal
-	elseif isToken(tokens, tok, "keyword", "true") then
-		local literal = AstLiteral(tokens, tok, true)
+	elseif isToken(currentToken, "keyword", "true") then
+		local literal = AstLiteral(currentToken, true)
 		tok           = tok + 1 -- 'true'
 		expr          = literal
-	elseif isToken(tokens, tok, "keyword", "false") then
-		local literal = AstLiteral(tokens, tok, false)
+	elseif isToken(currentToken, "keyword", "false") then
+		local literal = AstLiteral(currentToken, false)
 		tok           = tok + 1 -- 'false'
 		expr          = literal
-	elseif isToken(tokens, tok, "keyword", "nil") then
-		local literal = AstLiteral(tokens, tok, nil)
+	elseif isToken(currentToken, "keyword", "nil") then
+		local literal = AstLiteral(currentToken, nil)
 		tok           = tok + 1 -- 'nil'
 		expr          = literal
 
 	-- unary
 	elseif
-		(isToken(tokens, tok, "keyword", "not") or (isTokenType(tokens, tok, "punctuation") and isTokenAnyValue(tokens, tok, OPERATORS_UNARY)))
+		(isToken(currentToken, "keyword", "not") or (isTokenType(currentToken, "punctuation") and isTokenAnyValue(currentToken, OPERATORS_UNARY)))
 		and OPERATOR_PRECEDENCE.unary > lastPrecedence
 	then
-		local unary    = AstUnary(tokens, tok)
-		unary.operator = tokens.value[tok]
+		local unary    = AstUnary(currentToken)
+		unary.operator = currentToken.value
 		tok            = tok + 1 -- operator
 
 		local subExpr, tokNext, err = parseExpression(tokens, tok, OPERATOR_PRECEDENCE.unary-1)
@@ -1649,7 +1643,7 @@ function parseExpression(tokens, tokStart, lastPrecedence) --> expression, token
 			unary.operator == "-"
 			and subExpr.type == "literal"
 			and type(subExpr.value) == "number"
-			and isTokenType(tokens, subExpr.token, "number")
+			and isTokenType(subExpr.token, "number")
 			and not (subExpr.value == 0 and NORMALIZE_MINUS_ZERO) -- We cannot store -0 in Lua 5.3+, thus we need to keep the unary expression.
 		then
 			subExpr.value = -subExpr.value
@@ -1658,7 +1652,7 @@ function parseExpression(tokens, tokStart, lastPrecedence) --> expression, token
 		end
 
 	-- {...}
-	elseif isToken(tokens, tok, "punctuation", "{") then
+	elseif isToken(currentToken, "punctuation", "{") then
 		local tableNode, tokNext, err = parseTable(tokens, tok)
 		if not tableNode then  return nil, tok, err  end
 		tok = tokNext
@@ -1666,7 +1660,7 @@ function parseExpression(tokens, tokStart, lastPrecedence) --> expression, token
 		expr = tableNode
 
 	-- function
-	elseif isToken(tokens, tok, "keyword", "function") then
+	elseif isToken(currentToken, "keyword", "function") then
 		local funcTok = tok
 		tok           = tok + 1 -- 'function'
 
@@ -1678,7 +1672,7 @@ function parseExpression(tokens, tokStart, lastPrecedence) --> expression, token
 		expr = func
 
 	-- (...)
-	elseif isToken(tokens, tok, "punctuation", "(") then
+	elseif isToken(currentToken, "punctuation", "(") then
 		tok = tok + 1 -- '('
 
 		local _expr, tokNext, err = parseExpression(tokens, tok, 0)
@@ -1689,8 +1683,8 @@ function parseExpression(tokens, tokStart, lastPrecedence) --> expression, token
 			_expr.adjustToOne = true
 		end
 
-		if not isToken(tokens, tok, "punctuation", ")") then
-			return nil, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected ')' (to end parenthesis expression starting %s).", getRelativeLocationTextForToken(tokens, tokStart, tok-1))
+		if not isToken(tokens[tok], "punctuation", ")") then
+			return nil, tok, formatErrorAfterToken(tokens[tok-1], "Parser", "Expected ')' (to end parenthesis expression starting %s).", getRelativeLocationTextForToken(tokens, tokStart, tok-1))
 		end
 		tok = tok + 1 -- ')'
 
@@ -1698,26 +1692,29 @@ function parseExpression(tokens, tokStart, lastPrecedence) --> expression, token
 		canParseLookupOrCall = true
 
 	else
-		return nil, tok, formatErrorAtToken(tokens, tok, "Parser", "Failed parsing expression.")
+		return nil, tok, formatErrorAtToken(currentToken, "Parser", "Failed parsing expression.")
 	end
 
 	assert(expr)
 
 	-- Binary expressions, including lookups and calls.
 	while true do
+		currentToken = tokens[tok]
+
 		-- a + b
 		if
 			(
-				(isTokenType(tokens, tok, "punctuation") and isTokenAnyValue(tokens, tok, OPERATORS_BINARY))
-				or isToken(tokens, tok, "keyword", "and")
-				or isToken(tokens, tok, "keyword", "or")
+				(isTokenType(currentToken, "punctuation") and isTokenAnyValue(currentToken, OPERATORS_BINARY))
+				or isToken(currentToken, "keyword", "and")
+				or isToken(currentToken, "keyword", "or")
 			)
-			and OPERATOR_PRECEDENCE[tokens.value[tok]] > lastPrecedence
+			and OPERATOR_PRECEDENCE[currentToken.value] > lastPrecedence
 		then
-			local rightAssociative = isToken(tokens, tok, "punctuation", "..") or isToken(tokens, tok, "punctuation", "^")
+			local rightAssociative = isToken(currentToken, "punctuation", "..") or isToken(currentToken, "punctuation", "^")
 
-			local binary    = AstBinary(tokens, tok)
-			binary.operator = tokens.value[tok]
+			local tokOp     = tok
+			local binary    = AstBinary(currentToken)
+			binary.operator = currentToken.value
 			tok             = tok + 1 -- operator
 
 			local lhsExpr = expr
@@ -1737,10 +1734,13 @@ function parseExpression(tokens, tokStart, lastPrecedence) --> expression, token
 				and lhsExpr.type == "literal" and type(lhsExpr.value) == "number"
 				and rhsExpr.type == "literal" and      rhsExpr.value  == 0
 				and (
-					isTokenType(tokens, lhsExpr.token, "number")
-					or (isToken(tokens, lhsExpr.token, "punctuation", "-") and isTokenType(tokens, lhsExpr.token+1, "number"))
+					isTokenType(lhsExpr.token, "number")
+					or (
+						isToken(lhsExpr.token, "punctuation", "-")
+						and isTokenType(tokens[indexOf(tokens, lhsExpr.token, tokStart, tokOp-1) + 1], "number") -- @Speed: Don't use indexOf().
+					)
 				)
-				and isTokenType(tokens, rhsExpr.token, "number")
+				and isTokenType(rhsExpr.token, "number")
 			then
 				lhsExpr.value = lhsExpr.value / 0
 				expr          = lhsExpr
@@ -1750,15 +1750,15 @@ function parseExpression(tokens, tokStart, lastPrecedence) --> expression, token
 			break
 
 		-- t.k
-		elseif isToken(tokens, tok, "punctuation", ".") then
-			local lookup = AstLookup(tokens, tok)
+		elseif isToken(currentToken, "punctuation", ".") then
+			local lookup = AstLookup(currentToken)
 			tok          = tok + 1 -- '.'
 
 			local ident, tokNext, err = parseIdentifier(tokens, tok)
 			if not ident then  return nil, tok, err  end
 			tok = tokNext
 
-			local literal = AstLiteral(tokens, ident.tok, ident.name)
+			local literal = AstLiteral(ident.token, ident.name)
 
 			lookup.object = expr
 			lookup.member = literal
@@ -1766,16 +1766,16 @@ function parseExpression(tokens, tokStart, lastPrecedence) --> expression, token
 			expr = lookup
 
 		-- t[k]
-		elseif isToken(tokens, tok, "punctuation", "[") then
-			local lookup = AstLookup(tokens, tok)
+		elseif isToken(currentToken, "punctuation", "[") then
+			local lookup = AstLookup(currentToken)
 			tok          = tok + 1 -- '['
 
 			local memberExpr, tokNext, err = parseExpression(tokens, tok, 0)
 			if not memberExpr then  return nil, tok, err  end
 			tok = tokNext
 
-			if not isToken(tokens, tok, "punctuation", "]") then
-				return nil, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected ']' after lookup key value.")
+			if not isToken(tokens[tok], "punctuation", "]") then
+				return nil, tok, formatErrorAfterToken(tokens[tok-1], "Parser", "Expected ']' after lookup key value.")
 			end
 			tok = tok + 1 -- ']'
 
@@ -1785,10 +1785,10 @@ function parseExpression(tokens, tokStart, lastPrecedence) --> expression, token
 			expr = lookup
 
 		-- f""
-		elseif isTokenType(tokens, tok, "string") then
-			local call = AstCall(tokens, tok)
+		elseif isTokenType(currentToken, "string") then
+			local call = AstCall(currentToken)
 
-			local literal     = AstLiteral(tokens, tok, tokens.value[tok])
+			local literal     = AstLiteral(currentToken, currentToken.value)
 			tok               = tok + 1 -- string
 			call.arguments[1] = literal
 
@@ -1796,8 +1796,8 @@ function parseExpression(tokens, tokStart, lastPrecedence) --> expression, token
 			expr        = call
 
 		-- f{}
-		elseif isToken(tokens, tok, "punctuation", "{") then
-			local call = AstCall(tokens, tok)
+		elseif isToken(currentToken, "punctuation", "{") then
+			local call = AstCall(currentToken)
 
 			local tableNode, tokNext, err = parseTable(tokens, tok)
 			if not tableNode then  return nil, tok, err  end
@@ -1808,22 +1808,22 @@ function parseExpression(tokens, tokStart, lastPrecedence) --> expression, token
 			expr        = call
 
 		-- f()
-		elseif isToken(tokens, tok, "punctuation", "(") then
-			if tok >= 2 and tokens.lineStart[tok] > tokens.lineEnd[tok-1] then
-				return nil, tok, formatErrorAtToken(tokens, tok, "Parser", "Ambigous syntax. Is this a function call or a new statement?")
+		elseif isToken(currentToken, "punctuation", "(") then
+			if tok >= 2 and currentToken.lineStart > tokens[tok-1].lineEnd then
+				return nil, tok, formatErrorAtToken(currentToken, "Parser", "Ambigous syntax. Is this a function call or a new statement?")
 			end
 
-			local call = AstCall(tokens, tok)
+			local call = AstCall(currentToken)
 			tok        = tok + 1 -- '('
 
-			if not isToken(tokens, tok, "punctuation", ")") then
+			if not isToken(tokens[tok], "punctuation", ")") then
 				local ok, tokNext, err = parseExpressionList(tokens, tok, call.arguments)
 				if not ok then  return nil, tok, err  end
 				tok = tokNext
 			end
 
-			if not isToken(tokens, tok, "punctuation", ")") then
-				return nil, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected ')' to end argument list for call.")
+			if not isToken(tokens[tok], "punctuation", ")") then
+				return nil, tok, formatErrorAfterToken(tokens[tok-1], "Parser", "Expected ')' to end argument list for call.")
 			end
 			tok = tok + 1 -- ')'
 
@@ -1831,16 +1831,16 @@ function parseExpression(tokens, tokStart, lastPrecedence) --> expression, token
 			expr        = call
 
 		-- o:m()
-		elseif isToken(tokens, tok, "punctuation", ":") then
+		elseif isToken(currentToken, "punctuation", ":") then
 			do
-				local lookup = AstLookup(tokens, tok)
+				local lookup = AstLookup(currentToken)
 				tok          = tok + 1 -- ':'
 
 				local ident, tokNext, err = parseIdentifier(tokens, tok)
 				if not ident then  return nil, tok, err  end
 				tok = tokNext
 
-				local literal = AstLiteral(tokens, ident.tok, ident.name)
+				local literal = AstLiteral(ident.token, ident.name)
 
 				lookup.object = expr
 				lookup.member = literal
@@ -1849,40 +1849,40 @@ function parseExpression(tokens, tokStart, lastPrecedence) --> expression, token
 			end
 
 			do
-				local call  = AstCall(tokens, tok)
+				local call  = AstCall(tokens[tok])
 				call.method = true
 
-				if isTokenType(tokens, tok, "string") then
-					local literal     = AstLiteral(tokens, tok, tokens.value[tok])
+				if isTokenType(tokens[tok], "string") then
+					local literal     = AstLiteral(tokens[tok], tokens[tok].value)
 					tok               = tok + 1 -- string
 					call.arguments[1] = literal
 
-				elseif isToken(tokens, tok, "punctuation", "{") then
+				elseif isToken(tokens[tok], "punctuation", "{") then
 					local tableNode, tokNext, err = parseTable(tokens, tok)
 					if not tableNode then  return nil, tok, err  end
 					call.arguments[1] = tableNode
 					tok               = tokNext
 
-				elseif isToken(tokens, tok, "punctuation", "(") then
-					if tok >= 2 and tokens.lineStart[tok] > tokens.lineEnd[tok-1] then
-						return nil, tok, formatErrorAtToken(tokens, tok, "Parser", "Ambigous syntax. Is this a function call or a new statement?")
+				elseif isToken(tokens[tok], "punctuation", "(") then
+					if tok >= 2 and tokens[tok].lineStart > tokens[tok-1].lineEnd then
+						return nil, tok, formatErrorAtToken(tokens[tok], "Parser", "Ambigous syntax. Is this a function call or a new statement?")
 					end
 
 					tok = tok + 1 -- '('
 
-					if not isToken(tokens, tok, "punctuation", ")") then
+					if not isToken(tokens[tok], "punctuation", ")") then
 						local ok, tokNext, err = parseExpressionList(tokens, tok, call.arguments)
 						if not ok then  return nil, tok, err  end
 						tok = tokNext
 					end
 
-					if not isToken(tokens, tok, "punctuation", ")") then
-						return nil, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected ')' after argument list for method call.")
+					if not isToken(tokens[tok], "punctuation", ")") then
+						return nil, tok, formatErrorAfterToken(tokens[tok-1], "Parser", "Expected ')' after argument list for method call.")
 					end
 					tok = tok + 1 -- ')'
 
 				else
-					return nil, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected '(' to start argument list for method call.")
+					return nil, tok, formatErrorAfterToken(tokens[tok-1], "Parser", "Expected '(' to start argument list for method call.")
 				end
 
 				call.callee = expr
@@ -1907,7 +1907,7 @@ function parseExpressionList(tokens, tok, expressions) --> success, token, error
 
 		tableInsert(expressions, expr)
 
-		if not isToken(tokens, tok, "punctuation", ",") then
+		if not isToken(tokens[tok], "punctuation", ",") then
 			return true, tok
 		end
 		tok = tok + 1 -- ','
@@ -1916,22 +1916,22 @@ end
 
 function parseFunctionParametersAndBody(tokens, tokStart, funcTok) --> func, token, error
 	local tok  = tokStart
-	local func = AstFunction(tokens, funcTok)
+	local func = AstFunction(tokens[funcTok])
 
-	if not isToken(tokens, tok, "punctuation", "(") then
-		return nil, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected '(' to start parameter list for function.")
+	if not isToken(tokens[tok], "punctuation", "(") then
+		return nil, tok, formatErrorAfterToken(tokens[tok-1], "Parser", "Expected '(' to start parameter list for function.")
 	end
 	tok = tok + 1 -- '('
 
-	if not isToken(tokens, tok, "punctuation", ")") then
+	if not isToken(tokens[tok], "punctuation", ")") then
 		local ok, tokNext, err = parseNameList(tokens, tok, func.parameters, true, false)
 		if not ok then  return nil, tok, err  end
 		tok = tokNext
 		-- @Cleanup: Move the vararg parameter parsing here.
 	end
 
-	if not isToken(tokens, tok, "punctuation", ")") then
-		return nil, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected ')' to end parameter list for function.")
+	if not isToken(tokens[tok], "punctuation", ")") then
+		return nil, tok, formatErrorAfterToken(tokens[tok-1], "Parser", "Expected ')' to end parameter list for function.")
 	end
 	tok = tok + 1 -- ')'
 
@@ -1940,8 +1940,8 @@ function parseFunctionParametersAndBody(tokens, tokStart, funcTok) --> func, tok
 	func.body = block
 	tok       = tokNext
 
-	if not isToken(tokens, tok, "keyword", "end") then
-		return nil, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected 'end' to end function (starting %s).", getRelativeLocationTextForToken(tokens, tokStart, tok))
+	if not isToken(tokens[tok], "keyword", "end") then
+		return nil, tok, formatErrorAtToken(tokens[tok], "Parser", "Expected 'end' to end function (starting %s).", getRelativeLocationTextForToken(tokens, tokStart, tok))
 	end
 	tok = tok + 1 -- 'end'
 
@@ -1970,10 +1970,11 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 
 	retstat ::= return [explist] [';']
 	]]
-	local tok = tokStart
+	local tok          = tokStart
+	local currentToken = tokens[tok]
 
 	-- do
-	if isToken(tokens, tok, "keyword", "do") then
+	if isToken(currentToken, "keyword", "do") then
 		tok = tok + 1 -- 'do'
 
 		local block, tokNext, err = parseBlock(tokens, tok, tok-1, true)
@@ -1981,8 +1982,8 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		block.token = tok - 1
 		tok         = tokNext
 
-		if not isToken(tokens, tok, "keyword", "end") then
-			return false, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected 'end' to end 'do' block (starting %s).", getRelativeLocationTextForToken(tokens, tokStart, tok))
+		if not isToken(tokens[tok], "keyword", "end") then
+			return false, tok, formatErrorAtToken(tokens[tok], "Parser", "Expected 'end' to end 'do' block (starting %s).", getRelativeLocationTextForToken(tokens, tokStart, tok))
 		end
 		tok = tok + 1 -- 'end'
 
@@ -1990,8 +1991,8 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		return true, tok
 
 	-- while
-	elseif isToken(tokens, tok, "keyword", "while") then
-		local whileLoop = AstWhile(tokens, tok)
+	elseif isToken(currentToken, "keyword", "while") then
+		local whileLoop = AstWhile(currentToken)
 		tok             = tok + 1 -- 'while'
 
 		local expr, tokNext, err = parseExpression(tokens, tok, 0)
@@ -1999,8 +2000,8 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		whileLoop.condition = expr
 		tok                 = tokNext
 
-		if not isToken(tokens, tok, "keyword", "do") then
-			return false, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected 'do' to start body for 'while' loop.")
+		if not isToken(tokens[tok], "keyword", "do") then
+			return false, tok, formatErrorAfterToken(tokens[tok-1], "Parser", "Expected 'do' to start body for 'while' loop.")
 		end
 		tok = tok + 1 -- 'do'
 
@@ -2010,8 +2011,8 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		whileLoop.body = block
 		tok            = tokNext
 
-		if not isToken(tokens, tok, "keyword", "end") then
-			return false, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected 'end' to end 'while' loop (starting %s).", getRelativeLocationTextForToken(tokens, tokStart, tok))
+		if not isToken(tokens[tok], "keyword", "end") then
+			return false, tok, formatErrorAtToken(tokens[tok], "Parser", "Expected 'end' to end 'while' loop (starting %s).", getRelativeLocationTextForToken(tokens, tokStart, tok))
 		end
 		tok = tok + 1 -- 'end'
 
@@ -2019,8 +2020,8 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		return true, tok
 
 	-- repeat
-	elseif isToken(tokens, tok, "keyword", "repeat") then
-		local repeatLoop = AstRepeat(tokens, tok)
+	elseif isToken(currentToken, "keyword", "repeat") then
+		local repeatLoop = AstRepeat(currentToken)
 		tok              = tok + 1 -- 'repeat'
 
 		local block, tokNext, err = parseBlock(tokens, tok, tok-1, true)
@@ -2028,8 +2029,8 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		repeatLoop.body = block
 		tok             = tokNext
 
-		if not isToken(tokens, tok, "keyword", "until") then
-			return false, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected 'until' at the end of 'repeat' loop (starting %s).", getRelativeLocationTextForToken(tokens, tokStart, tok))
+		if not isToken(tokens[tok], "keyword", "until") then
+			return false, tok, formatErrorAtToken(tokens[tok], "Parser", "Expected 'until' at the end of 'repeat' loop (starting %s).", getRelativeLocationTextForToken(tokens, tokStart, tok))
 		end
 		tok = tok + 1 -- 'until'
 
@@ -2042,8 +2043,8 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		return true, tok
 
 	-- if
-	elseif isToken(tokens, tok, "keyword", "if") then
-		local ifNode = AstIf(tokens, tok)
+	elseif isToken(currentToken, "keyword", "if") then
+		local ifNode = AstIf(currentToken)
 		tok          = tok + 1 -- 'if'
 
 		local expr, tokNext, err = parseExpression(tokens, tok, 0)
@@ -2051,8 +2052,8 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		ifNode.condition = expr
 		tok              = tokNext
 
-		if not isToken(tokens, tok, "keyword", "then") then
-			return false, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected 'then' after 'if' condition.")
+		if not isToken(tokens[tok], "keyword", "then") then
+			return false, tok, formatErrorAtToken(tokens[tok], "Parser", "Expected 'then' after 'if' condition.")
 		end
 		tok = tok + 1 -- 'then'
 
@@ -2063,11 +2064,11 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 
 		local ifNodeLeaf = ifNode
 
-		while isToken(tokens, tok, "keyword", "elseif") do
+		while isToken(tokens[tok], "keyword", "elseif") do
 			tok = tok + 1 -- 'elseif'
 
-			ifNodeLeaf.bodyFalse               = AstBlock(tokens, tok)
-			ifNodeLeaf.bodyFalse.statements[1] = AstIf(tokens, tok)
+			ifNodeLeaf.bodyFalse               = AstBlock(tokens[tok])
+			ifNodeLeaf.bodyFalse.statements[1] = AstIf   (tokens[tok])
 			ifNodeLeaf                         = ifNodeLeaf.bodyFalse.statements[1]
 
 			local expr, tokNext, err = parseExpression(tokens, tok, 0)
@@ -2075,8 +2076,8 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 			ifNodeLeaf.condition = expr
 			tok                  = tokNext
 
-			if not isToken(tokens, tok, "keyword", "then") then
-				return false, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected 'then' after 'elseif' condition.")
+			if not isToken(tokens[tok], "keyword", "then") then
+				return false, tok, formatErrorAtToken(tokens[tok], "Parser", "Expected 'then' after 'elseif' condition.")
 			end
 			tok = tok + 1 -- 'then'
 
@@ -2086,7 +2087,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 			tok                 = tokNext
 		end
 
-		if isToken(tokens, tok, "keyword", "else") then
+		if isToken(tokens[tok], "keyword", "else") then
 			tok = tok + 1 -- 'else'
 
 			local block, tokNext, err = parseBlock(tokens, tok, tok-1, true)
@@ -2095,8 +2096,8 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 			tok                  = tokNext
 		end
 
-		if not isToken(tokens, tok, "keyword", "end") then
-			return false, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected 'end' to end 'if' statement (starting %s).", getRelativeLocationTextForToken(tokens, tokStart, tok))
+		if not isToken(tokens[tok], "keyword", "end") then
+			return false, tok, formatErrorAtToken(tokens[tok], "Parser", "Expected 'end' to end 'if' statement (starting %s).", getRelativeLocationTextForToken(tokens, tokStart, tok))
 		end
 		tok = tok + 1 -- 'end'
 
@@ -2104,28 +2105,28 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		return true, tok
 
 	-- for
-	elseif isToken(tokens, tok, "keyword", "for") then
-		local forLoop = AstFor(tokens, tok)
+	elseif isToken(currentToken, "keyword", "for") then
+		local forLoop = AstFor(currentToken)
 		tok           = tok + 1 -- 'for'
 
 		local ok, tokNext, err = parseNameList(tokens, tok, forLoop.names, false, false)
 		if not ok then  return false, tok, err  end
 		tok = tokNext
 
-		if isToken(tokens, tok, "keyword", "in") then
+		if isToken(tokens[tok], "keyword", "in") then
 			forLoop.kind = "generic"
 			tok          = tok + 1 -- 'in'
 
-		elseif isToken(tokens, tok, "punctuation", "=") then
+		elseif isToken(tokens[tok], "punctuation", "=") then
 			if forLoop.names[2] then
-				return false, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected 'in' for generic loop.")
+				return false, tok, formatErrorAtToken(tokens[tok], "Parser", "Expected 'in' for generic loop.")
 			end
 
 			forLoop.kind = "numeric"
 			tok          = tok + 1 -- '='
 
 		else
-			return false, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected '=' or 'in' for 'for' loop.")
+			return false, tok, formatErrorAfterToken(tokens[tok-1], "Parser", "Expected '=' or 'in' for 'for' loop.")
 		end
 
 		local valuesStartTok = tok
@@ -2137,14 +2138,14 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		if forLoop.kind ~= "numeric" then
 			-- void
 		elseif not forLoop.values[2] then
-			return false, tok, formatErrorAtToken(tokens, valuesStartTok, "Parser", "Numeric loop: Too few values.")
+			return false, tok, formatErrorAtToken(tokens[valuesStartTok], "Parser", "Numeric loop: Too few values.")
 		elseif forLoop.values[4] then
 			-- @Cleanup: Instead of using getLeftmostToken(), make parseExpressionList() return a list of expression start tokens.
-			return false, tok, formatErrorAtToken(tokens, getLeftmostToken(forLoop.values[4]), "Parser", "Numeric loop: Too many values.")
+			return false, tok, formatErrorAtToken(getLeftmostToken(forLoop.values[4]), "Parser", "Numeric loop: Too many values.")
 		end
 
-		if not isToken(tokens, tok, "keyword", "do") then
-			return false, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected 'do' to start body for 'for' loop.")
+		if not isToken(tokens[tok], "keyword", "do") then
+			return false, tok, formatErrorAfterToken(tokens[tok-1], "Parser", "Expected 'do' to start body for 'for' loop.")
 		end
 		tok = tok + 1 -- 'do'
 
@@ -2153,8 +2154,8 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		forLoop.body = block
 		tok          = tokNext
 
-		if not isToken(tokens, tok, "keyword", "end") then
-			return false, tok, formatErrorAtToken(tokens, tok, "Parser", "Expected 'end' to end 'for' loop (starting %s).", getRelativeLocationTextForToken(tokens, tokStart, tok))
+		if not isToken(tokens[tok], "keyword", "end") then
+			return false, tok, formatErrorAtToken(tokens[tok], "Parser", "Expected 'end' to end 'for' loop (starting %s).", getRelativeLocationTextForToken(tokens, tokStart, tok))
 		end
 		tok = tok + 1 -- 'end'
 
@@ -2162,24 +2163,24 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		return true, tok
 
 	-- function
-	elseif isToken(tokens, tok, "keyword", "function") then
+	elseif isToken(currentToken, "keyword", "function") then
 		local funcTok    = tok
-		local assignment = AstAssignment(tokens, tok)
+		local assignment = AstAssignment(currentToken)
 		tok              = tok + 1 -- 'function'
 
 		local targetExpr, tokNext, err = parseIdentifier(tokens, tok)
 		if not targetExpr then  return false, tok, err  end
 		tok = tokNext
 
-		while isToken(tokens, tok, "punctuation", ".") do
-			local lookup = AstLookup(tokens, tok)
+		while isToken(tokens[tok], "punctuation", ".") do
+			local lookup = AstLookup(tokens[tok])
 			tok          = tok + 1 -- '.'
 
 			local ident, tokNext, err = parseIdentifier(tokens, tok)
 			if not ident then  return false, tok, err  end
 			tok = tokNext
 
-			local literal = AstLiteral(tokens, ident.tok, ident.name)
+			local literal = AstLiteral(ident.token, ident.name)
 			lookup.member = literal
 
 			lookup.object = targetExpr
@@ -2188,17 +2189,17 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 			targetExpr = lookup
 		end
 
-		local isMethod = isToken(tokens, tok, "punctuation", ":")
+		local isMethod = isToken(tokens[tok], "punctuation", ":")
 
 		if isMethod then
-			local lookup = AstLookup(tokens, tok)
+			local lookup = AstLookup(tokens[tok])
 			tok          = tok + 1 -- ':'
 
 			local ident, tokNext, err = parseIdentifier(tokens, tok)
 			if not ident then  return false, tok, err  end
 			tok = tokNext
 
-			local literal = AstLiteral(tokens, ident.tok, ident.name)
+			local literal = AstLiteral(ident.token, ident.name)
 			lookup.member = literal
 
 			lookup.object = targetExpr
@@ -2212,7 +2213,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		tok = tokNext
 
 		if isMethod then
-			local ident = AstIdentifier(tokens, func.token, "self")
+			local ident = AstIdentifier(func.token, "self")
 			tableInsert(func.parameters, 1, ident)
 		end
 
@@ -2223,10 +2224,10 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		return true, tok
 
 	-- local function
-	elseif isToken(tokens, tok, "keyword", "local") and isToken(tokens, tok+1, "keyword", "function") then
+	elseif isToken(currentToken, "keyword", "local") and isToken(tokens[tok+1], "keyword", "function") then
 		local funcTok    = tok + 1
-		local decl       = AstDeclaration(tokens, tok)
-		local assignment = AstAssignment(tokens, tok)
+		local decl       = AstDeclaration(currentToken)
+		local assignment = AstAssignment(currentToken)
 		tok              = tok + 2 -- 'local function'
 
 		local ident, tokNext, err = parseIdentifier(tokens, tok)
@@ -2247,15 +2248,15 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		return true, tok
 
 	-- local
-	elseif isToken(tokens, tok, "keyword", "local") then
-		local decl = AstDeclaration(tokens, tok)
+	elseif isToken(currentToken, "keyword", "local") then
+		local decl = AstDeclaration(currentToken)
 		tok        = tok + 1 -- 'local'
 
 		local ok, tokNext, err = parseNameList(tokens, tok, decl.names, false, true)
 		if not ok then  return false, tok, err  end
 		tok = tokNext
 
-		if isToken(tokens, tok, "punctuation", "=") then
+		if isToken(tokens[tok], "punctuation", "=") then
 			tok = tok + 1 -- '='
 
 			local ok, tokNext, err = parseExpressionList(tokens, tok, decl.values)
@@ -2267,8 +2268,8 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		return true, tok
 
 	-- ::label::
-	elseif isToken(tokens, tok, "punctuation", "::") then
-		local label = AstLabel(tokens, tok)
+	elseif isToken(currentToken, "punctuation", "::") then
+		local label = AstLabel(currentToken)
 		tok         = tok + 1 -- '::'
 
 		local labelIdent, tokNext, err = parseIdentifier(tokens, tok)
@@ -2277,8 +2278,8 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 
 		label.name = labelIdent.name
 
-		if not isToken(tokens, tok, "punctuation", "::") then
-			return false, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected '::' after label name.")
+		if not isToken(tokens[tok], "punctuation", "::") then
+			return false, tok, formatErrorAfterToken(tokens[tok-1], "Parser", "Expected '::' after label name.")
 		end
 		tok = tok + 1 -- '::'
 
@@ -2286,8 +2287,8 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		return true, tok
 
 	-- goto
-	elseif isToken(tokens, tok, "keyword", "goto") then
-		local gotoNode = AstGoto(tokens, tok)
+	elseif isToken(currentToken, "keyword", "goto") then
+		local gotoNode = AstGoto(currentToken)
 		tok            = tok + 1 -- 'goto'
 
 		local labelIdent, tokNext, err = parseIdentifier(tokens, tok)
@@ -2299,12 +2300,20 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		tableInsert(statements, gotoNode)
 		return true, tok
 
+	-- break
+	elseif isToken(currentToken, "keyword", "break") then
+		local breakNode = AstBreak(currentToken)
+		tok             = tok + 1 -- 'break'
+
+		tableInsert(statements, breakNode)
+		return true, tok
+
 	-- return (last)
-	elseif isToken(tokens, tok, "keyword", "return") then
-		local returnNode = AstReturn(tokens, tok)
+	elseif isToken(currentToken, "keyword", "return") then
+		local returnNode = AstReturn(currentToken)
 		tok              = tok + 1 -- 'return'
 
-		if tok <= tokens.n and not ((isTokenType(tokens, tok, "keyword") and isTokenAnyValue(tokens, tok, BLOCK_END_TOKEN_TYPES)) or isToken(tokens, tok, "punctuation", ";")) then
+		if tokens[tok] and not ((isTokenType(tokens[tok], "keyword") and isTokenAnyValue(tokens[tok], BLOCK_END_TOKEN_TYPES)) or isToken(tokens[tok], "punctuation", ";")) then
 			local ok, tokNext, err = parseExpressionList(tokens, tok, returnNode.values)
 			if not ok then  return false, tok, err  end
 			tok = tokNext
@@ -2313,15 +2322,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		tableInsert(statements, returnNode)
 		return true, tok
 
-	-- break (last)
-	elseif isToken(tokens, tok, "keyword", "break") then
-		local breakNode = AstBreak(tokens, tok)
-		tok             = tok + 1 -- 'break'
-
-		tableInsert(statements, breakNode)
-		return true, tok
-
-	elseif isTokenType(tokens, tok, "keyword") then
+	elseif isTokenType(currentToken, "keyword") then
 		return false, tok, ""
 
 	else
@@ -2335,15 +2336,15 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 			tableInsert(statements, call)
 			return true, tok
 
-		elseif isToken(tokens, tokNext, "punctuation", "=") or isToken(tokens, tokNext, "punctuation", ",") then
-			local assignment = AstAssignment(tokens, tokNext)
+		elseif isToken(tokens[tokNext], "punctuation", "=") or isToken(tokens[tokNext], "punctuation", ",") then
+			local assignment = AstAssignment(tokens[tokNext])
 
 			local ok, tokNext, err = parseExpressionList(tokens, tok, assignment.targets)
 			if not ok then  return false, tok, err  end
 			tok = tokNext
 
-			if not isToken(tokens, tok, "punctuation", "=") then
-				return false, tok, formatErrorAfterToken(tokens, tok-1, "Parser", "Expected '=' for an assignment.")
+			if not isToken(tokens[tok], "punctuation", "=") then
+				return false, tok, formatErrorAfterToken(tokens[tok-1], "Parser", "Expected '=' for an assignment.")
 			end
 			tok = tok + 1 -- '='
 
@@ -2371,18 +2372,18 @@ end
 local statementErrorReported = false
 
 function parseBlock(tokens, tok, blockTok, stopAtEndKeyword) --> block, token, error
-	local block      = AstBlock(tokens, blockTok)
+	local block      = AstBlock(tokens[blockTok])
 	local statements = block.statements
 
-	while tok <= tokens.n do
-		while isToken(tokens, tok, "punctuation", ";") do
+	while tok <= #tokens do
+		while isToken(tokens[tok], "punctuation", ";") do
 			-- Empty statements are valid in Lua 5.2+.
 			tok = tok + 1 -- ';'
 		end
 
 		local statementStartTok = tok
 
-		if stopAtEndKeyword and isTokenType(tokens, tok, "keyword") and isTokenAnyValue(tokens, tok, BLOCK_END_TOKEN_TYPES) then
+		if stopAtEndKeyword and isTokenType(tokens[tok], "keyword") and isTokenAnyValue(tokens[tok], BLOCK_END_TOKEN_TYPES) then
 			break
 		end
 
@@ -2390,13 +2391,13 @@ function parseBlock(tokens, tok, blockTok, stopAtEndKeyword) --> block, token, e
 		if not ok then
 			if not statementErrorReported then
 				statementErrorReported = true
-				err                    = (err ~= "" and err.."\n" or "") .. formatErrorAtToken(tokens, tok, "Parser", "Failed parsing statement.")
+				err                    = (err ~= "" and err.."\n" or "") .. formatErrorAtToken(tokens[tok], "Parser", "Failed parsing statement.")
 			end
 			return nil, tok, err
 		end
 		tok = tokNext
 
-		if isToken(tokens, tok, "punctuation", ";") then
+		if isToken(tokens[tok], "punctuation", ";") then
 			tok = tok + 1 -- ';'
 		end
 
@@ -2407,7 +2408,7 @@ function parseBlock(tokens, tok, blockTok, stopAtEndKeyword) --> block, token, e
 
 		elseif lastAddedStatement.type == "call" and lastAddedStatement.adjustToOne then
 			statementErrorReported = true
-			return nil, tok, formatErrorAtToken(tokens, statementStartTok, "Parser", "Syntax error.")
+			return nil, tok, formatErrorAtToken(tokens[statementStartTok], "Parser", "Syntax error.")
 		end
 	end
 
@@ -2416,30 +2417,16 @@ end
 
 -- block, error = tokensToAst( tokens )
 local function tokensToAst(tokens)
-	local tokensPurged = {
-		n            = 0,
-		sourceString = tokens.sourceString,
-		sourcePath   = tokens.sourcePath,
+	local tokensPurged        = newTokenStream()
+	tokensPurged.sourceString = tokens.sourceString
+	tokensPurged.sourcePath   = tokens.sourcePath
 
-		type           = {},
-		value          = {},
-		representation = {},
-		lineStart      = {},
-		lineEnd        = {},
-		positionStart  = {},
-		positionEnd    = {},
-	}
+	local count = 0
 
-	for tok = 1, tokens.n do
-		if tokens.type[tok] ~= "comment" then
-			tokensPurged.n                              = tokensPurged.n+1
-			tokensPurged.type          [tokensPurged.n] = tokens.type          [tok]
-			tokensPurged.value         [tokensPurged.n] = tokens.value         [tok]
-			tokensPurged.representation[tokensPurged.n] = tokens.representation[tok]
-			tokensPurged.lineStart     [tokensPurged.n] = tokens.lineStart     [tok]
-			tokensPurged.lineEnd       [tokensPurged.n] = tokens.lineEnd       [tok]
-			tokensPurged.positionStart [tokensPurged.n] = tokens.positionStart [tok]
-			tokensPurged.positionEnd   [tokensPurged.n] = tokens.positionEnd   [tok]
+	for tok = 1, #tokens do
+		if tokens[tok].type ~= "comment" then
+			count               = count + 1
+			tokensPurged[count] = tokens[tok]
 		end
 	end
 
@@ -2454,7 +2441,7 @@ end
 -- ast, error = parse( tokens )
 -- ast, error = parse( luaString [, pathForErrorMessages="?" ] )
 function parse(luaOrTokens, path)
-	assertArg("parse", 1, luaOrTokens, "string","table")
+	assertArg2("parse", 1, luaOrTokens, "string","table")
 
 	-- ast, error = parse( tokens )
 	if type(luaOrTokens) == "table" then
@@ -2518,19 +2505,19 @@ end
 local function newNode(nodeType, ...)
 	local node
 
-	if     nodeType == "vararg"      then  node = AstVararg     (dummyTokens, 0)
-	elseif nodeType == "table"       then  node = AstTable      (dummyTokens, 0)
-	elseif nodeType == "lookup"      then  node = AstLookup     (dummyTokens, 0)
-	elseif nodeType == "call"        then  node = AstCall       (dummyTokens, 0)
-	elseif nodeType == "function"    then  node = AstFunction   (dummyTokens, 0)
-	elseif nodeType == "break"       then  node = AstBreak      (dummyTokens, 0)
-	elseif nodeType == "return"      then  node = AstReturn     (dummyTokens, 0)
-	elseif nodeType == "block"       then  node = AstBlock      (dummyTokens, 0)
-	elseif nodeType == "declaration" then  node = AstDeclaration(dummyTokens, 0)
-	elseif nodeType == "assignment"  then  node = AstAssignment (dummyTokens, 0)
-	elseif nodeType == "if"          then  node = AstIf         (dummyTokens, 0)
-	elseif nodeType == "while"       then  node = AstWhile      (dummyTokens, 0)
-	elseif nodeType == "repeat"      then  node = AstRepeat     (dummyTokens, 0)
+	if     nodeType == "vararg"      then  node = AstVararg(nil)
+	elseif nodeType == "table"       then  node = AstTable(nil)
+	elseif nodeType == "lookup"      then  node = AstLookup(nil)
+	elseif nodeType == "call"        then  node = AstCall(nil)
+	elseif nodeType == "function"    then  node = AstFunction(nil)
+	elseif nodeType == "break"       then  node = AstBreak(nil)
+	elseif nodeType == "return"      then  node = AstReturn(nil)
+	elseif nodeType == "block"       then  node = AstBlock(nil)
+	elseif nodeType == "declaration" then  node = AstDeclaration(nil)
+	elseif nodeType == "assignment"  then  node = AstAssignment(nil)
+	elseif nodeType == "if"          then  node = AstIf(nil)
+	elseif nodeType == "while"       then  node = AstWhile(nil)
+	elseif nodeType == "repeat"      then  node = AstRepeat(nil)
 
 	elseif nodeType == "identifier" then
 		if select("#", ...) == 0 then
@@ -2553,7 +2540,7 @@ local function newNode(nodeType, ...)
 			errorf(2, "Invalid attribute name '%s'. (Must be 'close' or 'const'.)", attribute)
 		end
 
-		node           = AstIdentifier(dummyTokens, 0, name)
+		node           = AstIdentifier(nil, name)
 		node.attribute = attribute or ""
 
 	elseif nodeType == "label" then
@@ -2568,7 +2555,7 @@ local function newNode(nodeType, ...)
 			errorf(2, "Invalid label name '%s'.", name)
 		end
 
-		node      = AstLabel(dummyTokens, 0)
+		node      = AstLabel(nil)
 		node.name = name
 
 	elseif nodeType == "goto" then
@@ -2583,7 +2570,7 @@ local function newNode(nodeType, ...)
 			errorf(2, "Invalid label name '%s'.", name)
 		end
 
-		node      = AstGoto(dummyTokens, 0)
+		node      = AstGoto(nil)
 		node.name = name
 
 	elseif nodeType == "literal" then
@@ -2596,7 +2583,7 @@ local function newNode(nodeType, ...)
 			errorf(2, "Invalid literal value type '%s'. (Expected number, string, boolean or nil)", type(value))
 		end
 
-		node = AstLiteral(dummyTokens, 0, value)
+		node = AstLiteral(nil, value)
 
 	elseif nodeType == "unary" then
 		if select("#", ...) == 0 then
@@ -2608,7 +2595,7 @@ local function newNode(nodeType, ...)
 			errorf(2, "Invalid unary operator '%s'.", tostring(op))
 		end
 
-		node          = AstUnary(dummyTokens, 0)
+		node          = AstUnary(nil)
 		node.operator = op
 
 	elseif nodeType == "binary" then
@@ -2621,7 +2608,7 @@ local function newNode(nodeType, ...)
 			errorf(2, "Invalid binary operator '%s'.", tostring(op))
 		end
 
-		node          = AstBinary(dummyTokens, 0)
+		node          = AstBinary(nil)
 		node.operator = op
 
 	elseif nodeType == "for" then
@@ -2634,7 +2621,7 @@ local function newNode(nodeType, ...)
 			errorf(2, "Invalid for loop kind '%s'. (Must be 'numeric' or 'generic')", tostring(kind))
 		end
 
-		node      = AstFor(dummyTokens, 0)
+		node      = AstFor(nil)
 		node.kind = kind
 
 	else
@@ -2652,6 +2639,16 @@ do
 		["\r"] = "{CR}",
 	}
 
+	function ensurePrintable(s)
+		return (stringGsub(s, "[%z\1-\31\127-\255]", function(c)
+			return CONTROL_TO_READABLE[c] or (stringByte(c) <= 31 or stringByte(c) >= 127) and F("{%d}", stringByte(c)) or nil
+		end))
+	end
+end
+
+
+
+do
 	local function _printNode(node)
 		local nodeType = node.type
 
@@ -2683,9 +2680,7 @@ do
 			if node.value == nil or node.value == true or node.value == false then
 				ioWrite(" (", tostring(node.value), ")")
 			elseif type(node.value) == "string" then
-				ioWrite(' (string="', stringGsub(node.value, "[%z\1-\31\127-\255]", function(c)
-					return CONTROL_TO_READABLE[c] or (stringByte(c) <= 31 or stringByte(c) >= 127) and F("{%d}", stringByte(c)) or nil
-				end), '")')
+				ioWrite(' (string="', ensurePrintable(node.value), '")')
 			else
 				ioWrite(" (", type(node.value), "=", tostring(node.value), ")")
 			end
@@ -3293,13 +3288,13 @@ local bits2 = {}
 local unaryFolders = {
 	["-"] = function(unary, expr)
 		if expr.type == "literal" and isValueNumberLike(expr.value) then
-			return AstLiteral(dummyTokens, unary.token, -expr.value)
+			return AstLiteral(unary.token, -expr.value)
 		end
 		return nil
 	end,
 	["not"] = function(unary, expr)
 		if expr.type == "literal" then
-			return AstLiteral(dummyTokens, unary.token, not expr.value)
+			return AstLiteral(unary.token, (not expr.value))
 		end
 		return nil
 	end,
@@ -3313,7 +3308,7 @@ local unaryFolders = {
 			for i = 1, INT_SIZE do
 				bits1[i] = 1 - bits1[i]
 			end
-			return AstLiteral(dummyTokens, unary.token, bitsToInt(bits1))
+			return AstLiteral(unary.token, bitsToInt(bits1))
 		end
 		return nil
 	end,
@@ -3322,43 +3317,43 @@ local unaryFolders = {
 local binaryFolders = {
 	["+"] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" and isValueNumberLike(l.value) and isValueNumberLike(r.value) then
-			return AstLiteral(dummyTokens, binary.token, l.value+r.value)
+			return AstLiteral(binary.token, l.value+r.value)
 		end
 		return nil
 	end,
 	["-"] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" and isValueNumberLike(l.value) and isValueNumberLike(r.value) then
-			return AstLiteral(dummyTokens, binary.token, l.value-r.value)
+			return AstLiteral(binary.token, l.value-r.value)
 		end
 		return nil
 	end,
 	["*"] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" and isValueNumberLike(l.value) and isValueNumberLike(r.value) then
-			return AstLiteral(dummyTokens, binary.token, l.value*r.value)
+			return AstLiteral(binary.token, l.value*r.value)
 		end
 		return nil
 	end,
 	["/"] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" and isValueNumberLike(l.value) and isValueNumberLike(r.value) then
-			return AstLiteral(dummyTokens, binary.token, l.value/r.value)
+			return AstLiteral(binary.token, l.value/r.value)
 		end
 		return nil
 	end,
 	["//"] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" and isValueNumberLike(l.value) and isValueNumberLike(r.value) then
-			return AstLiteral(dummyTokens, binary.token, mathFloor(l.value/r.value))
+			return AstLiteral(binary.token, mathFloor(l.value/r.value))
 		end
 		return nil
 	end,
 	["^"] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" and isValueNumberLike(l.value) and isValueNumberLike(r.value) then
-			return AstLiteral(dummyTokens, binary.token, l.value^r.value)
+			return AstLiteral(binary.token, l.value^r.value)
 		end
 		return nil
 	end,
 	["%"] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" and isValueNumberLike(l.value) and isValueNumberLike(r.value) then
-			return AstLiteral(dummyTokens, binary.token, l.value%r.value)
+			return AstLiteral(binary.token, l.value%r.value)
 		end
 		return nil
 	end,
@@ -3369,7 +3364,7 @@ local binaryFolders = {
 			for i = 1, INT_SIZE do
 				bits1[i] = (bits1[i] == 1 and bits2[i] == 1) and 1 or 0
 			end
-			return AstLiteral(dummyTokens, binary.token, bitsToInt(bits1))
+			return AstLiteral(binary.token, bitsToInt(bits1))
 		end
 		return nil
 	end,
@@ -3380,7 +3375,7 @@ local binaryFolders = {
 			for i = 1, INT_SIZE do
 				bits1[i] = (bits1[i] == 1) == (bits2[i] ~= 1) and 1 or 0
 			end
-			return AstLiteral(dummyTokens, binary.token, bitsToInt(bits1))
+			return AstLiteral(binary.token, bitsToInt(bits1))
 		end
 		return nil
 	end,
@@ -3391,7 +3386,7 @@ local binaryFolders = {
 			for i = 1, INT_SIZE do
 				if bits1[i] == 0 then  bits1[i] = bits2[i]  end
 			end
-			return AstLiteral(dummyTokens, binary.token, bitsToInt(bits1))
+			return AstLiteral(binary.token, bitsToInt(bits1))
 		end
 		return nil
 	end,
@@ -3413,7 +3408,7 @@ local binaryFolders = {
 				bits1[i] = bits1[i-shift] or 0
 			end
 
-			return AstLiteral(dummyTokens, binary.token, bitsToInt(bits1))
+			return AstLiteral(binary.token, bitsToInt(bits1))
 		end
 
 		return nil
@@ -3436,50 +3431,50 @@ local binaryFolders = {
 				bits1[i] = bits1[i+shift] or 0
 			end
 
-			return AstLiteral(dummyTokens, binary.token, bitsToInt(bits1))
+			return AstLiteral(binary.token, bitsToInt(bits1))
 		end
 
 		return nil
 	end,
 	[".."] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" and isValueNumberOrString(l.value) and isValueNumberOrString(r.value) then
-			return AstLiteral(dummyTokens, binary.token, l.value..r.value)
+			return AstLiteral(binary.token, l.value..r.value)
 		end
 		return nil
 	end,
 	["<"] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" and areValuesNumbersOrStringsAndOfSameType(l.value, r.value) then
-			return AstLiteral(dummyTokens, binary.token, (l.value < r.value))
+			return AstLiteral(binary.token, (l.value < r.value))
 		end
 		return nil
 	end,
 	["<="] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" and areValuesNumbersOrStringsAndOfSameType(l.value, r.value) then
-			return AstLiteral(dummyTokens, binary.token, (l.value <= r.value))
+			return AstLiteral(binary.token, (l.value <= r.value))
 		end
 		return nil
 	end,
 	[">"] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" and areValuesNumbersOrStringsAndOfSameType(l.value, r.value) then
-			return AstLiteral(dummyTokens, binary.token, (l.value > r.value))
+			return AstLiteral(binary.token, (l.value > r.value))
 		end
 		return nil
 	end,
 	[">="] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" and areValuesNumbersOrStringsAndOfSameType(l.value, r.value) then
-			return AstLiteral(dummyTokens, binary.token, (l.value >= r.value))
+			return AstLiteral(binary.token, (l.value >= r.value))
 		end
 		return nil
 	end,
 	["=="] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" then
-			return AstLiteral(dummyTokens, binary.token, (l.value == r.value))
+			return AstLiteral(binary.token, (l.value == r.value))
 		end
 		return nil
 	end,
 	["~="] = function(binary, l, r)
 		if l.type == "literal" and r.type == "literal" then
-			return AstLiteral(dummyTokens, binary.token, (l.value ~= r.value))
+			return AstLiteral(binary.token, (l.value ~= r.value))
 		end
 		return nil
 	end,
@@ -4089,7 +4084,7 @@ local function _optimize(theNode, stats)
 									-- where(watcherIdent, "Constant value replacement.") -- DEBUG
 
 									local v                  = valueLiteral and valueLiteral.value
-									local replacementLiteral = AstLiteral(dummyTokens, watcherIdent.token, v)
+									local replacementLiteral = AstLiteral(watcherIdent.token, v)
 
 									unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, watcherIdent, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats, false)
 									replace(watcherIdent, replacementLiteral, watcherIdent.parent, watcherIdent.container, watcherIdent.key, stats)
@@ -4199,7 +4194,7 @@ local function _optimize(theNode, stats)
 
 						elseif not (valueExpr.type == "literal" and valueExpr.value == nil) then
 							unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, valueExpr, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats, false)
-							replace(valueExpr, AstLiteral(dummyTokens, valueExpr.token, nil), valueExpr.parent, valueExpr.container, valueExpr.key, stats)
+							replace(valueExpr, AstLiteral(valueExpr.token, nil), valueExpr.parent, valueExpr.container, valueExpr.key, stats)
 						end
 					end
 				end--if lvalue is relevant
@@ -4492,18 +4487,13 @@ end
 function printTokens(tokens)
 	local printLocs  = parser.printLocations
 	local sourcePath = tokens.sourcePath
-	local tokLine    = tokens.lineStart
-	local tokTypes   = tokens.type
-	local tokValues  = tokens.value
 
-	for tok = 1, tokens.n do
-		local v = tostring(tokValues[tok])
+	for i, token in ipairs(tokens) do
+		local v = ensurePrintable(tostring(token.value))
 		if #v > 200 then  v = stringSub(v, 1, 200-3).."..."  end
 
-		v = stringGsub(v, "\n", "\\n")
-
-		if printLocs then  ioWrite(sourcePath, ":", tokLine[tok], ": ")  end
-		ioWrite(tok, ". ", F("%-11s", tokTypes[tok]), " '", v, "'\n")
+		if printLocs then  ioWrite(sourcePath, ":", token.lineStart, ": ")  end
+		ioWrite(i, ". ", F("%-11s", token.type), " '", v, "'\n")
 	end
 end
 
@@ -5203,15 +5193,22 @@ end
 
 
 
--- item, index = itemWith1( array, key, value )
+-- index = indexOf( array, value [, startIndex=1, endIndex=#array ] )
+function indexOf(t, v, i1, i2)
+	for i = (i1 or 1), (i2 or #t) do
+		if t[i] == v then  return i  end
+	end
+	return nil
+end
+
+-- item, index = itemWith1    ( array, key, value )
+-- item, index = lastItemWith1( array, key, value )
 function itemWith1(t, k, v)
 	for i, item in ipairs(t) do
 		if item[k] == v then  return item, i  end
 	end
 	return nil
 end
-
--- item, index = lastItemWith1( array, key, value )
 function lastItemWith1(t, k, v)
 	for i, item in ipairsr(t) do
 		if item[k] == v then  return item, i  end
@@ -5222,17 +5219,14 @@ end
 
 
 -- assertArg1( functionName, argumentNumber, value, expectedType )
+-- assertArg2( functionName, argumentNumber, value, expectedType1, expectedType2 )
 function assertArg1(funcName, argNum, v, expectedType)
 	if type(v) == expectedType then  return  end
 	errorf(3, "Bad argument #%d to '%s'. (Expected %s, got %s)", argNum, funcName, expectedType, type(v))
 end
-
--- assertArg( functionName, argumentNumber, value, expectedType1, ... )
-function assertArg(funcName, argNum, v, ...)
-	for i = 1, select("#", ...) do
-		if type(v) == select(i, ...) then  return  end
-	end
-	errorf(3, "Bad argument #%d to '%s'. (Expected %s, got %s)", argNum, funcName, tableConcat({...}, " or "), type(v))
+function assertArg2(funcName, argNum, v, expectedType1, expectedType2)
+	if type(v) == expectedType1 or type(v) == expectedType2 then  return  end
+	errorf(3, "Bad argument #%d to '%s'. (Expected %s or %s, got %s)", argNum, funcName, expectedType1, expectedType2, type(v))
 end
 
 -- errorf( [ level=1, ] format, ... )
@@ -5434,7 +5428,7 @@ end
 function removeChild(node, fieldName, i)
 	assertArg1("removeChild", 1, node,      "table")
 	assertArg1("removeChild", 2, fieldName, "string")
-	assertArg ("removeChild", 3, i,         "number","nil")
+	assertArg2("removeChild", 3, i,         "number","nil")
 
 	local nodeType       = node.type
 	local childFields    = CHILD_FIELDS[nodeType] or errorf(2, "Unknown node type '%s'.", tostring(nodeType))

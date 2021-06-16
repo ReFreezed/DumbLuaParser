@@ -3,7 +3,9 @@ local a
 local b, c = true, "f\0o"
 
 -- Comment
---[[ Long ]] --[==[ comment. ]==]
+--[[ Long ]] --[==[
+comment.
+]==]
 
 do
 	local x = 1

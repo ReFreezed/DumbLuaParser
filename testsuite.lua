@@ -116,6 +116,34 @@ end
 
 
 
+--[[ Speed test.
+do
+	local PATH = "dumbParser.lua"
+	-- local PATH = "test.lua"
+
+	local file = assert(io.open(PATH, "r"))
+	local lua  = file:read("*a")
+	file:close()
+
+	local time, tokens = os.clock()
+	for i = 1, 10 do
+		tokens = assert(parser.tokenize(lua, PATH))
+	end
+	local timeTokenize = os.clock() - time
+
+	local time, ast = os.clock()
+	for i = 1, 10 do
+		ast = assert(parser.parse(tokens))
+	end
+	local timeParse = os.clock() - time
+
+	print("tokenize="..timeTokenize.." parse="..timeParse)
+	debugExit()
+end
+--]]
+
+
+
 test("Test file / misc.", function()
 	local PATH = "test.lua"
 	-- local PATH = "dumbParser.lua"
