@@ -331,7 +331,17 @@ local tableRemove  = table.remove
 local tableSort    = table.sort
 local tableUnpack  = table.unpack or unpack
 
-local maybeWrapInt = (jit and function(n)return(n%2^32)end) or (_VERSION == "Lua 5.2" and bit32.band) or function(n)return(n)end
+local maybeWrapInt = (
+	(jit and function(n)
+		-- 'n' might be cdata (i.e. a 64-bit integer) here. We have to limit the range
+		-- with mod once before we convert it to a Lua number to not lose precision,
+		-- but the result might be negative (and still out of range somehow!) so we
+		-- have to use mod again. Gah!
+		return tonumber(n % 0x100000000) % 0x100000000 -- 0x100000000 == 2^32
+	end)
+	or (_VERSION == "Lua 5.2" and bit32.band)
+	or function(n)  return n  end
+)
 
 local assertArg1, assertArg, errorf
 local countString, countSubString
@@ -1004,16 +1014,16 @@ function tokenize(s, path)
 			local numStrFallback = numStr
 
 			if jit then
-				if s:find("^[Ii]", i2+1) then -- Imaginary part of complex number.
+				if stringFind(s, "^[Ii]", i2+1) then -- Imaginary part of complex number.
 					numStr = stringSub(s, i1, i2+1)
 					i2     = i2 + 1
 
-				elseif not maybeInt or numStr:find(".", 1, true) then
+				elseif not maybeInt or stringFind(numStr, ".", 1, true) then
 					-- void
-				elseif s:find("^[Uu][Ll][Ll]", i2+1) then -- Unsigned 64-bit integer.
+				elseif stringFind(s, "^[Uu][Ll][Ll]", i2+1) then -- Unsigned 64-bit integer.
 					numStr = stringSub(s, i1, i2+3)
 					i2     = i2 + 3
-				elseif s:find("^[Ll][Ll]", i2+1) then -- Signed 64-bit integer.
+				elseif stringFind(s, "^[Ll][Ll]", i2+1) then -- Signed 64-bit integer.
 					numStr = stringSub(s, i1, i2+2)
 					i2     = i2 + 2
 				end
@@ -1034,9 +1044,9 @@ function tokenize(s, path)
 				-- Support hexadecimal floats if we're running Lua 5.1.
 				if kind == "lua52hex" then
 					local                                _, intStr, fracStr, expStr
-					if     pat == NUM_HEX_FRAC_EXP then  _, intStr, fracStr, expStr = numStrFallback:match(NUM_HEX_FRAC_EXP)
-					elseif pat == NUM_HEX_FRAC     then  _, intStr, fracStr         = numStrFallback:match(NUM_HEX_FRAC) ; expStr  = "0"
-					elseif pat == NUM_HEX_EXP      then  _, intStr,          expStr = numStrFallback:match(NUM_HEX_EXP)  ; fracStr = ""
+					if     pat == NUM_HEX_FRAC_EXP then  _, intStr, fracStr, expStr = stringMatch(numStrFallback, NUM_HEX_FRAC_EXP)
+					elseif pat == NUM_HEX_FRAC     then  _, intStr, fracStr         = stringMatch(numStrFallback, NUM_HEX_FRAC) ; expStr  = "0"
+					elseif pat == NUM_HEX_EXP      then  _, intStr,          expStr = stringMatch(numStrFallback, NUM_HEX_EXP)  ; fracStr = ""
 					else return nil, formatErrorInFile(s, path, ptrStart, "Tokenizer", "Internal error parsing the number '%s'.", numStrFallback) end
 
 					n = tonumber(intStr, 16) or 0 -- intStr may be "".
@@ -1050,7 +1060,7 @@ function tokenize(s, path)
 					n = n * 2 ^ stringGsub(expStr, "^+", "")
 
 				elseif kind == "binary" then
-					n = tonumber(numStrFallback:sub(3), 2)
+					n = tonumber(stringSub(numStrFallback, 3), 2)
 				end
 			end
 
@@ -4189,7 +4199,7 @@ local function _optimize(theNode, stats)
 						unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers, lvalue, declIdentReadCount, declIdentAssignmentCount, funcInfos, funcInfo, stats)
 					end
 
-					table.remove(statement.container, statement.key) -- The parent ought to be a block!
+					tableRemove(statement.container, statement.key) -- The parent ought to be a block!
 
 					for slot, call in ipairs(values) do
 						local i = statement.key + slot - 1
@@ -4311,25 +4321,40 @@ local function minify(node, optimize)
 	-- local funcInfos                                    = getInformationAboutFunctions(node)
 	-- local declIdentReadCount, declIdentAssignmentCount = getAccessesOfDeclaredNames(funcInfos, identInfos, declIdentWatchers)
 
+	local allDeclIdents = {}
+
+	for _, identInfo in ipairs(identInfos) do
+		local identOrVararg = identInfo.ident
+		local declIdent     = (identOrVararg.type == "identifier") and identOrVararg.declaration or nil
+
+		if declIdent and not allDeclIdents[declIdent] then
+			tableInsert(allDeclIdents, declIdent)
+			allDeclIdents[declIdent] = true
+		end
+	end
+
 	--
-	-- Make sure frequencies affect who gets shorter names first. @Incomplete
+	-- Make sure frequencies affect who gets shorter names first.
+	-- (This doesn't seem that useful at the moment. 2021-06-16)
 	--
-	--[[
-	tableSort(identInfos, function(a, b)
-		if a.ident.type == "vararg" or b.ident.type == "vararg" then
-			return a.ident.type < b.ident.type -- We don't care about these.
+	--[[ :SortBeforeRename
+	tableSort(allDeclIdents, function(a, b)
+		if a.type == "vararg" or b.type == "vararg" then
+			return a.id < b.id -- We don't care about varargs.
 		end
 
-		if #a.visibleDeclLikes ~= #b.visibleDeclLikes then
-			-- I feel this is kinda reversed - it should be how many can see you, not how many you can see. Does this matter? This sure is confusing! Also, visibleDeclLikes is @Obsolete.
-			return #a.visibleDeclLikes < #b.visibleDeclLikes
+		local aWatchers = declIdentWatchers[a.declaration]
+		local bWatchers = declIdentWatchers[b.declaration]
+
+		if not (aWatchers and bWatchers) then
+			return a.id < a.id -- We don't care about globals.
 		end
 
-		-- if (localCounts[a.ident.name] or 0) ~= (localCounts[b.ident.name] or 0) then -- This is most certainly incorrect, because the names are old!
-		-- 	return (localCounts[a.ident.name] or 0) > (localCounts[b.ident.name] or 0)
-		-- end
+		if #aWatchers ~= #bWatchers then
+			return #aWatchers < #bWatchers
+		end
 
-		return a.ident.id < b.ident.id
+		return a.id < b.id
 	end)
 	--]]
 
@@ -4339,57 +4364,87 @@ local function minify(node, optimize)
 	local renamed           = {--[[ [declIdent1]=true, ... ]]}
 	local maxNameGeneration = 0
 
+	--[[ :SortBeforeRename
+	local remoteWatchers = {}
+	--]]
+
+	-- Assign generated names to declarations.
+	for _, declIdent in ipairs(allDeclIdents) do
+		local newName
+
+		for nameGeneration = 1, 1/0 do
+			newName         = generateName(nameGeneration)
+			local collision = false
+
+			for _, watcherIdent in ipairs(declIdentWatchers[declIdent]) do
+				local watcherDeclIdent = watcherIdent.declaration
+
+				-- Local watcher.
+				if watcherDeclIdent then
+					if renamed[watcherDeclIdent] and watcherDeclIdent.name == newName then
+						collision = true
+						break
+					end
+
+				-- Global watcher.
+				elseif watcherIdent.name == newName then
+					collision = true
+					break
+				end
+			end--for declIdentWatchers
+
+			--[[ :SortBeforeRename
+			if not collision and remoteWatchers[declIdent] then
+				for _, watcherDeclIdent in ipairs(remoteWatchers[declIdent]) do
+					if watcherDeclIdent.name == newName then
+						collision = true
+						break
+					end
+				end
+			end
+			--]]
+
+			if not collision then
+				maxNameGeneration = mathMax(maxNameGeneration, nameGeneration)
+				break
+			end
+		end--for nameGeneration
+
+		--[[ :SortBeforeRename
+		for _, watcherIdent in ipairs(declIdentWatchers[declIdent]) do
+			local watcherDeclIdent = watcherIdent.declaration
+
+			if watcherDeclIdent and watcherDeclIdent ~= declIdent then
+				remoteWatchers[watcherDeclIdent] = remoteWatchers[watcherDeclIdent] or {}
+
+				if not remoteWatchers[watcherDeclIdent][declIdent] then
+					tableInsert(remoteWatchers[watcherDeclIdent], declIdent)
+					remoteWatchers[watcherDeclIdent][declIdent] = true
+				end
+			end
+		end
+		--]]
+
+		if declIdent.name ~= newName then
+			declIdent.name    = newName
+			stats.renameCount = stats.renameCount + 1
+		end
+		renamed[declIdent] = true
+	end--for allDeclIdents
+
+	stats.generatedNameCount = maxNameGeneration
+	-- print("maxNameGeneration", maxNameGeneration) -- DEBUG
+
+	-- Rename all remaining identifiers.
 	for _, identInfo in ipairs(identInfos) do
 		local ident     = identInfo.ident -- Could be a vararg.
 		local declIdent = (ident.type == "identifier") and ident.declaration or nil
 
-		if declIdent then
-			if not renamed[declIdent] then
-				local newName
-
-				for nameGeneration = 1, 1/0 do
-					newName         = generateName(nameGeneration)
-					local collision = false
-
-					for _, watcherIdent in ipairs(declIdentWatchers[declIdent]) do
-						local watcherDeclIdent = watcherIdent.declaration
-
-						-- Local watcher.
-						if watcherDeclIdent then
-							if renamed[watcherDeclIdent] and watcherDeclIdent.name == newName then
-								collision = true
-								break
-							end
-
-						-- Global watcher.
-						elseif watcherIdent.name == newName then
-							collision = true
-							break
-						end
-					end--for declIdentWatchers
-
-					if not collision then
-						maxNameGeneration = mathMax(maxNameGeneration, nameGeneration)
-						break
-					end
-				end--for nameGeneration
-
-				if declIdent.name ~= newName then
-					declIdent.name    = newName
-					stats.renameCount = stats.renameCount + 1
-				end
-				renamed[declIdent] = true
-			end
-
-			if ident.name ~= declIdent.name then
-				ident.name        = declIdent.name
-				stats.renameCount = stats.renameCount + 1
-			end
+		if declIdent and ident.name ~= declIdent.name then
+			ident.name        = declIdent.name
+			stats.renameCount = stats.renameCount + 1
 		end
-	end--for identInfos
-
-	stats.generatedNameCount = maxNameGeneration
-	-- print("maxNameGeneration", maxNameGeneration) -- DEBUG
+	end
 
 	return stats -- @Undocumented
 end
