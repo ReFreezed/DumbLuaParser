@@ -131,10 +131,10 @@ traverseTreeReverse()
 	container[key] is the position of the current node in the tree and can be used to replace the node.
 
 updateReferences()
-	parser.updateReferences( astNode [, updateTopNodePosition=true ] )
+	parser.updateReferences( astNode [, updateTopNodePositionInfo=true ] )
 	Update references between nodes in the tree.
 	This function sets 'parent'+'container'+'key' for all nodes, 'declaration' for identifiers and vararg nodes, and 'label' for goto nodes.
-	If 'updateTopNodePosition' is false then 'parent', 'container' and 'key' will remain as-it for 'astNode' specifically.
+	If 'updateTopNodePositionInfo' is false then 'parent', 'container' and 'key' will remain as-it for 'astNode' specifically.
 
 simplify()
 	simplify( astNode )
@@ -146,12 +146,14 @@ optimize()
 	Attempt to remove nodes that aren't useful, like unused variables, or variables that are essentially constants.
 	Calls simplify() internally.
 	This function can be quite slow!
+	Note: References may be out-of-date after calling this.
 
 minify()
 	parser.minify( astNode [, optimize=false ] )
 	Replace local variable names with short names.
 	This function can be used to obfuscate the code to some extent.
 	If 'optimize' is set then optimize() is also called automatically.
+	Note: References may be out-of-date after calling this.
 
 toLua()
 	luaString, error = parser.toLua( astNode [, prettyOuput=false ] )
@@ -3174,12 +3176,12 @@ local function findLabel(gotoNode)
 	end
 end
 
-function updateReferences(node, updateTopNodePosition)
+function updateReferences(node, updateTopNodePositionInfo)
 	local topNodeParent    = nil
 	local topNodeContainer = nil
 	local topNodeKey       = nil
 
-	if updateTopNodePosition == false then
+	if updateTopNodePositionInfo == false then
 		topNodeParent    = node.parent
 		topNodeContainer = node.container
 		topNodeKey       = node.key
@@ -3663,7 +3665,7 @@ local function lookForCurrentDeclIdentAndRegisterCurrentIdentAsWatcherInBlock(de
 	return false
 end
 
-local function getInformationAboutIdentifiersAndUpdateMostReferences(node)
+local function getInformationAboutIdentifiersAndUpdateReferences(node)
 	local identInfos        = {--[[ [ident1]=identInfo1, identInfo1, ... ]]} -- identInfo = {ident=identOrVararg, type=lrvalueType}
 	local declIdentWatchers = {--[[ [declIdent1]={identOrVararg1,...}, ... ]]}
 
@@ -3756,7 +3758,7 @@ local function getInformationAboutIdentifiersAndUpdateMostReferences(node)
 			local gotoNode = node
 			gotoNode.label = findLabel(gotoNode) -- We can call this because all relevant 'parent' references have been updated at this point.
 		end
-	end, node.parent, node.container, node.key)
+	end)
 
 	return identInfos, declIdentWatchers
 end
@@ -4043,7 +4045,7 @@ end
 local function _optimize(theNode, stats)
 	_simplify(theNode, stats)
 
-	local identInfos, declIdentWatchers                = getInformationAboutIdentifiersAndUpdateMostReferences(theNode)
+	local identInfos, declIdentWatchers                = getInformationAboutIdentifiersAndUpdateReferences(theNode)
 	local funcInfos                                    = getInformationAboutFunctions(theNode)
 	local declIdentReadCount, declIdentAssignmentCount = getAccessesOfDeclaredNames(funcInfos, identInfos, declIdentWatchers)
 
@@ -4359,7 +4361,7 @@ local function minify(node, optimize)
 		_optimize(node, stats)
 	end
 
-	local identInfos, declIdentWatchers                   = getInformationAboutIdentifiersAndUpdateMostReferences(node)
+	local identInfos, declIdentWatchers                   = getInformationAboutIdentifiersAndUpdateReferences(node)
 	-- local funcInfos                                    = getInformationAboutFunctions(node)
 	-- local declIdentReadCount, declIdentAssignmentCount = getAccessesOfDeclaredNames(funcInfos, identInfos, declIdentWatchers)
 
