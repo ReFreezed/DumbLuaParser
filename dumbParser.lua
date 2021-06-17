@@ -22,6 +22,7 @@
   2.3 - Settings
 3 - Tokens
 4 - AST
+5 - Notes
 
 
 1 - Usage
@@ -282,6 +283,19 @@ Node types:
 
 Node fields: (Search for 'NodeFields'.)
 
+
+5 - Notes
+================================================================
+
+Special number notation rules.
+
+	The expression '-n' is parsed as a single number literal if 'n' is a
+	numeral (i.e. the result is a negative number).
+
+	The expression 'n/0' is parsed as a single number literal if 'n' is a
+	numeral. If 'n' is positive then the result is math.huge, if 'n' is
+	negative then the result is -math.huge, or if 'n' is 0 then the result is
+	NaN.
 
 --============================================================]]
 
@@ -714,10 +728,14 @@ do
 	end
 
 	function formatMessageInFile(prefix, contents, path, pos, agent, s, ...)
+		if agent ~= "" then
+			agent = "["..agent.."] "
+		end
+
 		s = F(s, ...)
 
 		if contents == "" then
-			return F("%s @ %s: [%s] %s", prefix, path, agent, s)
+			return F("%s @ %s: %s%s", prefix, path, agent, s)
 		end
 
 		pos      = mathMin(mathMax(pos, 1), #contents+1)
@@ -731,7 +749,7 @@ do
 		local linePre2End   = findEndOfLine  (contents, linePre2Start-1)
 		-- print(F("pos %d | lines %d..%d, %d..%d, %d..%d", pos, linePre2Start,linePre2End+1, linePre1Start,linePre1End+1, lineStart,lineEnd+1)) -- DEBUG
 
-		return F("%s @ %s:%d: [%s] %s\n>\n%s%s%s>-%s^",
+		return F("%s @ %s:%d: %s%s\n>\n%s%s%s>-%s^",
 			prefix, path, ln, agent, s,
 			(linePre2Start < linePre1Start and linePre2Start <= linePre2End) and F("> %s\n", (stringGsub(stringSub(contents, linePre2Start, linePre2End), "\t", "    "))) or "",
 			(linePre1Start < lineStart     and linePre1Start <= linePre1End) and F("> %s\n", (stringGsub(stringSub(contents, linePre1Start, linePre1End), "\t", "    "))) or "",
@@ -752,15 +770,26 @@ function formatMessageAtNode(prefix, node, agent, s, ...)
 	return (formatMessageInFile(prefix, node.sourceString, node.sourcePath, node.position, agent, s, ...))
 end
 
+local function formatMessageHelper(argNumOffset, prefix, nodeOrLocOrToken, agent, s, ...)
+	assertArg1("formatMessage", 1+argNumOffset, prefix,           "string", 3)
+	assertArg1("formatMessage", 2+argNumOffset, nodeOrLocOrToken, "table",  3)
+	assertArg1("formatMessage", 3+argNumOffset, agent,            "string", 3)
+	assertArg1("formatMessage", 4+argNumOffset, s,                "string", 3)
+
+	local formatter = nodeOrLocOrToken.representation and formatMessageAtToken or formatMessageAtNode
+	return (formatter(prefix, nodeOrLocOrToken, agent, s, ...))
+end
+
 -- message = formatMessage( [ prefix="Info", ] token,    agent, s, ... )
 -- message = formatMessage( [ prefix="Info", ] astNode,  agent, s, ... )
 -- message = formatMessage( [ prefix="Info", ] location, agent, s, ... )
-function formatMessage(prefix, nodeOrLocOrToken, ...)
-	if type(prefix) ~= "string" then
-		return (formatMessage("Info", prefix, nodeOrLocOrToken, ...))
+function formatMessage(prefix, ...)
+	if type(prefix) == "string" then
+		return (formatMessageHelper(0, prefix, ...))
+	else
+		return (formatMessageHelper(-1, "Info", prefix, ...))
 	end
-	local formatter = nodeOrLocOrToken.representation and formatMessageAtToken or formatMessageAtNode
-	return (formatter(prefix, nodeOrLocOrToken, ...))
+
 end
 
 
@@ -3304,6 +3333,7 @@ local unaryFolders = {
 		return nil
 	end,
 	["not"] = function(unary, expr)
+		-- @Incomplete: Fold 'not (expr1 ~= expr2)' into 'expr1 == expr2'.
 		if expr.type == "literal" then
 			return AstLiteral(unary.token, (not expr.value))
 		end
@@ -3518,6 +3548,7 @@ local function simplifyNode(node, parent, container, key)
 		if replacement then  replace(node, replacement, parent, container, key, statsForSimplify)  end
 
 	elseif node.type == "if" then
+		-- @Incomplete: Fold 'if not not expr'  into 'if expr'. (Also for 'while' and 'repeat'.)
 		local ifNode = node
 
 		if ifNode.condition.type == "literal" then -- @Incomplete: There are more values that make simplification possible (e.g. functions, but who would put that here anyway). :SimplifyTruthfulValues
@@ -5229,15 +5260,15 @@ end
 
 
 
--- assertArg1( functionName, argumentNumber, value, expectedType )
--- assertArg2( functionName, argumentNumber, value, expectedType1, expectedType2 )
-function assertArg1(funcName, argNum, v, expectedType)
+-- assertArg1( functionName, argumentNumber, value, expectedType                 [, level=2 ] )
+-- assertArg2( functionName, argumentNumber, value, expectedType1, expectedType2 [, level=2 ] )
+function assertArg1(funcName, argNum, v, expectedType, level)
 	if type(v) == expectedType then  return  end
-	errorf(3, "Bad argument #%d to '%s'. (Expected %s, got %s)", argNum, funcName, expectedType, type(v))
+	errorf(1+(level or 2), "Bad argument #%d to '%s'. (Expected %s, got %s)", argNum, funcName, expectedType, type(v))
 end
-function assertArg2(funcName, argNum, v, expectedType1, expectedType2)
+function assertArg2(funcName, argNum, v, expectedType1, expectedType2, level)
 	if type(v) == expectedType1 or type(v) == expectedType2 then  return  end
-	errorf(3, "Bad argument #%d to '%s'. (Expected %s or %s, got %s)", argNum, funcName, expectedType1, expectedType2, type(v))
+	errorf(1+(level or 2), "Bad argument #%d to '%s'. (Expected %s or %s, got %s)", argNum, funcName, expectedType1, expectedType2, type(v))
 end
 
 -- errorf( [ level=1, ] format, ... )
