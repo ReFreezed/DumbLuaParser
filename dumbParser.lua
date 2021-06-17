@@ -46,7 +46,7 @@ print(lua)
 ----------------------------------------------------------------
 
 tokenize, tokenizeFile
-newTokenStream, insertToken, removeToken, concatTokens
+newToken, concatTokens
 parse, parseFile
 newNode, getChild, setChild, addChild, removeChild
 traverseTree, traverseTreeReverse
@@ -65,21 +65,13 @@ tokenizeFile()
 	Convert the contents of a file into tokens. Uses io.open().
 	Returns nil and a message on error.
 
-newTokenStream()
-	tokens = parser.newTokenStream( )
-	Create a new token stream table. (See more info below.)
-
-insertToken()
-	parser.insertToken( tokens, [ index=#tokens+1, ] tokenType, tokenValue )
-	Insert a new token. (Search for 'TokenInsertion' for more info.)
-
-removeToken()
-	parser.removeToken( tokens [, index=#tokens ] )
-	Remove a token.
+newToken()
+	token = parser.newToken( tokenType, tokenValue )
+	Create a new token. (Search for 'TokenCreation' for more info.)
 
 concatTokens()
 	parser.concatTokens( tokens )
-	Concatinate tokens.
+	Concatinate tokens. Whitespace is added between tokens when necessary.
 
 parse()
 	astNode, error = parser.parse( tokens )
@@ -166,7 +158,7 @@ toLua()
 
 printTokens()
 	parser.printTokens( tokens )
-	Print the contents of a token stream to stdout.
+	Print tokens to stdout.
 
 printNode()
 	parser.printNode( astNode )
@@ -231,21 +223,19 @@ indentation
 3 - Tokens
 ================================================================
 
-@Obsolete @Incomplete: Update this!
+Token fields:
 
-Token stream table fields:
+	type           -- Token type. (See below.)
+	value          -- Token value. All token types have a string value, except "number" tokens which have a number value.
+	representation -- The token's code representation. (Strings have surrounding quotes, comments start with "--" etc.)
 
-	n              -- Token count.
-	sourceString   -- The original source string.
-	sourcePath     -- Path to the source file.
+	sourceString   -- The original source string, or "" if there is none.
+	sourcePath     -- Path to the source file, or "?" if there is none.
 
-	type           -- Array of token types.
-	value          -- Array of token values. All token types have string values except "number" tokens.
-	representation -- Array of token representations (i.e. strings have surrounding quotes etc.).
-	lineStart      -- Array of token start line numbers.
-	lineEnd        -- Array of token end line numbers.
-	positionStart  -- Array of token start indices.
-	positionEnd    -- Array of token end indices.
+	lineStart      -- Start line number in sourceString, or 0 by default.
+	lineEnd        -- End line number in sourceString, or 0 by default.
+	positionStart  -- Start byte position in sourceString, or 0 by default.
+	positionEnd    -- End byte position in sourceString, or 0 by default.
 
 Token types:
 
@@ -253,7 +243,7 @@ Token types:
 	"identifier"  -- Word that is not a keyword.
 	"keyword"     -- Lua keyword.
 	"number"      -- Number literal.
-	"punctuation" -- Any punctuation, like "." or "(".
+	"punctuation" -- Any punctuation, e.g. ".." or "(".
 	"string"      -- String value.
 
 
@@ -359,7 +349,6 @@ local indexOf, itemWith1, lastItemWith1
 local ipairsr
 local isToken, isTokenType, isTokenAnyValue
 local mayNodeBeInvolvedInJump, mayAnyNodeBeInvolvedInJump
-local newTokenStream, dummyTokens
 local parse, parseFile
 local printNode, printTree
 local printTokens
@@ -746,12 +735,10 @@ do
 end
 
 function formatMessageAtToken(prefix, token, agent, s, ...)
-	local pos = (token and token.positionStart or 1)
-	return (formatMessageInFile(prefix, token.sourceString, token.sourcePath, pos, agent, s, ...))
+	return (formatMessageInFile(prefix, (token and token.sourceString or "?"), (token and token.sourcePath or ""), (token and token.positionStart or 0), agent, s, ...))
 end
 function formatMessageAfterToken(prefix, token, agent, s, ...)
-	local pos = (token and token.positionEnd+1 or #token.sourceString)
-	return (formatMessageInFile(prefix, token.sourceString, token.sourcePath, pos, agent, s, ...))
+	return (formatMessageInFile(prefix, (token and token.sourceString or "?"), (token and token.sourcePath or ""), (token and token.positionEnd+1 or 0), agent, s, ...))
 end
 
 function formatMessageAtNode(prefix, node, agent, s, ...)
@@ -983,13 +970,10 @@ do
 		end
 		path = path or "?"
 
-		local tokens        = newTokenStream()
-		tokens.sourceString = s
-		tokens.sourcePath   = path
-
-		local count = 0
-		local ptr   = 1
-		local ln    = 1
+		local tokens = {}
+		local count  = 0
+		local ptr    = 1
+		local ln     = 1
 
 		local BYTES_NAME_START      = TOKEN_BYTES.NAME_START
 		local BYTES_DASH            = TOKEN_BYTES.DASH
@@ -1265,6 +1249,7 @@ do
 
 				sourceString   = s,
 				sourcePath     = path,
+
 				lineStart      = lnStart,
 				lineEnd        = ln,
 				positionStart  = ptrStart,
@@ -1291,34 +1276,17 @@ function tokenizeFile(path)
 	return tokenize(s, path)
 end
 
-
-
-function newTokenStream()
-	return {
-		sourceString = "",
-		sourcePath   = "?",
-
-		-- [1]=token1, ...
-	}
-end
-dummyTokens = newTokenStream()
-
 --
--- :TokenInsertion
+-- :TokenCreation
 --
--- insertToken( tokens, [ index=atTheEnd, ] "comment",     contents )
--- insertToken( tokens, [ index=atTheEnd, ] "identifier",  name )
--- insertToken( tokens, [ index=atTheEnd, ] "keyword",     name )
--- insertToken( tokens, [ index=atTheEnd, ] "number",      number )
--- insertToken( tokens, [ index=atTheEnd, ] "punctuation", punctuationString )
--- insertToken( tokens, [ index=atTheEnd, ] "string",      stringValue )
+-- token = newToken( "comment",     contents )
+-- token = newToken( "identifier",  name )
+-- token = newToken( "keyword",     name )
+-- token = newToken( "number",      number )
+-- token = newToken( "punctuation", punctuationString )
+-- token = newToken( "string",      stringValue )
 --
-local function insertToken(tokens, i, tokType, tokValue)
-	if type(i) == "string" then
-		i, tokType, tokValue = 1/0, i, tokType
-	end
-	i = mathMin(mathMax(i, 1), #tokens+1)
-
+local function newToken(tokType, tokValue)
 	local tokRepr
 
 	if tokType == "keyword" then
@@ -1373,22 +1341,19 @@ local function insertToken(tokens, i, tokType, tokValue)
 		errorf(2, "Invalid token type '%s'.", tostring(tokType))
 	end
 
-	tableInsert(tokens, i, {
+	return {
 		type           = tokType,
 		value          = tokValue,
 		representation = tokRepr,
 
 		sourceString   = "",
 		sourcePath     = "?",
+
 		lineStart      = 0,
 		lineEnd        = 0,
 		positionStart  = 0,
 		positionEnd    = 0,
-	})
-end
-
-local function removeToken(tokens, i)
-	tableRemove(tokens, i)
+	}
 end
 
 local function concatTokens(tokens)
@@ -2417,11 +2382,8 @@ end
 
 -- block, error = tokensToAst( tokens )
 local function tokensToAst(tokens)
-	local tokensPurged        = newTokenStream()
-	tokensPurged.sourceString = tokens.sourceString
-	tokensPurged.sourcePath   = tokens.sourcePath
-
-	local count = 0
+	local tokensPurged = {}
+	local count        = 0
 
 	for tok = 1, #tokens do
 		if tokens[tok].type ~= "comment" then
@@ -5467,9 +5429,7 @@ parser = {
 	tokenize            = tokenize,
 	tokenizeFile        = tokenizeFile,
 
-	newTokenStream      = newTokenStream,
-	insertToken         = insertToken,
-	removeToken         = removeToken,
+	newToken            = newToken,
 	concatTokens        = concatTokens,
 
 	parse               = parse,

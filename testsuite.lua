@@ -221,58 +221,58 @@ end)
 
 
 test("Tokens", function()
-	local tokens = assert(parser.tokenizeFile("test.lua"))
-	-- parser.printTokens(tokens)
+	do
+		local tokens = assert(parser.tokenizeFile("test.lua"))
+		-- parser.printTokens(tokens)
 
-	local concatted = parser.concatTokens(tokens)
-	-- print(concatted)
+		local concatted = parser.concatTokens(tokens)
+		-- print(concatted)
 
-	-- Round-trip.
-	local tripTokens    = assert(parser.tokenize(concatted))
-	local tripConcatted = parser.concatTokens(tripTokens)
+		-- Round-trip.
+		local tripTokens    = assert(parser.tokenize(concatted))
+		local tripConcatted = parser.concatTokens(tripTokens)
 
-	if concatted ~= tripConcatted then
-		print(("-"):rep(64))
-		print((concatted:gsub("\n", "\\n")))
-		print(("-"):rep(64))
-		print((tripConcatted:gsub("\n", "\\n")))
-		print(("-"):rep(64))
-		error("Failed token round-trip.")
+		if concatted ~= tripConcatted then
+			print(("-"):rep(64))
+			print((concatted:gsub("\n", "\\n")))
+			print(("-"):rep(64))
+			print((tripConcatted:gsub("\n", "\\n")))
+			print(("-"):rep(64))
+			error("Failed token round-trip.")
+		end
+	end
+
+	do
+		local tokens = {}
+
+		-- Construct a call.
+		table.insert(tokens, parser.newToken("identifier",  "math"))
+		table.insert(tokens, parser.newToken("punctuation", "."))
+		table.insert(tokens, parser.newToken("identifier",  "abs"))
+		table.insert(tokens, parser.newToken("punctuation", "("))
+		table.insert(tokens, parser.newToken("punctuation", "-"))
+		table.insert(tokens, parser.newToken("number",      1.75))
+		table.insert(tokens, parser.newToken("punctuation", ")"))
+
+		-- Add the call to a declaration with an error.
+		table.insert(tokens, 1, parser.newToken("keyword",     "local"))
+		table.insert(tokens, 2, parser.newToken("identifier",  "n"))
+		table.insert(tokens, 3, parser.newToken("punctuation", "="))
+		table.insert(tokens, 4, parser.newToken("punctuation", "/"))
+
+		-- Remove the error.
+		table.remove(tokens, 4)
+
+		local ast = assert(parser.parse(tokens))
+		local lua = assert(parser.toLua(ast))
+		-- print(lua)
+		assertLua(lua, [[ local n=math.abs(-1.75); ]])
 	end
 end)
 
 
 
-test("Token stream manipulations", function()
-	local tokens = parser.newTokenStream()
-
-	-- Construct a call.
-	parser.insertToken(tokens, "identifier",  "math")
-	parser.insertToken(tokens, "punctuation", ".")
-	parser.insertToken(tokens, "identifier",  "abs")
-	parser.insertToken(tokens, "punctuation", "(")
-	parser.insertToken(tokens, "punctuation", "-")
-	parser.insertToken(tokens, "number",      1.75)
-	parser.insertToken(tokens, "punctuation", ")")
-
-	-- Add call to a declaration with an error.
-	parser.insertToken(tokens, 1, "keyword",     "local")
-	parser.insertToken(tokens, 2, "identifier",  "n")
-	parser.insertToken(tokens, 3, "punctuation", "=")
-	parser.insertToken(tokens, 4, "punctuation", "/")
-
-	-- Remove the error.
-	parser.removeToken(tokens, 4)
-
-	local ast = assert(parser.parse(tokens))
-	local lua = assert(parser.toLua(ast))
-	-- print(lua)
-	assertLua(lua, [[ local n=math.abs(-1.75); ]])
-end)
-
-
-
-test("AST manipulations", function()
+test("AST manipulation", function()
 	local identifier1  = parser.newNode("identifier", "foo")
 	local identifier2  = parser.newNode("identifier", "foo", "const")
 	local vararg       = parser.newNode("vararg")
