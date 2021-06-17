@@ -11,7 +11,7 @@
 --=  License: MIT (see the bottom of this file)
 --=  Website: https://github.com/ReFreezed/DumbLuaParser
 --=
---=  Supported Lua versions: 5.1, 5.2, 5.3, 5.4
+--=  Supported Lua versions: 5.1, 5.2, 5.3, 5.4, LuaJIT
 --=
 --==============================================================
 
@@ -32,6 +32,7 @@ local parser = require("dumbParser")
 local tokens = parser.tokenizeFile("cool.lua")
 local ast    = parser.parse(tokens)
 
+parser.simplify(ast)
 parser.printTree(ast)
 
 local lua = parser.toLua(ast, true)
@@ -57,17 +58,17 @@ printTokens, printNode, printTree
 
 tokenize()
 	tokens, error = parser.tokenize( luaString [, pathForErrorMessages="?" ] )
-	Convert a Lua string into tokens.
+	Convert a Lua string into an array of tokens. (See below for more info.)
 	Returns nil and a message on error.
 
 tokenizeFile()
 	tokens, error = parser.tokenizeFile( path )
-	Convert the contents of a file into tokens. Uses io.open().
+	Convert the contents of a file into an array of tokens. (See below for more info.) Uses io.open().
 	Returns nil and a message on error.
 
 newToken()
 	token = parser.newToken( tokenType, tokenValue )
-	Create a new token. (Search for 'TokenCreation' for more info.)
+	Create a new token. (See below or search for 'TokenCreation' for more info.)
 
 concatTokens()
 	parser.concatTokens( tokens )
@@ -76,12 +77,12 @@ concatTokens()
 parse()
 	astNode, error = parser.parse( tokens )
 	astNode, error = parser.parse( luaString [, pathForErrorMessages="?" ] )
-	Convert tokens or Lua code into an AST.
+	Convert tokens or Lua code into an AST. (See below for more info.)
 	Returns nil and a message on error.
 
 parseFile()
 	astNode, error = parser.parseFile( path )
-	Convert a Lua file into an AST. Uses io.open().
+	Convert a Lua file into an AST. (See below for more info.) Uses io.open().
 	Returns nil and a message on error.
 
 newNode()
@@ -223,6 +224,8 @@ indentation
 3 - Tokens
 ================================================================
 
+Tokens are represented by tables.
+
 Token fields:
 
 	type           -- Token type. (See below.)
@@ -249,6 +252,8 @@ Token types:
 
 4 - AST
 ================================================================
+
+AST nodes are represented by tables.
 
 Node types:
 
@@ -735,10 +740,10 @@ do
 end
 
 function formatMessageAtToken(prefix, token, agent, s, ...)
-	return (formatMessageInFile(prefix, (token and token.sourceString or "?"), (token and token.sourcePath or ""), (token and token.positionStart or 0), agent, s, ...))
+	return (formatMessageInFile(prefix, (token and token.sourceString or ""), (token and token.sourcePath or "?"), (token and token.positionStart or 0), agent, s, ...))
 end
 function formatMessageAfterToken(prefix, token, agent, s, ...)
-	return (formatMessageInFile(prefix, (token and token.sourceString or "?"), (token and token.sourcePath or ""), (token and token.positionEnd+1 or 0), agent, s, ...))
+	return (formatMessageInFile(prefix, (token and token.sourceString or ""), (token and token.sourcePath or "?"), (token and token.positionEnd+1 or 0), agent, s, ...))
 end
 
 function formatMessageAtNode(prefix, node, agent, s, ...)
@@ -2340,7 +2345,7 @@ function parseBlock(tokens, tok, blockTok, stopAtEndKeyword) --> block, token, e
 	local block      = AstBlock(tokens[blockTok])
 	local statements = block.statements
 
-	while tok <= #tokens do
+	while tok <= #tokens and tokens[tok].type ~= "end" do
 		while isToken(tokens[tok], "punctuation", ";") do
 			-- Empty statements are valid in Lua 5.2+.
 			tok = tok + 1 -- ';'
@@ -2385,6 +2390,26 @@ local function tokensToAst(tokens)
 	local tokensPurged = {}
 	local count        = 0
 
+	do
+		-- Dummy start token.
+		local token = tokens[1]
+		count       = count + 1
+
+		tokensPurged[count] = {
+			type           = "start",
+			value          = "",
+			representation = "",
+
+			sourceString   = token and token.sourceString or "",
+			sourcePath     = token and token.sourcePath   or "?",
+
+			lineStart      = 1,
+			lineEnd        = 1,
+			positionStart  = 1,
+			positionEnd    = 1,
+		}
+	end
+
 	for tok = 1, #tokens do
 		if tokens[tok].type ~= "comment" then
 			count               = count + 1
@@ -2392,9 +2417,31 @@ local function tokensToAst(tokens)
 		end
 	end
 
+	do
+		-- Dummy end token.
+		local token = tokens[#tokens]
+		local ln    = token and 1+countString(token.sourceString, "\n", true) or 0
+		local pos   = token and #token.sourceString+1                         or 0
+		count       = count + 1
+
+		tokensPurged[count] = {
+			type           = "end",
+			value          = "",
+			representation = "",
+
+			sourceString   = token and token.sourceString or "",
+			sourcePath     = token and token.sourcePath   or "?",
+
+			lineStart      = ln,
+			lineEnd        = ln,
+			positionStart  = pos,
+			positionEnd    = pos,
+		}
+	end
+
 	statementErrorReported = false
 
-	local block, _, err = parseBlock(tokensPurged, 1, 1, false)
+	local block, _, err = parseBlock(tokensPurged, 2, 2, false)
 	if not block then  return nil, err  end
 
 	return block
