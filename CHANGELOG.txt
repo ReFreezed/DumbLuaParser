@@ -1,6 +1,54 @@
 Changelog
 Dumb Lua Parser
 
+v2.0 (2021-06-19)
+Major changes:
+- Added support for Lua 5.4 and LuaJIT.
+- Added functions: simplify(), optimize(), minify().
+- Tokens are now represented by individual tables. Token streams are now simple arrays of tokens.
+- Changed AstIdentifier.declaration to point to the declared identifier instead of the parent declaration/function/'for' loop.
+- Changed AstLabel.name and AstGoto.name to be strings instead of identifiers.
+- Removed AstFunction.vararg. (Any vararg parameter is now at the end of AstFunction.parameters.)
+- Parsing and tokenizing functions no longer print anything on error - they only return the message (which now includes more information).
+- toLua() no longer prints anything on error - instead it returns the message.
+Added:
+- Added support for binary number notation '0b1101001' (from LuaJIT).
+- Added special parsing rules for 'n/0'.
+- Added AST functions: cloneNode(), cloneTree(), traverseTreeReverse(), getChild(), setChild(), addChild(), removeChild().
+- Added token functions: concatTokens(), newToken().
+- Added function formatMessage().
+- Added AST node fields: AstVararg.declaration, AstGoto.label, AstIdentifier.attribute.
+- Added more common fields to AST nodes.
+- Added argument 'leavesFirst' to traverseTree().
+- Added argument 'attributeName' to newNode("identifier").
+- Added argument 'updateTopNodePosition' to updateReferences().
+- Added parser settings: printIds, printLocations, indentation, constantNameReplacementStringMaxLength.
+- Added parser constants: INT_SIZE, MAX_INT, MIN_INT.
+- Added internal fallback parser for string values so features added in later Lua versions are supported in all versions.
+- LuaJIT: Support numeral suffixes 'LL', 'ULL' and 'i'.
+Changed:
+- 'break' statements are allowed in the middle of blocks (according to Lua 5.2).
+- '-0' is no longer normalized to '0' in Lua 5.2 and earlier (except by simplify()) to match Lua's behavior.
+- newNode("label") and newNode("goto") now require a 'labelName' argument.
+- Renamed parse(path) function variant to parseFile().
+- The path argument for parse(luaString) function variant is now optional.
+- Renamed tokenizeString() to tokenize() (to follow the same naming scheme as parse() and parseFile()).
+- toLua(): Improved string literal output.
+- toLua(): Integers gets outputted as integers (as opposed to floats with scientific notation) in more cases.
+- Updated "malformed number" error detection.
+- Parsing: Improved location information for blocks and functions.
+- Whitespace is no longer trimmed from comment tokens.
+- Improved error messages.
+Removed:
+- Removed functions: newTokenStream(), insertToken(), removeToken().
+Fixed:
+- Fixed toLua() outputting expressions like '- -x' as '--x'.
+- Fixed printTokens() and printNode() printing unprintable/"bad" characters in strings.
+- Fixed the location in a syntax error message.
+- Fixed questionable handling of newlines in single-line comment tokens.
+Repository:
+- Added examples.lua.
+
 v1.2.1 (2021-06-01)
 - Fixed lookups and calls that shouldn't parse, like "":sub().
 
