@@ -56,6 +56,7 @@ updateReferences
 simplify, optimize, minify
 toLua
 printTokens, printNode, printTree
+formatMessage
 
 tokenize()
 	tokens, error = parser.tokenize( luaString [, pathForErrorMessages="?" ] )
@@ -179,6 +180,19 @@ printNode()
 printTree()
 	parser.printTree( astNode )
 	Print the structure of a whole AST to stdout.
+
+formatMessage()
+	message = formatMessage( [ prefix="Info", ] token,    formatString, ... )
+	message = formatMessage( [ prefix="Info", ] astNode,  formatString, ... )
+	message = formatMessage( [ prefix="Info", ] location, formatString, ... )
+	Format a message to contain a code preview window with an arrow pointing at the target token, node or location.
+	This is used internally for formatting error messages.
+
+	-- Example:
+	if identifier.name ~= "good" then
+		print(parser.formatMessage("Error", identifier, "This identifier is not good!"))
+		print(parser.formatMessage(currentStatement, "Current statement."))
+	end
 
 
 2.2 - Constants
@@ -385,7 +399,7 @@ local assertArg1, assertArg2, errorf
 local countString, countSubString
 local ensurePrintable
 local formatErrorInFile, formatErrorAtToken, formatErrorAfterToken, formatErrorAtNode
-local formatMessageInFile, formatMessageAtToken, formatMessageAfterToken, formatMessageAtNode, formatMessage
+local formatMessageInFile, formatMessageAtToken, formatMessageAfterToken, formatMessageAtNode
 local formatNumber
 local getChild, setChild, addChild, removeChild
 local getLineNumber
@@ -795,20 +809,19 @@ function formatMessageAtNode(prefix, node, agent, s, ...)
 	return (formatMessageInFile(prefix, node.sourceString, node.sourcePath, node.position, agent, s, ...))
 end
 
-local function formatMessageHelper(argNumOffset, prefix, nodeOrLocOrToken, agent, s, ...)
+local function formatMessageHelper(argNumOffset, prefix, nodeOrLocOrToken, s, ...)
 	assertArg1("formatMessage", 1+argNumOffset, prefix,           "string", 3)
 	assertArg1("formatMessage", 2+argNumOffset, nodeOrLocOrToken, "table",  3)
-	assertArg1("formatMessage", 3+argNumOffset, agent,            "string", 3)
-	assertArg1("formatMessage", 4+argNumOffset, s,                "string", 3)
+	assertArg1("formatMessage", 3+argNumOffset, s,                "string", 3)
 
 	local formatter = nodeOrLocOrToken.representation and formatMessageAtToken or formatMessageAtNode
-	return (formatter(prefix, nodeOrLocOrToken, agent, s, ...))
+	return (formatter(prefix, nodeOrLocOrToken, "", s, ...))
 end
 
--- message = formatMessage( [ prefix="Info", ] token,    agent, s, ... )
--- message = formatMessage( [ prefix="Info", ] astNode,  agent, s, ... )
--- message = formatMessage( [ prefix="Info", ] location, agent, s, ... )
-function formatMessage(prefix, ...)
+-- message = formatMessage( [ prefix="Info", ] token,    s, ... )
+-- message = formatMessage( [ prefix="Info", ] astNode,  s, ... )
+-- message = formatMessage( [ prefix="Info", ] location, s, ... )
+local function formatMessage(prefix, ...)
 	if type(prefix) == "string" then
 		return (formatMessageHelper(0, prefix, ...))
 	else
@@ -5720,7 +5733,7 @@ parser = {
 	printNode           = printNode,
 	printTree           = printTree,
 
-	formatMessage       = formatMessage, -- @Undocumented
+	formatMessage       = formatMessage,
 
 	-- Settings.
 	printIds            = false,

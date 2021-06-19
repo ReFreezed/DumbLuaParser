@@ -73,7 +73,7 @@ local function printStats(stats, locLevel)
 				print("    "..loc.sourcePath..":"..loc.line)
 			else
 				print("    "..parser.formatMessage(
-					loc, "Stats", "Node replacement %d/%d (%s -> %s)",
+					loc, "Node replacement %d/%d (%s -> %s)",
 					i, #stats.nodeReplacements, loc.node.type, (loc.replacement and loc.replacement.type or "?")
 				):gsub("\n", "\n    "))
 			end
@@ -84,7 +84,7 @@ local function printStats(stats, locLevel)
 				print("    "..loc.sourcePath..":"..loc.line)
 			else
 				print("    "..parser.formatMessage(
-					loc, "Stats", "Node removal %d/%d (%s)",
+					loc, "Node removal %d/%d (%s)",
 					i, #stats.nodeRemovals, loc.node.type
 				):gsub("\n", "\n    "))
 			end
