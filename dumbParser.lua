@@ -22,7 +22,10 @@
   2.3 - Settings
 3 - Tokens
 4 - AST
-5 - Notes
+5 - Other Objects
+  5.1 - Stats
+  5.2 - Locations
+6 - Notes
 
 
 1 - Usage
@@ -100,12 +103,16 @@ cloneTree()
 	Clone an existing AST node and its children.
 
 getChild()
-	astNode = parser.getChild( astNode, fieldName )
-	astNode = parser.getChild( astNode, fieldName, index )                -- If the node field is an array.
-	astNode = parser.getChild( astNode, fieldName, index, tableFieldKey ) -- If the node field is a table field array.
+	childNode = parser.getChild( astNode, fieldName )
+	childNode = parser.getChild( astNode, fieldName, index )                -- If the node field is an array.
+	childNode = parser.getChild( astNode, fieldName, index, tableFieldKey ) -- If the node field is a table field array.
 	tableFieldKey = "key"|"value"
 	Get a child node. (Search for 'NodeFields' for field names.)
-	@Incomplete: Better explanation.
+
+	The result is the same as doing this, but with more error checking:
+	childNode = astNode[fieldName]
+	childNode = astNode[fieldName][index]
+	childNode = astNode[fieldName][index][tableFieldKey]
 
 setChild()
 	parser.setChild( astNode, fieldName, childNode )
@@ -113,18 +120,27 @@ setChild()
 	parser.setChild( astNode, fieldName, index, tableFieldKey, childNode ) -- If the node field is a table field array.
 	tableFieldKey = "key"|"value"
 	Set a child node. (Search for 'NodeFields' for field names.)
-	@Incomplete: Better explanation.
+
+	The result is the same as doing this, but with more error checking:
+	astNode[fieldName]                       = childNode
+	astNode[fieldName][index]                = childNode
+	astNode[fieldName][index][tableFieldKey] = childNode
 
 addChild()
 	parser.addChild( astNode, fieldName, [ index=atEnd, ] childNode )
 	parser.addChild( astNode, fieldName, [ index=atEnd, ] keyNode, valueNode ) -- If the node field is a table field array.
 	Add a child node to an array field. (Search for 'NodeFields' for field names.)
-	@Incomplete: Better explanation.
+
+	The result is the same as doing this, but with more error checking:
+	table.insert(astNode[fieldName], index, childNode)
+	table.insert(astNode[fieldName], index, {key=keyNode, value=valueNode, generatedKey=false})
 
 removeChild()
 	parser.removeChild( astNode, fieldName [, index=last ] )
 	Remove a child node from an array field. (Search for 'NodeFields' for field names.)
-	@Incomplete: Better explanation.
+
+	The result is the same as doing this, but with more error checking:
+	table.remove(astNode[fieldName], index)
 
 traverseTree()
 	didStop = parser.traverseTree( astNode, [ leavesFirst=false, ] callback [, topNodeParent=nil, topNodeContainer=nil, topNodeKey=nil ] )
@@ -147,22 +163,25 @@ updateReferences()
 	If 'updateTopNodePositionInfo' is false then 'parent', 'container' and 'key' will remain as-it for 'astNode' specifically.
 
 simplify()
-	simplify( astNode )
+	stats = simplify( astNode )
 	Simplify/fold expressions and statements involving constants ('1+2' becomes '3', 'false and func()' becomes 'false' etc.).
 	See the INT_SIZE constant for notes.
+	See below for more info about stats.
 
 optimize()
-	optimize( astNode )
+	stats = optimize( astNode )
 	Attempt to remove nodes that aren't useful, like unused variables, or variables that are essentially constants.
 	Calls simplify() internally.
 	This function can be quite slow!
+	See below for more info about stats.
 	Note: References may be out-of-date after calling this.
 
 minify()
-	parser.minify( astNode [, optimize=false ] )
+	stats = parser.minify( astNode [, optimize=false ] )
 	Replace local variable names with short names.
 	This function can be used to obfuscate the code to some extent.
 	If 'optimize' is set then optimize() is also called automatically.
+	See below for more info about stats.
 	Note: References may be out-of-date after calling this.
 
 toLua()
@@ -323,7 +342,39 @@ Node types:
 Node fields: (Search for 'NodeFields'.)
 
 
-5 - Notes
+5 - Other Objects
+================================================================
+
+
+5.1 - Stats
+----------------------------------------------------------------
+
+Some functions return a stats table which contains these fields:
+
+	nodeReplacements   -- Array of locations. Locations of nodes that were replaced. (See below for location info.)
+	nodeRemovals       -- Array of locations. Locations of nodes or tree branches that were removed. (See below for location info.)
+	nodeRemoveCount    -- Number. How many nodes were removed, including subnodes of nodeRemovals.
+
+	renameCount        -- Number. How many identifiers were renamed.
+	generatedNameCount -- Number. How many unique names were generated.
+
+
+5.2 - Locations
+----------------------------------------------------------------
+
+Locations are tables with these fields:
+
+	sourceString -- The original source string, or "" if there is none.
+	sourcePath   -- Path to the source file, or "?" if there is none.
+
+	line         -- Line number in sourceString, or 0 by default.
+	position     -- Byte position in sourceString, or 0 by default.
+
+	node         -- The node the location points to, or nil if there is none.
+	replacement  -- The node that replaced 'node', or nil if there is none. (This is set for stats.nodeReplacements.)
+
+
+6 - Notes
 ================================================================
 
 Special number notation rules.
@@ -335,6 +386,7 @@ Special number notation rules.
 	numeral. If 'n' is positive then the result is math.huge, if 'n' is
 	negative then the result is -math.huge, or if 'n' is 0 then the result is
 	NaN.
+
 
 --============================================================]]
 
@@ -514,8 +566,8 @@ local function populateCommonNodeFields(token, node)
 	node.id          = nextSerialNumber
 	nextSerialNumber = nextSerialNumber + 1
 
-	node.sourcePath   = token and token.sourcePath   or "?"
 	node.sourceString = token and token.sourceString or ""
+	node.sourcePath   = token and token.sourcePath   or "?"
 
 	node.token    = token
 	node.line     = token and token.lineStart     or 0
@@ -677,8 +729,8 @@ end
 -- location = Location( sourceNode     [, extraKey, extraValue ] )
 local function Location(sourceLocOrNode, extraK, extraV)
 	local loc = {
-		sourcePath   = sourceLocOrNode.sourcePath,
 		sourceString = sourceLocOrNode.sourceString,
+		sourcePath   = sourceLocOrNode.sourcePath,
 
 		line     = sourceLocOrNode.line,
 		position = sourceLocOrNode.position,
@@ -3457,8 +3509,8 @@ local function replace(node, replacement, parent, container, key, stats)
 
 	container[key] = replacement
 
-	replacement.sourcePath   = node.sourcePath
 	replacement.sourceString = node.sourceString
+	replacement.sourcePath   = node.sourcePath
 
 	replacement.token    = node.token
 	replacement.line     = node.line
@@ -3744,7 +3796,7 @@ local function simplifyNode(node, parent, container, key)
 		if replacement then  replace(node, replacement, parent, container, key, statsForSimplify)  end
 
 	elseif node.type == "if" then
-		-- @Incomplete: Fold 'if not not expr'  into 'if expr'. (Also for 'while' and 'repeat'.)
+		-- @Incomplete: Fold 'if not not expr' into 'if expr'. (Also for 'while' and 'repeat'.)
 		local ifNode = node
 
 		if ifNode.condition.type == "literal" then -- @Incomplete: There are more values that make simplification possible (e.g. functions, but who would put that here anyway). :SimplifyTruthfulValues
@@ -3844,7 +3896,7 @@ end
 local function simplify(node)
 	local stats = Stats()
 	_simplify(node, stats)
-	return stats -- @Undocumented
+	return stats
 end
 
 
@@ -4538,7 +4590,7 @@ end
 local function optimize(theNode)
 	local stats = Stats()
 	_optimize(theNode, stats)
-	return stats -- @Undocumented
+	return stats
 end
 
 
@@ -4580,7 +4632,7 @@ do
 	-- for pow = 0, 32 do  print(generateName(2^pow))  end ; error("TEST")
 end
 
--- minify( node [, optimize=false ] )
+-- stats = minify( node [, optimize=false ] )
 local function minify(node, optimize)
 	local stats = Stats()
 
@@ -4717,7 +4769,7 @@ local function minify(node, optimize)
 		end
 	end
 
-	return stats -- @Undocumented
+	return stats
 end
 
 
