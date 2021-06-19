@@ -272,11 +272,11 @@ constantNameReplacementStringMaxLength
 	Default: 200.
 
 	-- Example:
-	local ast = parser.parse[=[
+	local ast = parser.parse[==[
 		local short = "a"
 		local long  = "xy"
 		func(short, long)
-	]=]
+	]==]
 	parser.constantNameReplacementStringMaxLength = 1
 	parser.optimize(ast)
 	print(parser.toLua(ast)) -- local long="xy";func("a",long);
@@ -4775,14 +4775,13 @@ end
 
 
 function printTokens(tokens)
-	local printLocs  = parser.printLocations
-	local sourcePath = tokens.sourcePath
+	local printLocs = parser.printLocations
 
 	for i, token in ipairs(tokens) do
 		local v = ensurePrintable(tostring(token.value))
 		if #v > 200 then  v = stringSub(v, 1, 200-3).."..."  end
 
-		if printLocs then  ioWrite(sourcePath, ":", token.lineStart, ": ")  end
+		if printLocs then  ioWrite(token.sourcePath, ":", token.lineStart, ": ")  end
 		ioWrite(i, ". ", F("%-11s", token.type), " '", v, "'\n")
 	end
 end
