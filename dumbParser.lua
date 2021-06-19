@@ -6,7 +6,7 @@
 --=  Tokenize Lua code or create ASTs (Abstract Syntax Trees)
 --=  and convert the data back to Lua.
 --=
---=  Version: 2.0-dev
+--=  Version: 2.0 (2021-06-19)
 --=
 --=  License: MIT (see the bottom of this file)
 --=  Website: https://github.com/ReFreezed/DumbLuaParser
@@ -390,7 +390,7 @@ Special number notation rules.
 
 --============================================================]]
 
-local PARSER_VERSION = "2.0.0-dev"
+local PARSER_VERSION = "2.0.0"
 
 local NORMALIZE_MINUS_ZERO
 do
