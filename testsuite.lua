@@ -258,7 +258,7 @@ test("Tokens", function()
 		table.insert(tokens, 1, parser.newToken("keyword",     "local"))
 		table.insert(tokens, 2, parser.newToken("identifier",  "n"))
 		table.insert(tokens, 3, parser.newToken("punctuation", "="))
-		table.insert(tokens, 4, parser.newToken("punctuation", "/"))
+		table.insert(tokens, 4, parser.newToken("punctuation", "/")) -- Error!
 
 		-- Remove the error.
 		table.remove(tokens, 4)
@@ -273,34 +273,60 @@ end)
 
 
 test("AST manipulation", function()
-	local identifier1  = parser.newNode("identifier", "foo")
-	local identifier2  = parser.newNode("identifier", "foo", "const")
-	local vararg       = parser.newNode("vararg")
-	local literal1     = parser.newNode("literal", 8.125)
-	local literal2     = parser.newNode("literal", "foo")
-	local literal3     = parser.newNode("literal", true)
-	local literal4     = parser.newNode("literal", nil)
-	local tableNode    = parser.newNode("table")
-	local lookup       = parser.newNode("lookup")
-	local unary1       = parser.newNode("unary",  "#")
-	local unary2       = parser.newNode("unary",  "not")
-	local binary1      = parser.newNode("binary", "/")
-	local binary2      = parser.newNode("binary", "<<")
-	local call         = parser.newNode("call")
-	local functionNode = parser.newNode("function")
-	local breakNode    = parser.newNode("break")
-	local returnNode   = parser.newNode("return")
-	local label        = parser.newNode("label", "foo")
-	local gotoNode     = parser.newNode("goto",  "foo")
-	local block        = parser.newNode("block")
-	local declaration  = parser.newNode("declaration")
-	local assignment   = parser.newNode("assignment")
-	local ifNode       = parser.newNode("if")
-	local whileLoop    = parser.newNode("while")
-	local repeatLoop   = parser.newNode("repeat")
-	local forLoop      = parser.newNode("for", "numeric")
-
+	-- Basics.
 	do
+		local block = assert(parser.parse([[
+			local x = 49
+		]], "<luastring>"))
+
+		assert(block.type == "block")
+		assert(block.statements[1])
+		assert(block.statements[1].type == "declaration")
+		assert(block.statements[1].names[1])
+		assert(block.statements[1].names[1].type == "identifier")
+		assert(block.statements[1].names[1].name == "x")
+		assert(block.statements[1].values[1])
+		assert(block.statements[1].values[1].type  == "literal")
+		assert(block.statements[1].values[1].value == 49)
+
+		block.statements[1].names[1]  = parser.newNode("identifier", "foo")
+		block.statements[1].values[1] = parser.newNode("literal", 8.125)
+
+		local lua = assert(parser.toLua(block, PRETTY_OUTPUT))
+		print(lua)
+
+		assert(loadstring(lua, "@<luastring>"))
+	end
+
+	-- Node creation.
+	do
+		local identifier1  = parser.newNode("identifier", "foo")
+		local identifier2  = parser.newNode("identifier", "foo", "const")
+		local vararg       = parser.newNode("vararg")
+		local literal1     = parser.newNode("literal", 8.125)
+		local literal2     = parser.newNode("literal", "foo")
+		local literal3     = parser.newNode("literal", true)
+		local literal4     = parser.newNode("literal", nil)
+		local tableNode    = parser.newNode("table")
+		local lookup       = parser.newNode("lookup")
+		local unary1       = parser.newNode("unary",  "#")
+		local unary2       = parser.newNode("unary",  "not")
+		local binary1      = parser.newNode("binary", "/")
+		local binary2      = parser.newNode("binary", "<<")
+		local call         = parser.newNode("call")
+		local functionNode = parser.newNode("function")
+		local breakNode    = parser.newNode("break")
+		local returnNode   = parser.newNode("return")
+		local label        = parser.newNode("label", "foo")
+		local gotoNode     = parser.newNode("goto",  "foo")
+		local block        = parser.newNode("block")
+		local declaration  = parser.newNode("declaration")
+		local assignment   = parser.newNode("assignment")
+		local ifNode       = parser.newNode("if")
+		local whileLoop    = parser.newNode("while")
+		local repeatLoop   = parser.newNode("repeat")
+		local forLoop      = parser.newNode("for", "numeric")
+
 		parser.setChild(call,        "callee", identifier1)
 		parser.setChild(declaration, "names",  1, identifier2)
 
@@ -313,27 +339,31 @@ test("AST manipulation", function()
 		parser.removeChild(tableNode, "fields", 1)
 	end
 
-	local block = assert(parser.parse([[
-		local x = 49
-	]], "<luastring>"))
+	-- Cloning.
+	do
+		local ast = assert(parser.parseFile("test.lua"))
 
-	assert(block.type == "block")
-	assert(block.statements[1])
-	assert(block.statements[1].type == "declaration")
-	assert(block.statements[1].names[1])
-	assert(block.statements[1].names[1].type == "identifier")
-	assert(block.statements[1].names[1].name == "x")
-	assert(block.statements[1].values[1])
-	assert(block.statements[1].values[1].type  == "literal")
-	assert(block.statements[1].values[1].value == 49)
+		do
+			local clone = parser.cloneNode(ast)
+			assert(clone.type == "block")
 
-	block.statements[1].names[1]  = identifier1
-	block.statements[1].values[1] = literal1
+			parser.traverseTree(clone, function(node)
+				assert(node == clone)
+			end)
+		end
 
-	local lua = assert(parser.toLua(block, PRETTY_OUTPUT))
-	print(lua)
+		local lua1  = assert(parser.toLua(ast))
+		local clone = parser.cloneTree(ast)
 
-	assert(loadstring(lua, "@<luastring>"))
+		parser.traverseTreeReverse(ast, true, function(node, parent, container, key)
+			if container then
+				container[key] = nil -- This should not affect the clone.
+			end
+		end)
+
+		local lua2 = assert(parser.toLua(clone))
+		assertLua(lua1, lua2)
+	end
 end)
 
 

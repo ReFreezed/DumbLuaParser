@@ -50,7 +50,7 @@ print(lua)
 tokenize, tokenizeFile
 newToken, concatTokens
 parse, parseFile
-newNode, getChild, setChild, addChild, removeChild
+newNode, cloneNode, cloneTree, getChild, setChild, addChild, removeChild
 traverseTree, traverseTreeReverse
 updateReferences
 simplify, optimize, minify
@@ -73,7 +73,7 @@ newToken()
 
 concatTokens()
 	parser.concatTokens( tokens )
-	Concatinate tokens. Whitespace is added between tokens when necessary.
+	Concatenate tokens. Whitespace is added between tokens when necessary.
 
 parse()
 	astNode, error = parser.parse( tokens )
@@ -90,30 +90,38 @@ newNode()
 	astNode = parser.newNode( nodeType, arguments... )
 	Create a new AST node. (Search for 'NodeCreation' for more info.)
 
+cloneNode()
+	astNode = parser.cloneNode( astNode )
+	Clone an existing AST node (but not any children).
+
+cloneTree()
+	astNode = parser.cloneTree( astNode )
+	Clone an existing AST node and its children.
+
 getChild()
-	node = parser.getChild( node, fieldName )
-	node = parser.getChild( node, fieldName, index )                -- If the node field is an array.
-	node = parser.getChild( node, fieldName, index, tableFieldKey ) -- If the node field is a table field array.
+	astNode = parser.getChild( astNode, fieldName )
+	astNode = parser.getChild( astNode, fieldName, index )                -- If the node field is an array.
+	astNode = parser.getChild( astNode, fieldName, index, tableFieldKey ) -- If the node field is a table field array.
 	tableFieldKey = "key"|"value"
 	Get a child node. (Search for 'NodeFields' for field names.)
 	@Incomplete: Better explanation.
 
 setChild()
-	parser.setChild( node, fieldName, childNode )
-	parser.setChild( node, fieldName, index, childNode )                -- If the node field is an array.
-	parser.setChild( node, fieldName, index, tableFieldKey, childNode ) -- If the node field is a table field array.
+	parser.setChild( astNode, fieldName, childNode )
+	parser.setChild( astNode, fieldName, index, childNode )                -- If the node field is an array.
+	parser.setChild( astNode, fieldName, index, tableFieldKey, childNode ) -- If the node field is a table field array.
 	tableFieldKey = "key"|"value"
 	Set a child node. (Search for 'NodeFields' for field names.)
 	@Incomplete: Better explanation.
 
 addChild()
-	parser.addChild( node, fieldName, [ index=atEnd, ] childNode )
-	parser.addChild( node, fieldName, [ index=atEnd, ] keyNode, valueNode ) -- If the node field is a table field array.
+	parser.addChild( astNode, fieldName, [ index=atEnd, ] childNode )
+	parser.addChild( astNode, fieldName, [ index=atEnd, ] keyNode, valueNode ) -- If the node field is a table field array.
 	Add a child node to an array field. (Search for 'NodeFields' for field names.)
 	@Incomplete: Better explanation.
 
 removeChild()
-	parser.removeChild( node, fieldName [, index=last ] )
+	parser.removeChild( astNode, fieldName [, index=last ] )
 	Remove a child node from an array field. (Search for 'NodeFields' for field names.)
 	@Incomplete: Better explanation.
 
@@ -207,6 +215,7 @@ VERSION
 
 printIds, printLocations
 indentation
+constantNameReplacementStringMaxLength
 
 printIds
 	parser.printIds = bool
@@ -222,6 +231,22 @@ indentation
 	parser.indentation = bool
 	The indentation used when printing ASTs (with printTree()).
 	Default: 4 spaces.
+
+constantNameReplacementStringMaxLength
+	parser.constantNameReplacementStringMaxLength = length
+	Normally optimize() replaces variable names that are effectively constants with their value.
+	The exception is if the value is a string that's longer than what this setting specifies.
+	Default: 200.
+
+	-- Example:
+	local ast = parser.parse[=[
+		local short = "a"
+		local long  = "xy"
+		func(short, long)
+	]=]
+	parser.constantNameReplacementStringMaxLength = 1
+	parser.optimize(ast)
+	print(parser.toLua(ast)) -- local long="xy";func("a",long);
 
 
 3 - Tokens
@@ -493,36 +518,36 @@ end
 -- AST expressions.
 local function AstIdentifier (token,name)return populateCommonNodeFields(token,{
 	type        = "identifier",
-	name        = name, -- String.
-	attribute   = "",   -- "" | "close" | "const"  -- Only used in declarations.
-	declaration = nil,  -- AstIdentifier (whose parent is an AstDeclaration, AstFunction or AstFor). Updated by updateReferences(). This is nil for globals.
+	name        = name,  -- String.
+	attribute   = "",    -- "" | "close" | "const"  -- Only used in declarations.
+	declaration = nil,   -- AstIdentifier (whose parent is an AstDeclaration, AstFunction or AstFor). Updated by updateReferences(). This is nil for globals.
 })end
 local function AstVararg (token)return populateCommonNodeFields(token,{
 	type        = "vararg",
 	declaration = nil,   -- AstVararg (whose parent is an AstFunction). Updated by updateReferences(). This is nil in the main chunk (or in a non-vararg function, which is probably an error).
 	adjustToOne = false, -- True if parentheses surround the vararg.
 })end
-local function AstLiteral (token,value)return populateCommonNodeFields(token,{
+local function AstLiteral (token,v)return populateCommonNodeFields(token,{
 	type        = "literal",
-	value       = value, -- Number, string, boolean or nil.
+	value       = v,     -- Number, string, boolean or nil.
 })end
 local function AstTable (token)return populateCommonNodeFields(token,{
 	type        = "table",
-	fields      = {},    -- Array of {key=expression, value=expression, generatedKey=bool}.
+	fields      = {},    -- Array of {key=expression, value=expression, generatedKey=bool}. generatedKey is true for implicit keys (i.e. {x,y}) and false for explicit keys (i.e. {a=x,b=y}). Note that the state of generatedKey affects the output of toLua()!
 })end
 local function AstLookup (token)return populateCommonNodeFields(token,{
 	type        = "lookup",
 	object      = nil,   -- Expression.
 	member      = nil,   -- Expression.
 })end
-local function AstUnary (token)return populateCommonNodeFields(token,{
+local function AstUnary (token,op)return populateCommonNodeFields(token,{
 	type        = "unary",
-	operator    = "",    -- "-" | "not" | "#" | "~"
+	operator    = op,    -- "-" | "not" | "#" | "~"
 	expression  = nil,   -- Expression.
 })end
-local function AstBinary (token)return populateCommonNodeFields(token,{
+local function AstBinary (token,op)return populateCommonNodeFields(token,{
 	type        = "binary",
-	operator    = "",    -- "+" | "-" | "*" | "/" | "//" | "^" | "%" | "&" | "~" | "|" | ">>" | "<<" | ".." | "<" | "<=" | ">" | ">=" | "==" | "~=" | "and" | "or"
+	operator    = op,    -- "+" | "-" | "*" | "/" | "//" | "^" | "%" | "&" | "~" | "|" | ">>" | "<<" | ".." | "<" | "<=" | ">" | ">=" | "==" | "~=" | "and" | "or"
 	left        = nil,   -- Expression.
 	right       = nil,   -- Expression.
 })end
@@ -547,13 +572,13 @@ local function AstReturn (token)return populateCommonNodeFields(token,{
 	type        = "return",
 	values      = {},    -- Array of expressions.
 })end
-local function AstLabel (token)return populateCommonNodeFields(token,{
+local function AstLabel (token,name)return populateCommonNodeFields(token,{
 	type        = "label",
-	name        = "",    -- The value must be able to pass as an identifier
+	name        = name,  -- String. The value must be able to pass as an identifier.
 })end
-local function AstGoto (token)return populateCommonNodeFields(token,{
+local function AstGoto (token,name)return populateCommonNodeFields(token,{
 	type        = "goto",
-	name        = "",    -- The value must be able to pass as an identifier
+	name        = name,  -- String. The value must be able to pass as an identifier.
 	label       = nil,   -- AstLabel. Updated by updateReferences().
 })end
 local function AstBlock (token)return populateCommonNodeFields(token,{
@@ -586,9 +611,9 @@ local function AstRepeat (token)return populateCommonNodeFields(token,{
 	body        = nil,   -- AstBlock.
 	condition   = nil,   -- Expression.
 })end
-local function AstFor (token)return populateCommonNodeFields(token,{
+local function AstFor (token,kind)return populateCommonNodeFields(token,{
 	type        = "for",
-	kind        = "",    -- "numeric" | "generic"
+	kind        = kind,  -- "numeric" | "generic"
 	names       = {},    -- Array of AstIdentifier.
 	values      = {},    -- Array of expressions.
 	body        = nil,   -- AstBlock.
@@ -1628,9 +1653,8 @@ function parseExpression(tokens, tokStart, lastPrecedence) --> expression, token
 		(isToken(currentToken, "keyword", "not") or (isTokenType(currentToken, "punctuation") and isTokenAnyValue(currentToken, OPERATORS_UNARY)))
 		and OPERATOR_PRECEDENCE.unary > lastPrecedence
 	then
-		local unary    = AstUnary(currentToken)
-		unary.operator = currentToken.value
-		tok            = tok + 1 -- operator
+		local unary = AstUnary(currentToken, currentToken.value)
+		tok         = tok + 1 -- operator
 
 		local subExpr, tokNext, err = parseExpression(tokens, tok, OPERATOR_PRECEDENCE.unary-1)
 		if not subExpr then  return nil, tok, err  end
@@ -1713,10 +1737,9 @@ function parseExpression(tokens, tokStart, lastPrecedence) --> expression, token
 		then
 			local rightAssociative = isToken(currentToken, "punctuation", "..") or isToken(currentToken, "punctuation", "^")
 
-			local tokOp     = tok
-			local binary    = AstBinary(currentToken)
-			binary.operator = currentToken.value
-			tok             = tok + 1 -- operator
+			local tokOp  = tok
+			local binary = AstBinary(currentToken, currentToken.value)
+			tok          = tok + 1 -- operator
 
 			local lhsExpr = expr
 
@@ -2107,7 +2130,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 
 	-- for
 	elseif isToken(currentToken, "keyword", "for") then
-		local forLoop = AstFor(currentToken)
+		local forLoop = AstFor(currentToken, "")
 		tok           = tok + 1 -- 'for'
 
 		local ok, tokNext, err = parseNameList(tokens, tok, forLoop.names, false, false)
@@ -2270,7 +2293,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 
 	-- ::label::
 	elseif isToken(currentToken, "punctuation", "::") then
-		local label = AstLabel(currentToken)
+		local label = AstLabel(currentToken, "")
 		tok         = tok + 1 -- '::'
 
 		local labelIdent, tokNext, err = parseIdentifier(tokens, tok)
@@ -2289,7 +2312,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 
 	-- goto
 	elseif isToken(currentToken, "keyword", "goto") then
-		local gotoNode = AstGoto(currentToken)
+		local gotoNode = AstGoto(currentToken, "")
 		tok            = tok + 1 -- 'goto'
 
 		local labelIdent, tokNext, err = parseIdentifier(tokens, tok)
@@ -2595,8 +2618,7 @@ local function newNode(nodeType, ...)
 			errorf(2, "Invalid label name '%s'.", name)
 		end
 
-		node      = AstLabel(nil)
-		node.name = name
+		node = AstLabel(nil, name)
 
 	elseif nodeType == "goto" then
 		if select("#", ...) == 0 then
@@ -2610,8 +2632,7 @@ local function newNode(nodeType, ...)
 			errorf(2, "Invalid label name '%s'.", name)
 		end
 
-		node      = AstGoto(nil)
-		node.name = name
+		node = AstGoto(nil, name)
 
 	elseif nodeType == "literal" then
 		if select("#", ...) == 0 then
@@ -2635,8 +2656,7 @@ local function newNode(nodeType, ...)
 			errorf(2, "Invalid unary operator '%s'.", tostring(op))
 		end
 
-		node          = AstUnary(nil)
-		node.operator = op
+		node = AstUnary(nil, op)
 
 	elseif nodeType == "binary" then
 		if select("#", ...) == 0 then
@@ -2648,8 +2668,7 @@ local function newNode(nodeType, ...)
 			errorf(2, "Invalid binary operator '%s'.", tostring(op))
 		end
 
-		node          = AstBinary(nil)
-		node.operator = op
+		node = AstBinary(nil, op)
 
 	elseif nodeType == "for" then
 		if select("#", ...) == 0 then
@@ -2661,13 +2680,177 @@ local function newNode(nodeType, ...)
 			errorf(2, "Invalid for loop kind '%s'. (Must be 'numeric' or 'generic')", tostring(kind))
 		end
 
-		node      = AstFor(nil)
-		node.kind = kind
+		node = AstFor(nil, kind)
 
 	else
 		errorf(2, "Invalid node type '%s'.", tostring(nodeType))
 	end
 	return node
+end
+
+local cloneNodeArrayAndChildren
+
+local function cloneNodeAndMaybeChildren(node, cloneChildren)
+	local nodeType = node.type
+	local clone
+
+	if nodeType == "identifier" then
+		clone           = AstIdentifier(nil, node.name)
+		clone.attribute = node.attribute
+
+	elseif nodeType == "vararg" then
+		clone             = AstVararg(nil)
+		clone.adjustToOne = node.adjustToOne
+
+	elseif nodeType == "literal" then
+		clone = AstLiteral(nil, node.value)
+
+	elseif nodeType == "break" then
+		clone = AstBreak(nil)
+
+	elseif nodeType == "label" then
+		clone = AstLabel(nil, node.name)
+
+	elseif nodeType == "goto" then
+		clone = AstGoto(nil, node.name)
+
+	elseif nodeType == "lookup" then
+		clone = AstLookup(nil)
+
+		if cloneChildren then
+			clone.object = node.object and cloneNodeAndMaybeChildren(node.object, true)
+			clone.member = node.member and cloneNodeAndMaybeChildren(node.member, true)
+		end
+
+	elseif nodeType == "unary" then
+		clone = AstUnary(nil, node.operator)
+
+		if cloneChildren then
+			clone.expression = node.expression and cloneNodeAndMaybeChildren(node.expression, true)
+		end
+
+	elseif nodeType == "binary" then
+		clone = AstBinary(nil, node.operator)
+
+		if cloneChildren then
+			clone.left  = node.left  and cloneNodeAndMaybeChildren(node.left,  true)
+			clone.right = node.right and cloneNodeAndMaybeChildren(node.right, true)
+		end
+
+	elseif nodeType == "call" then
+		clone             = AstCall(nil)
+		clone.method      = node.method
+		clone.adjustToOne = node.adjustToOne
+
+		if cloneChildren then
+			clone.callee = node.callee and cloneNodeAndMaybeChildren(node.callee, true)
+			cloneNodeArrayAndChildren(clone.arguments, node.arguments)
+		end
+
+	elseif nodeType == "function" then
+		clone = AstFunction(nil)
+
+		if cloneChildren then
+			clone.body = node.body and cloneNodeAndMaybeChildren(node.body, true)
+			cloneNodeArrayAndChildren(clone.parameters, node.parameters)
+		end
+
+	elseif nodeType == "return" then
+		clone = AstReturn(nil)
+
+		if cloneChildren then
+			cloneNodeArrayAndChildren(clone.values, node.values)
+		end
+
+	elseif nodeType == "block" then
+		clone = AstBlock(nil)
+
+		if cloneChildren then
+			cloneNodeArrayAndChildren(clone.statements, node.statements)
+		end
+
+	elseif nodeType == "declaration" then
+		clone = AstDeclaration(nil)
+
+		if cloneChildren then
+			cloneNodeArrayAndChildren(clone.names,  node.names)
+			cloneNodeArrayAndChildren(clone.values, node.values)
+		end
+
+	elseif nodeType == "assignment" then
+		clone = AstAssignment(nil)
+
+		if cloneChildren then
+			cloneNodeArrayAndChildren(clone.targets, node.targets)
+			cloneNodeArrayAndChildren(clone.values,  node.values)
+		end
+
+	elseif nodeType == "if" then
+		clone = AstIf(nil)
+
+		if cloneChildren then
+			clone.condition = node.condition and cloneNodeAndMaybeChildren(node.condition, true)
+			clone.bodyTrue  = node.bodyTrue  and cloneNodeAndMaybeChildren(node.bodyTrue,  true)
+			clone.bodyFalse = node.bodyFalse and cloneNodeAndMaybeChildren(node.bodyFalse, true)
+		end
+
+	elseif nodeType == "while" then
+		clone = AstWhile(nil)
+
+		if cloneChildren then
+			clone.condition = node.condition and cloneNodeAndMaybeChildren(node.condition, true)
+			clone.body      = node.body      and cloneNodeAndMaybeChildren(node.body,      true)
+		end
+
+	elseif nodeType == "repeat" then
+		clone = AstRepeat(nil)
+
+		if cloneChildren then
+			clone.body      = node.body      and cloneNodeAndMaybeChildren(node.body,      true)
+			clone.condition = node.condition and cloneNodeAndMaybeChildren(node.condition, true)
+		end
+
+	elseif nodeType == "for" then
+		clone = AstFor(nil, node.kind)
+
+		if cloneChildren then
+			cloneNodeArrayAndChildren(clone.names,  node.names)
+			cloneNodeArrayAndChildren(clone.values, node.values)
+			clone.body = node.body and cloneNodeAndMaybeChildren(node.body, true)
+		end
+
+	elseif nodeType == "table" then
+		clone = AstTable(nil)
+
+		if cloneChildren then
+			for i, tableField in ipairs(node.fields) do
+				clone.fields[i] = {
+					key          = tableField.key   and cloneNodeAndMaybeChildren(tableField.key,   true),
+					value        = tableField.value and cloneNodeAndMaybeChildren(tableField.value, true),
+					generatedKey = tableField.generatedKey,
+				}
+			end
+		end
+
+	else
+		errorf("Invalid node type '%s'.", tostring(nodeType))
+	end
+
+	return clone
+end
+
+function cloneNodeArrayAndChildren(cloneArray, sourceArray)
+	for i, node in ipairs(sourceArray) do
+		cloneArray[i] = cloneNodeAndMaybeChildren(node, true)
+	end
+end
+
+local function cloneNode(node)
+	return (cloneNodeAndMaybeChildren(node, false))
+end
+
+local function cloneTree(node)
+	return (cloneNodeAndMaybeChildren(node, true))
 end
 
 
@@ -4103,7 +4286,7 @@ local function _optimize(theNode, stats)
 								valueExpr
 								and valueExpr.type == "literal"
 								and not (
-									(type(valueExpr.value) == "string" and #valueExpr.value > parser.constantNameStringValueMaxLength)
+									(type(valueExpr.value) == "string" and #valueExpr.value > parser.constantNameReplacementStringMaxLength)
 									-- or (valueExpr.value == 0 and not NORMALIZE_MINUS_ZERO and tostring(valueExpr.value) == "-0") -- No, bad rule!
 								)
 							)
@@ -5516,6 +5699,8 @@ parser = {
 	parseFile           = parseFile,
 
 	newNode             = newNode,
+	cloneNode           = cloneNode,
+	cloneTree           = cloneTree,
 	getChild            = getChild,
 	setChild            = setChild,
 	addChild            = addChild,
@@ -5542,7 +5727,7 @@ parser = {
 	printLocations      = false,
 	indentation         = "    ",
 
-	constantNameStringValueMaxLength = 200, -- @Undocumented  @Cleanup: Maybe use a better name.
+	constantNameReplacementStringMaxLength = 200, -- @Cleanup: Maybe use a better name.
 }
 
 return parser
