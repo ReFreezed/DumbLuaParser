@@ -321,7 +321,7 @@ Node types:
 
 	"assignment"  -- Assignment of one or more values to one or more variables.
 	"binary"      -- Binary expression (operation with two operands, e.g. "+" or "and").
-	"block"       -- List of statements. Blocks inside blocks are 'do...end' statements. Can be a chuck.
+	"block"       -- List of statements. Blocks inside blocks are 'do...end' statements.
 	"break"       -- Loop break statement.
 	"call"        -- Function call.
 	"declaration" -- Declaration of one or more local variables, possibly with initial values.
