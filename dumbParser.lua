@@ -9,7 +9,8 @@
 --=  Version: 2.0 (2021-06-19)
 --=
 --=  License: MIT (see the bottom of this file)
---=  Website: https://github.com/ReFreezed/DumbLuaParser
+--=  Website: http://luaparser.refreezed.com/
+--=  Documentation: http://luaparser.refreezed.com/docs/
 --=
 --=  Supported Lua versions: 5.1, 5.2, 5.3, 5.4, LuaJIT
 --=
@@ -261,7 +262,7 @@ printLocations
 	Default: false.
 
 indentation
-	parser.indentation = bool
+	parser.indentation = string
 	The indentation used when printing ASTs (with printTree()).
 	Default: 4 spaces.
 

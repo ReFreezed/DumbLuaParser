@@ -116,7 +116,7 @@ end
 
 
 
---[[ Speed test.
+--[[ Benchmark.
 do
 	local PATH = "dumbParser.lua"
 	-- local PATH = "test.lua"
