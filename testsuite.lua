@@ -216,6 +216,40 @@ test("Test file / misc.", function()
 		print(("-"):rep(64))
 		error("Failed AST round-trip.")
 	end
+
+	-- Callback for toLua().
+	do
+		local visited = {}
+		local ok      = true
+
+		local luaWithExtras = assert(parser.toLua(ast, true, function(node, buffer)
+			if visited[node] then
+				ok = false
+				io.write("Multiple visits for: ")
+				parser.printNode(node)
+			else
+				visited[node] = true
+				if (buffer[#buffer] or ""):find"%-$" then  table.insert(buffer, " ")  end
+				table.insert(buffer, "--[[")
+				table.insert(buffer, node.type)
+				table.insert(buffer, "]]")
+			end
+		end))
+
+		parser.traverseTree(ast, function(node)
+			if visited[node] then  return  end
+			ok = false
+			io.write("No callack for: ")
+			parser.printNode(node)
+		end)
+
+		-- print(luaWithExtras)
+		assert(ok)
+
+		if _VERSION >= "Lua 5.4" then
+			assert(loadstring(luaWithExtras, "@<luastring>"))
+		end
+	end
 end)
 
 
