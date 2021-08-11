@@ -6,7 +6,7 @@
 --=  Tokenize Lua code or create ASTs (Abstract Syntax Trees)
 --=  and convert the data back to Lua.
 --=
---=  Version: 2.0 (2021-06-19)
+--=  Version: 2.0.1-dev
 --=
 --=  License: MIT (see the bottom of this file)
 --=  Website: http://luaparser.refreezed.com/
@@ -54,7 +54,7 @@ print(lua)
 tokenize, tokenizeFile
 newToken, concatTokens
 parse, parseFile
-newNode, cloneNode, cloneTree, getChild, setChild, addChild, removeChild
+newNode, newNodeFast, cloneNode, cloneTree, getChild, setChild, addChild, removeChild
 traverseTree, traverseTreeReverse
 updateReferences
 simplify, optimize, minify
@@ -94,6 +94,10 @@ parseFile()
 newNode()
 	astNode = parser.newNode( nodeType, arguments... )
 	Create a new AST node. (Search for 'NodeCreation' for more info.)
+
+newNodeFast()
+	astNode = parser.newNodeFast( nodeType, arguments... )
+	Same as newNode() but without any validation. (Search for 'NodeCreation' for more info.)
 
 cloneNode()
 	astNode = parser.cloneNode( astNode )
@@ -391,7 +395,7 @@ Special number notation rules.
 
 --============================================================]]
 
-local PARSER_VERSION = "2.0.0"
+local PARSER_VERSION = "2.0.1-dev"
 
 local NORMALIZE_MINUS_ZERO
 do
@@ -2605,6 +2609,139 @@ end
 
 
 
+local nodeConstructors = {
+	["vararg"]      = function()  return AstVararg     (nil)  end,
+	["table"]       = function()  return AstTable      (nil)  end,
+	["lookup"]      = function()  return AstLookup     (nil)  end,
+	["call"]        = function()  return AstCall       (nil)  end,
+	["function"]    = function()  return AstFunction   (nil)  end,
+	["break"]       = function()  return AstBreak      (nil)  end,
+	["return"]      = function()  return AstReturn     (nil)  end,
+	["block"]       = function()  return AstBlock      (nil)  end,
+	["declaration"] = function()  return AstDeclaration(nil)  end,
+	["assignment"]  = function()  return AstAssignment (nil)  end,
+	["if"]          = function()  return AstIf         (nil)  end,
+	["while"]       = function()  return AstWhile      (nil)  end,
+	["repeat"]      = function()  return AstRepeat     (nil)  end,
+
+	["identifier"] = function(argCount, name, attribute)
+		if argCount == 0 then
+			errorf(3, "Missing name argument for identifier.")
+		elseif type(name) ~= "string" then
+			errorf(3, "Invalid name argument value type '%s'. (Expected string)", type(name))
+		elseif not stringFind(name, "^[%a_][%w_]*$") or KEYWORDS[name] then
+			errorf(3, "Invalid identifier name '%s'.", name)
+		end
+
+		if attribute == nil or attribute == "" then
+			-- void
+		elseif type(attribute) ~= "string" then
+			errorf(3, "Invalid attribute argument value type '%s'. (Expected string)", type(attribute))
+		elseif not (attribute == "close" or attribute == "const") then
+			errorf(3, "Invalid attribute name '%s'. (Must be 'close' or 'const'.)", attribute)
+		end
+
+		local ident     = AstIdentifier(nil, name)
+		ident.attribute = attribute or ""
+		return ident
+	end,
+
+	["label"] = function(argCount, name)
+		if argCount == 0 then
+			errorf(3, "Missing name argument for label.")
+		elseif type(name) ~= "string" then
+			errorf(3, "Invalid name argument value type '%s'. (Expected string)", type(name))
+		elseif not stringFind(name, "^[%a_][%w_]*$") or KEYWORDS[name] then
+			errorf(3, "Invalid label name '%s'.", name)
+		end
+
+		return AstLabel(nil, name)
+	end,
+
+	["goto"] = function(argCount, name)
+		if argCount == 0 then
+			errorf(3, "Missing label name argument for goto.")
+		elseif type(name) ~= "string" then
+			errorf(3, "Invalid label name argument value type '%s'. (Expected string)", type(name))
+		elseif not stringFind(name, "^[%a_][%w_]*$") or KEYWORDS[name] then
+			errorf(3, "Invalid label name '%s'.", name)
+		end
+
+		return AstGoto(nil, name)
+	end,
+
+	["literal"] = function(argCount, value)
+		if argCount == 0 then
+			errorf(3, "Missing value argument for literal.")
+		elseif not (type(value) == "number" or type(value) == "string" or type(value) == "boolean" or type(value) == "nil") then
+			errorf(3, "Invalid literal value type '%s'. (Expected number, string, boolean or nil)", type(value))
+		end
+
+		return AstLiteral(nil, value)
+	end,
+
+	["unary"] = function(argCount, op)
+		if argCount == 0 then
+			errorf(3, "Missing operator argument for unary expression.")
+		elseif not OPERATORS_UNARY[op] then
+			errorf(3, "Invalid unary operator '%s'.", tostring(op))
+		end
+
+		return AstUnary(nil, op)
+	end,
+
+	["binary"] = function(argCount, op)
+		if argCount == 0 then
+			errorf(3, "Missing operator argument for binary expression.")
+		elseif not OPERATORS_BINARY[op] then
+			errorf(3, "Invalid binary operator '%s'.", tostring(op))
+		end
+
+		return AstBinary(nil, op)
+	end,
+
+	["for"] = function(argCount, kind)
+		if argCount == 0 then
+			errorf(3, "Missing kind argument for 'for' loop.")
+		elseif not (kind == "numeric" or kind == "generic") then
+			errorf(3, "Invalid for loop kind '%s'. (Must be 'numeric' or 'generic')", tostring(kind))
+		end
+
+		return AstFor(nil, kind)
+	end,
+}
+
+local nodeConstructorsFast = {
+	["vararg"]      = function()  return AstVararg     (nil)  end,
+	["table"]       = function()  return AstTable      (nil)  end,
+	["lookup"]      = function()  return AstLookup     (nil)  end,
+	["call"]        = function()  return AstCall       (nil)  end,
+	["function"]    = function()  return AstFunction   (nil)  end,
+	["break"]       = function()  return AstBreak      (nil)  end,
+	["return"]      = function()  return AstReturn     (nil)  end,
+	["block"]       = function()  return AstBlock      (nil)  end,
+	["declaration"] = function()  return AstDeclaration(nil)  end,
+	["assignment"]  = function()  return AstAssignment (nil)  end,
+	["if"]          = function()  return AstIf         (nil)  end,
+	["while"]       = function()  return AstWhile      (nil)  end,
+	["repeat"]      = function()  return AstRepeat     (nil)  end,
+
+	["label"]       = function(name)   return AstLabel  (nil, name)   end,
+	["goto"]        = function(name)   return AstGoto   (nil, name)   end,
+	["literal"]     = function(value)  return AstLiteral(nil, value)  end,
+	["unary"]       = function(op)     return AstUnary  (nil, op)     end,
+	["binary"]      = function(op)     return AstBinary (nil, op)     end,
+	["for"]         = function(kind)   return AstFor    (nil, kind)   end,
+
+	["identifier"] = function(name, attribute)
+		local ident     = AstIdentifier(nil, name)
+		ident.attribute = attribute or ""
+		return ident
+	end,
+}
+
+
+
 --
 -- :NodeCreation
 --
@@ -2632,126 +2769,14 @@ end
 -- Search for 'NodeFields' for each node's fields.
 --
 local function newNode(nodeType, ...)
-	local node
-
-	if     nodeType == "vararg"      then  node = AstVararg(nil)
-	elseif nodeType == "table"       then  node = AstTable(nil)
-	elseif nodeType == "lookup"      then  node = AstLookup(nil)
-	elseif nodeType == "call"        then  node = AstCall(nil)
-	elseif nodeType == "function"    then  node = AstFunction(nil)
-	elseif nodeType == "break"       then  node = AstBreak(nil)
-	elseif nodeType == "return"      then  node = AstReturn(nil)
-	elseif nodeType == "block"       then  node = AstBlock(nil)
-	elseif nodeType == "declaration" then  node = AstDeclaration(nil)
-	elseif nodeType == "assignment"  then  node = AstAssignment(nil)
-	elseif nodeType == "if"          then  node = AstIf(nil)
-	elseif nodeType == "while"       then  node = AstWhile(nil)
-	elseif nodeType == "repeat"      then  node = AstRepeat(nil)
-
-	elseif nodeType == "identifier" then
-		if select("#", ...) == 0 then
-			errorf(2, "Missing name argument for identifier.")
-		end
-
-		local name, attribute = ...
-
-		if type(name) ~= "string" then
-			errorf(2, "Invalid name argument value type '%s'. (Expected string)", type(name))
-		elseif not stringFind(name, "^[%a_][%w_]*$") or KEYWORDS[name] then
-			errorf(2, "Invalid identifier name '%s'.", name)
-		end
-
-		if attribute == nil or attribute == "" then
-			-- void
-		elseif type(attribute) ~= "string" then
-			errorf(2, "Invalid attribute argument value type '%s'. (Expected string)", type(attribute))
-		elseif not (attribute == "close" or attribute == "const") then
-			errorf(2, "Invalid attribute name '%s'. (Must be 'close' or 'const'.)", attribute)
-		end
-
-		node           = AstIdentifier(nil, name)
-		node.attribute = attribute or ""
-
-	elseif nodeType == "label" then
-		if select("#", ...) == 0 then
-			errorf(2, "Missing name argument for label.")
-		end
-
-		local name = ...
-		if type(name) ~= "string" then
-			errorf(2, "Invalid name argument value type '%s'. (Expected string)", type(name))
-		elseif not stringFind(name, "^[%a_][%w_]*$") or KEYWORDS[name] then
-			errorf(2, "Invalid label name '%s'.", name)
-		end
-
-		node = AstLabel(nil, name)
-
-	elseif nodeType == "goto" then
-		if select("#", ...) == 0 then
-			errorf(2, "Missing label name argument for goto.")
-		end
-
-		local name = ...
-		if type(name) ~= "string" then
-			errorf(2, "Invalid label name argument value type '%s'. (Expected string)", type(name))
-		elseif not stringFind(name, "^[%a_][%w_]*$") or KEYWORDS[name] then
-			errorf(2, "Invalid label name '%s'.", name)
-		end
-
-		node = AstGoto(nil, name)
-
-	elseif nodeType == "literal" then
-		if select("#", ...) == 0 then
-			errorf(2, "Missing value argument for literal.")
-		end
-
-		local value = ...
-		if not (type(value) == "number" or type(value) == "string" or type(value) == "boolean" or type(value) == "nil") then
-			errorf(2, "Invalid literal value type '%s'. (Expected number, string, boolean or nil)", type(value))
-		end
-
-		node = AstLiteral(nil, value)
-
-	elseif nodeType == "unary" then
-		if select("#", ...) == 0 then
-			errorf(2, "Missing operator argument for unary expression.")
-		end
-
-		local op = ...
-		if not OPERATORS_UNARY[op] then
-			errorf(2, "Invalid unary operator '%s'.", tostring(op))
-		end
-
-		node = AstUnary(nil, op)
-
-	elseif nodeType == "binary" then
-		if select("#", ...) == 0 then
-			errorf(2, "Missing operator argument for binary expression.")
-		end
-
-		local op = ...
-		if not OPERATORS_BINARY[op] then
-			errorf(2, "Invalid binary operator '%s'.", tostring(op))
-		end
-
-		node = AstBinary(nil, op)
-
-	elseif nodeType == "for" then
-		if select("#", ...) == 0 then
-			errorf(2, "Missing kind argument for 'for' loop.")
-		end
-
-		local kind = ...
-		if not (kind == "numeric" or kind == "generic") then
-			errorf(2, "Invalid for loop kind '%s'. (Must be 'numeric' or 'generic')", tostring(kind))
-		end
-
-		node = AstFor(nil, kind)
-
+	if nodeConstructors[nodeType] then
+		return (nodeConstructors[nodeType](select("#", ...), ...))
 	else
 		errorf(2, "Invalid node type '%s'.", tostring(nodeType))
 	end
-	return node
+end
+local function newNodeFast(nodeType, ...)
+	return nodeConstructorsFast[nodeType](...)
 end
 
 local cloneNodeArrayAndChildren
@@ -5764,6 +5789,7 @@ parser = {
 	parseFile           = parseFile,
 
 	newNode             = newNode,
+	newNodeFast         = newNodeFast,
 	cloneNode           = cloneNode,
 	cloneTree           = cloneTree,
 	getChild            = getChild,
