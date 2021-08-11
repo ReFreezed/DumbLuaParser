@@ -5092,11 +5092,13 @@ do
 				lastOutput = writeNumber(buffer, pretty, literal.value, lastOutput)
 
 			elseif type(literal.value) == "string" then
-				local R         = isNumberInRange
-				local s         = literal.value
-				local quote     = stringFind(s, '"', 1, true) and not stringFind(s, "'", 1, true) and "'" or '"'
-				local quoteByte = stringByte(quote)
-				local pos       = 1
+				local R           = isNumberInRange
+				local s           = literal.value
+				local doubleCount = countString(s, '"', true)
+				local singleCount = countString(s, "'", true)
+				local quote       = singleCount < doubleCount and "'" or '"'
+				local quoteByte   = stringByte(quote)
+				local pos         = 1
 
 				lastOutput = writeLua(buffer, quote, "")
 

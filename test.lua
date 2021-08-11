@@ -69,6 +69,9 @@ do
 	local l = #t + 1
 	local b = not not not true
 
+	local s1 = "\"''a''b''c''\""
+	local s2 = '\'""a""b""c""\''
+
 	;;;;
 
 	-- Special number notations.
