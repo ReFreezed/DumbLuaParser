@@ -331,6 +331,25 @@ test("AST manipulation", function()
 
 		assert(loadstring(lua, "@<luastring>"))
 	end
+	do
+		local binary = assert(parser.parseExpression([[
+			x + y ^ 49
+		]], "<luastring>"))
+
+		assert(binary.type == "binary")
+		assert(binary.left.type == "identifier")
+		assert(binary.left.name == "x")
+		assert(binary.right.type == "binary")
+		assert(binary.right.left.type == "identifier")
+		assert(binary.right.left.name == "y")
+		assert(binary.right.right.type  == "literal")
+		assert(binary.right.right.value == 49)
+
+		local lua = assert(parser.toLua(binary, PRETTY_OUTPUT))
+		print(lua)
+
+		assert(loadstring("return "..lua, "@<luastring>"))
+	end
 
 	-- Node creation.
 	do

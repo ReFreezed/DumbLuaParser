@@ -53,7 +53,7 @@ print(lua)
 
 tokenize, tokenizeFile
 newToken, concatTokens
-parse, parseFile
+parse, parseExpression, parseFile
 newNode, newNodeFast, cloneNode, cloneTree, getChild, setChild, addChild, removeChild
 traverseTree, traverseTreeReverse
 updateReferences
@@ -83,7 +83,13 @@ concatTokens()
 parse()
 	astNode = parser.parse( tokens )
 	astNode = parser.parse( luaString [, pathForErrorMessages="?" ] )
-	Convert tokens or Lua code into an AST. (See below for more info.)
+	Convert tokens or Lua code into an AST representing a block of code. (See below for more info.)
+	Returns nil and a message on error.
+
+parseExpression()
+	astNode = parser.parseExpression( tokens )
+	astNode = parser.parseExpression( luaString [, pathForErrorMessages="?" ] )
+	Convert tokens or Lua code into an AST representing a value expression. (See below for more info.)
 	Returns nil and a message on error.
 
 parseFile()
@@ -468,7 +474,7 @@ local indexOf, itemWith1, lastItemWith1
 local ipairsr
 local isToken, isTokenType, isTokenAnyValue
 local mayNodeBeInvolvedInJump, mayAnyNodeBeInvolvedInJump
-local parse, parseFile
+local parse, parseExpression, parseFile
 local printNode, printTree
 local printTokens
 local removeUnordered, removeItemUnordered
@@ -1539,7 +1545,7 @@ end
 
 
 
-local parseExpression, parseExpressionList, parseFunctionParametersAndBody, parseBlock
+local parseExpressionInternal, parseExpressionList, parseFunctionParametersAndBody, parseBlock
 
 local function parseIdentifier(tokens, tok) --> ident, token, error
 	if not isTokenType(tokens[tok], "identifier") then
@@ -1612,7 +1618,7 @@ local function parseTable(tokens, tokStart) --> tableNode, token, error
 		elseif isToken(tokens[tok], "punctuation", "[") then
 			tok = tok + 1 -- '['
 
-			local keyExpr, tokNext, err = parseExpression(tokens, tok, 0)
+			local keyExpr, tokNext, err = parseExpressionInternal(tokens, tok, 0)
 			if not keyExpr then  return nil, tok, err  end
 			tok = tokNext
 
@@ -1626,7 +1632,7 @@ local function parseTable(tokens, tokStart) --> tableNode, token, error
 			end
 			tok = tok + 1 -- '='
 
-			local valueExpr, tokNext, err = parseExpression(tokens, tok, 0)
+			local valueExpr, tokNext, err = parseExpressionInternal(tokens, tok, 0)
 			if not valueExpr then  return nil, tok, err  end
 			tok = tokNext
 
@@ -1642,7 +1648,7 @@ local function parseTable(tokens, tokStart) --> tableNode, token, error
 			end
 			tok = tok + 1 -- '='
 
-			local valueExpr, tokNext, err = parseExpression(tokens, tok, 0)
+			local valueExpr, tokNext, err = parseExpressionInternal(tokens, tok, 0)
 			if not valueExpr then  return nil, tok, err  end
 			tok = tokNext
 
@@ -1653,7 +1659,7 @@ local function parseTable(tokens, tokStart) --> tableNode, token, error
 			generatedIndex = generatedIndex + 1
 			local keyExpr  = AstLiteral(tokens[tok], generatedIndex)
 
-			local valueExpr, tokNext, err = parseExpression(tokens, tok, 0)
+			local valueExpr, tokNext, err = parseExpressionInternal(tokens, tok, 0)
 			if not valueExpr then  return nil, tok, err  end
 			tok = tokNext
 
@@ -1681,7 +1687,7 @@ local function parseTable(tokens, tokStart) --> tableNode, token, error
 	return tableNode, tok
 end
 
-function parseExpression(tokens, tokStart, lastPrecedence) --> expression, token, error
+function parseExpressionInternal(tokens, tokStart, lastPrecedence) --> expression, token, error
 	local tok                  = tokStart
 	local canParseLookupOrCall = false
 	local currentToken         = tokens[tok]
@@ -1728,7 +1734,7 @@ function parseExpression(tokens, tokStart, lastPrecedence) --> expression, token
 		local unary = AstUnary(currentToken, currentToken.value)
 		tok         = tok + 1 -- operator
 
-		local subExpr, tokNext, err = parseExpression(tokens, tok, OPERATOR_PRECEDENCE.unary-1)
+		local subExpr, tokNext, err = parseExpressionInternal(tokens, tok, OPERATOR_PRECEDENCE.unary-1)
 		if not subExpr then  return nil, tok, err  end
 		unary.expression = subExpr
 		tok              = tokNext
@@ -1772,7 +1778,7 @@ function parseExpression(tokens, tokStart, lastPrecedence) --> expression, token
 	elseif isToken(currentToken, "punctuation", "(") then
 		tok = tok + 1 -- '('
 
-		local _expr, tokNext, err = parseExpression(tokens, tok, 0)
+		local _expr, tokNext, err = parseExpressionInternal(tokens, tok, 0)
 		if not _expr then  return nil, tok, err  end
 		tok = tokNext
 
@@ -1815,7 +1821,7 @@ function parseExpression(tokens, tokStart, lastPrecedence) --> expression, token
 
 			local lhsExpr = expr
 
-			local rhsExpr, tokNext, err = parseExpression(tokens, tok, OPERATOR_PRECEDENCE[binary.operator] + (rightAssociative and -1 or 0))
+			local rhsExpr, tokNext, err = parseExpressionInternal(tokens, tok, OPERATOR_PRECEDENCE[binary.operator] + (rightAssociative and -1 or 0))
 			if not rhsExpr then  return nil, tok, err  end
 			tok = tokNext
 
@@ -1866,7 +1872,7 @@ function parseExpression(tokens, tokStart, lastPrecedence) --> expression, token
 			local lookup = AstLookup(currentToken)
 			tok          = tok + 1 -- '['
 
-			local memberExpr, tokNext, err = parseExpression(tokens, tok, 0)
+			local memberExpr, tokNext, err = parseExpressionInternal(tokens, tok, 0)
 			if not memberExpr then  return nil, tok, err  end
 			tok = tokNext
 
@@ -1997,7 +2003,7 @@ end
 
 function parseExpressionList(tokens, tok, expressions) --> success, token, error
 	while true do
-		local expr, tokNext, err = parseExpression(tokens, tok, 0)
+		local expr, tokNext, err = parseExpressionInternal(tokens, tok, 0)
 		if not expr then  return false, tok, err  end
 		tok = tokNext
 
@@ -2091,7 +2097,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		local whileLoop = AstWhile(currentToken)
 		tok             = tok + 1 -- 'while'
 
-		local expr, tokNext, err = parseExpression(tokens, tok, 0)
+		local expr, tokNext, err = parseExpressionInternal(tokens, tok, 0)
 		if not expr then  return false, tok, err  end
 		whileLoop.condition = expr
 		tok                 = tokNext
@@ -2130,7 +2136,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		end
 		tok = tok + 1 -- 'until'
 
-		local expr, tokNext, err = parseExpression(tokens, tok, 0)
+		local expr, tokNext, err = parseExpressionInternal(tokens, tok, 0)
 		if not expr then  return false, tok, err  end
 		repeatLoop.condition = expr
 		tok                  = tokNext
@@ -2143,7 +2149,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		local ifNode = AstIf(currentToken)
 		tok          = tok + 1 -- 'if'
 
-		local expr, tokNext, err = parseExpression(tokens, tok, 0)
+		local expr, tokNext, err = parseExpressionInternal(tokens, tok, 0)
 		if not expr then  return false, tok, err  end
 		ifNode.condition = expr
 		tok              = tokNext
@@ -2167,7 +2173,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 			ifNodeLeaf.bodyFalse.statements[1] = AstIf   (tokens[tok])
 			ifNodeLeaf                         = ifNodeLeaf.bodyFalse.statements[1]
 
-			local expr, tokNext, err = parseExpression(tokens, tok, 0)
+			local expr, tokNext, err = parseExpressionInternal(tokens, tok, 0)
 			if not expr then  return false, tok, err  end
 			ifNodeLeaf.condition = expr
 			tok                  = tokNext
@@ -2422,7 +2428,7 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		return false, tok, ""
 
 	else
-		local lookahead, tokNext, err = parseExpression(tokens, tok, 0)
+		local lookahead, tokNext, err = parseExpressionInternal(tokens, tok, 0)
 		if not lookahead then  return false, tok, err  end
 
 		if lookahead.type == "call" then
@@ -2511,8 +2517,8 @@ function parseBlock(tokens, tok, blockTok, stopAtEndKeyword) --> block, token, e
 	return block, tok
 end
 
--- block, error = tokensToAst( tokens )
-local function tokensToAst(tokens)
+-- block, error = tokensToAst( tokens, asBlock )
+local function tokensToAst(tokens, asBlock)
 	local tokensPurged = {}
 	local count        = 0
 
@@ -2567,10 +2573,15 @@ local function tokensToAst(tokens)
 
 	statementErrorReported = false
 
-	local block, _, err = parseBlock(tokensPurged, 2, 2, false)
-	if not block then  return nil, err  end
+	local ast, _, err
+	if asBlock then
+		ast, _, err = parseBlock(tokensPurged, 2, 2, false)
+	else
+		ast, _, err = parseExpressionInternal(tokensPurged, 2, 0)
+	end
+	if not ast then  return nil, err  end
 
-	return block
+	return ast
 end
 
 -- ast, error = parse( tokens )
@@ -2582,7 +2593,7 @@ function parse(luaOrTokens, path)
 	if type(luaOrTokens) == "table" then
 		assertArg1("parse", 2, path, "nil")
 
-		return tokensToAst(luaOrTokens)
+		return tokensToAst(luaOrTokens, true)
 
 	-- ast, error = parse( luaString, pathForErrorMessages )
 	else
@@ -2595,7 +2606,33 @@ function parse(luaOrTokens, path)
 		local tokens, err = tokenize(luaOrTokens, path)
 		if not tokens then  return nil, err  end
 
-		return tokensToAst(tokens)
+		return tokensToAst(tokens, true)
+	end
+end
+
+-- ast, error = parseExpression( tokens )
+-- ast, error = parseExpression( luaString [, pathForErrorMessages="?" ] )
+function parseExpression(luaOrTokens, path) -- @Doc
+	assertArg2("parseExpression", 1, luaOrTokens, "string","table")
+
+	-- ast, error = parseExpression( tokens )
+	if type(luaOrTokens) == "table" then
+		assertArg1("parseExpression", 2, path, "nil")
+
+		return tokensToAst(luaOrTokens, false)
+
+	-- ast, error = parseExpression( luaString, pathForErrorMessages )
+	else
+		if path == nil then
+			path = "?"
+		else
+			assertArg1("parseExpression", 2, path, "string")
+		end
+
+		local tokens, err = tokenize(luaOrTokens, path)
+		if not tokens then  return nil, err  end
+
+		return tokensToAst(tokens, false)
 	end
 end
 
@@ -2606,7 +2643,7 @@ function parseFile(path)
 	local tokens, err = tokenizeFile(path)
 	if not tokens then  return nil, err  end
 
-	return tokensToAst(tokens)
+	return tokensToAst(tokens, true)
 end
 
 
@@ -5831,6 +5868,7 @@ parser = {
 	concatTokens        = concatTokens,
 
 	parse               = parse,
+	parseExpression     = parseExpression,
 	parseFile           = parseFile,
 
 	newNode             = newNode,
