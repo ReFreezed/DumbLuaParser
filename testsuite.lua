@@ -98,6 +98,7 @@ local function test(label, f)
 	testCount = testCount + 1
 
 	print("Running test: "..label)
+	-- f() -- DEBUG
 	local ok, err = pcall(f)
 
 	if ok then
@@ -156,6 +157,8 @@ test("Test file / misc.", function()
 	local ast    = assert(parser.parse(tokens))
 	-- parser.printTree(ast)
 	-- debugExit()
+
+	assert(parser.validateTree(ast))
 
 	--[[
 	parser.traverseTree(ast, function(node, parent, container, k)
@@ -874,6 +877,119 @@ test("Minify", function()
 		]],
 		[[ for e,t in ipairs(global)do globalFunc1(t);for e=e,#global do globalFunc2(e);end end ]]
 	)
+end)
+
+
+
+test("Validate", function()
+	local function parseExpression(lua)
+		local expr = assert(parser.parseExpression(lua))
+		assert(parser.validateTree(expr))
+		return expr
+	end
+	local function parseStatement(lua)
+		local statement = assert(parser.parse(lua)).statements[1]
+		assert(statement, "No statement.")
+		assert(parser.validateTree(statement))
+		return statement
+	end
+	local function testInvalid(ast)
+		assert(not parser.validateTree(ast))
+	end
+
+	local ident      = parseExpression[[ x ]] ; ident.name      = "%"   ; testInvalid(ident)
+	local ident      = parseExpression[[ x ]] ; ident.name      = "if"  ; testInvalid(ident)
+	local ident      = parseExpression[[ x ]] ; ident.attribute = "bad" ; testInvalid(ident)
+
+	local literal    = parseExpression[[ 1 ]] ; literal.value = {} ; testInvalid(literal)
+
+	local lookup     = parseExpression[[ x.y ]] ; lookup.object = nil                     ; testInvalid(lookup)
+	local lookup     = parseExpression[[ x.y ]] ; lookup.object = parser.newNode("block") ; testInvalid(lookup)
+	local lookup     = parseExpression[[ x.y ]] ; lookup.member = nil                     ; testInvalid(lookup)
+	local lookup     = parseExpression[[ x.y ]] ; lookup.member = parser.newNode("block") ; testInvalid(lookup)
+
+	local unary      = parseExpression[[ -x ]] ; unary.operator   = "bad"                   ; testInvalid(unary)
+	local unary      = parseExpression[[ -x ]] ; unary.expression = nil                     ; testInvalid(unary)
+	local unary      = parseExpression[[ -x ]] ; unary.expression = parser.newNode("block") ; testInvalid(unary)
+
+	local binary     = parseExpression[[ x+y ]] ; binary.operator = "bad"                   ; testInvalid(binary)
+	local binary     = parseExpression[[ x+y ]] ; binary.left     = nil                     ; testInvalid(binary)
+	local binary     = parseExpression[[ x+y ]] ; binary.left     = parser.newNode("block") ; testInvalid(binary)
+	local binary     = parseExpression[[ x+y ]] ; binary.right    = nil                     ; testInvalid(binary)
+	local binary     = parseExpression[[ x+y ]] ; binary.right    = parser.newNode("block") ; testInvalid(binary)
+
+	local call       = parseExpression[[ f(x) ]] ; call.callee       = nil                     ; testInvalid(call)
+	local call       = parseExpression[[ f(x) ]] ; call.callee       = parser.newNode("block") ; testInvalid(call)
+	local call       = parseExpression[[ f(x) ]] ; call.method       = true                    ; testInvalid(call)
+	local call       = parseExpression[[ f(x) ]] ; call.arguments[1] = parser.newNode("block") ; testInvalid(call)
+
+	local methodCall = parseExpression[[ o:m() ]] ; call.callee              = parser.newNode("block") ; testInvalid(call)
+	local methodCall = parseExpression[[ o:m() ]] ; call.callee.member       = parser.newNode("block") ; testInvalid(call)
+	local methodCall = parseExpression[[ o:m() ]] ; call.callee.member.value = 1                       ; testInvalid(call)
+	local methodCall = parseExpression[[ o:m() ]] ; call.callee.member.value = "%"                     ; testInvalid(call)
+	local methodCall = parseExpression[[ o:m() ]] ; call.callee.member.value = "if"                    ; testInvalid(call)
+
+	local func       = parseExpression[[ function(x,...)end ]] ; func.parameters[1] = parser.newNode("block")  ; testInvalid(func)
+	local func       = parseExpression[[ function(x,...)end ]] ; func.parameters[1] = parser.newNode("vararg") ; testInvalid(func)
+	local func       = parseExpression[[ function(x,...)end ]] ; func.body          = nil                      ; testInvalid(func)
+	local func       = parseExpression[[ function(x,...)end ]] ; func.body          = parser.newNode("vararg") ; testInvalid(func)
+
+	local tableNode  = parseExpression[[ {x=y} ]] ; tableNode.fields[1].key       = nil                               ; testInvalid(tableNode)
+	local tableNode  = parseExpression[[ {x=y} ]] ; tableNode.fields[1].key       = parser.newNode("block")           ; testInvalid(tableNode)
+	local tableNode  = parseExpression[[ {x=y} ]] ; tableNode.fields[1].value     = nil                               ; testInvalid(tableNode)
+	local tableNode  = parseExpression[[ {x=y} ]] ; tableNode.fields[1].value     = parser.newNode("block")           ; testInvalid(tableNode)
+	local tableNode  = parseExpression[[ {x}   ]] ; tableNode.fields[1].key       = parser.newNode("identifier", "x") ; testInvalid(tableNode)
+	local tableNode  = parseExpression[[ {x}   ]] ; tableNode.fields[1].key.value = "bad"                             ; testInvalid(tableNode)
+
+	local label      = parseStatement[[ ::x:: ]] ; label.name = "%"  ; testInvalid(label)
+	local label      = parseStatement[[ ::x:: ]] ; label.name = "if" ; testInvalid(label)
+
+	local gotoNode   = parseStatement[[ goto x ]] ; gotoNode.name = "%"  ; testInvalid(gotoNode)
+	local gotoNode   = parseStatement[[ goto x ]] ; gotoNode.name = "if" ; testInvalid(gotoNode)
+
+	local returnNode = parseStatement[[ return x ]] ; returnNode.values[1] = parser.newNode("block") ; testInvalid(returnNode)
+
+	local block      = parseStatement[[ do local x end ]] ; block.statements[1] = parser.newNode("vararg") ; testInvalid(block)
+
+	local decl       = parseStatement[[ local x = 1 ]] ; decl.names[1]  = parser.newNode("vararg") ; testInvalid(decl)
+	local decl       = parseStatement[[ local x = 1 ]] ; decl.values[1] = parser.newNode("block")  ; testInvalid(decl)
+
+	local assignment = parseStatement[[ x, t.k = 1, "" ]] ; assignment.targets[1] = parser.newNode("vararg") ; testInvalid(assignment)
+	local assignment = parseStatement[[ x, t.k = 1, "" ]] ; assignment.values[1]  = parser.newNode("block")  ; testInvalid(assignment)
+
+	local ifNode     = parseStatement[[ if x then else end ]] ; ifNode.condition = nil                      ; testInvalid(ifNode)
+	local ifNode     = parseStatement[[ if x then else end ]] ; ifNode.condition = parser.newNode("block")  ; testInvalid(ifNode)
+	local ifNode     = parseStatement[[ if x then else end ]] ; ifNode.bodyTrue  = nil                      ; testInvalid(ifNode)
+	local ifNode     = parseStatement[[ if x then else end ]] ; ifNode.bodyTrue  = parser.newNode("vararg") ; testInvalid(ifNode)
+	local ifNode     = parseStatement[[ if x then else end ]] ; ifNode.bodyFalse = parser.newNode("vararg") ; testInvalid(ifNode)
+
+	local whileLoop  = parseStatement[[ while x do end ]] ; whileLoop.condition = nil                      ; testInvalid(whileLoop)
+	local whileLoop  = parseStatement[[ while x do end ]] ; whileLoop.condition = parser.newNode("block")  ; testInvalid(whileLoop)
+	local whileLoop  = parseStatement[[ while x do end ]] ; whileLoop.body      = nil                      ; testInvalid(whileLoop)
+	local whileLoop  = parseStatement[[ while x do end ]] ; whileLoop.body      = parser.newNode("vararg") ; testInvalid(whileLoop)
+
+	local repeatLoop = parseStatement[[ repeat until x ]] ; repeatLoop.body      = nil                      ; testInvalid(repeatLoop)
+	local repeatLoop = parseStatement[[ repeat until x ]] ; repeatLoop.body      = parser.newNode("vararg") ; testInvalid(repeatLoop)
+	local repeatLoop = parseStatement[[ repeat until x ]] ; repeatLoop.condition = nil                      ; testInvalid(repeatLoop)
+	local repeatLoop = parseStatement[[ repeat until x ]] ; repeatLoop.condition = parser.newNode("block")  ; testInvalid(repeatLoop)
+
+	local forLoop    = parseStatement[[ for x = 1, 2    do end ]] ; forLoop.kind      = "bad"                             ; testInvalid(forLoop)
+	local forLoop    = parseStatement[[ for x = 1, 2    do end ]] ; forLoop.names[1]  = nil                               ; testInvalid(forLoop)
+	local forLoop    = parseStatement[[ for x = 1, 2    do end ]] ; forLoop.names[1]  = parser.newNode("vararg")          ; testInvalid(forLoop)
+	local forLoop    = parseStatement[[ for x = 1, 2    do end ]] ; forLoop.names[2]  = parser.newNode("identifier", "y") ; testInvalid(forLoop) -- Too many names.
+	local forLoop    = parseStatement[[ for x = 1, 2    do end ]] ; forLoop.values[1] = parser.newNode("block")           ; testInvalid(forLoop)
+	local forLoop    = parseStatement[[ for x = 1, 2    do end ]] ; forLoop.values[2] = nil                               ; testInvalid(forLoop) -- Too few values.
+	local forLoop    = parseStatement[[ for x = 1, 2, 3 do end ]] ; forLoop.values[4] = parser.newNode("literal", 4)      ; testInvalid(forLoop) -- Too many values.
+	local forLoop    = parseStatement[[ for x = 1, 2    do end ]] ; forLoop.body      = nil                               ; testInvalid(forLoop)
+	local forLoop    = parseStatement[[ for x = 1, 2    do end ]] ; forLoop.body      = parser.newNode("vararg")          ; testInvalid(forLoop)
+
+	local forLoop    = parseStatement[[ for x, y, z in a, b, c, d do end ]] ; forLoop.kind      = "bad"                    ; testInvalid(forLoop)
+	local forLoop    = parseStatement[[ for x       in a, b, c, d do end ]] ; forLoop.names[1]  = nil                      ; testInvalid(forLoop)
+	local forLoop    = parseStatement[[ for x, y, z in a, b, c, d do end ]] ; forLoop.names[1]  = parser.newNode("vararg") ; testInvalid(forLoop)
+	local forLoop    = parseStatement[[ for x, y, z in a          do end ]] ; forLoop.values[1] = nil                      ; testInvalid(forLoop)
+	local forLoop    = parseStatement[[ for x, y, z in a, b, c, d do end ]] ; forLoop.values[1] = parser.newNode("block")  ; testInvalid(forLoop)
+	local forLoop    = parseStatement[[ for x, y, z in a, b, c, d do end ]] ; forLoop.body      = nil                      ; testInvalid(forLoop)
+	local forLoop    = parseStatement[[ for x, y, z in a, b, c, d do end ]] ; forLoop.body      = parser.newNode("vararg") ; testInvalid(forLoop)
 end)
 
 

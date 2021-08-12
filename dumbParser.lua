@@ -482,6 +482,7 @@ local tokenize, tokenizeFile
 local toLua
 local traverseTree, traverseTreeReverse
 local updateReferences
+local validateTree
 local where
 
 local parser
@@ -533,6 +534,9 @@ local OPERATOR_PRECEDENCE = {
 	unary   = 11, -- "-", "not", "#", "~"
 	["^"]   = 12,
 }
+
+local EXPRESSION_NODES = newSet{ "binary", "call", "function", "identifier", "literal", "lookup", "table", "unary", "vararg" }
+local STATEMENT_NODES  = newSet{ "assignment", "block", "break", "call", "declaration", "for", "goto", "if", "label", "repeat", "return", "while" }
 
 local TOKEN_BYTES = {
 	NAME_START      = newCharSet"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_",
@@ -2612,7 +2616,7 @@ end
 
 -- ast, error = parseExpression( tokens )
 -- ast, error = parseExpression( luaString [, pathForErrorMessages="?" ] )
-function parseExpression(luaOrTokens, path) -- @Doc
+function parseExpression(luaOrTokens, path)
 	assertArg2("parseExpression", 1, luaOrTokens, "string","table")
 
 	-- ast, error = parseExpression( tokens )
@@ -2881,8 +2885,8 @@ local function cloneNodeAndMaybeChildren(node, cloneChildren)
 		clone = AstFunction(nil)
 
 		if cloneChildren then
-			clone.body = node.body and cloneNodeAndMaybeChildren(node.body, true)
 			cloneNodeArrayAndChildren(clone.parameters, node.parameters)
+			clone.body = node.body and cloneNodeAndMaybeChildren(node.body, true)
 		end
 
 	elseif nodeType == "return" then
@@ -4857,7 +4861,7 @@ do
 	local writeNode
 	local writeStatements
 
-	-- lastOutput = "alpha"|"alphanum"|""
+	-- lastOutput = "" | "alphanum" | "number" | "-"
 
 	local function isNumberInRange(n, min, max)
 		return n ~= nil and n >= min and n <= max
@@ -5089,7 +5093,6 @@ do
 	end
 
 	-- success, lastOutput = writeNode( buffer, pretty, indent, lastOutput, node, maySafelyOmitParens, nodeCallback )
-	-- lastOutput          = "" | "alphanum" | "number" | "-"
 	-- Returns nil and a message or error.
 	function writeNode(buffer, pretty, indent, lastOutput, node, maySafelyOmitParens, nodeCb)
 		if nodeCb then  nodeCb(node, buffer)  end
@@ -5852,6 +5855,352 @@ end
 
 
 
+do
+	local function addValidationError(path, errors, s, ...)
+		tableInsert(errors, F("%s: "..s, tableConcat(path, "/"), ...))
+	end
+
+	local function validateNode(node, path, errors, prefix)
+		local nodeType = node.type
+
+		tableInsert(path,
+			(prefix and prefix.."."..nodeType or nodeType)
+			.. (parser.printIds and "#"..node.id or "")
+		)
+
+		if nodeType == "identifier" then
+			local ident = node
+			if not stringFind(ident.name, "^[%a_][%w_]*$") then
+				addValidationError(path, errors, "Invalid identifier name: Bad format: %s", ident.name)
+			elseif KEYWORDS[ident.name] then
+				addValidationError(path, errors, "Invalid identifier name: Name is a keyword: %s", ident.name)
+			end
+			if not (ident.attribute == "" or ident.attribute == "close" or ident.attribute == "const") then
+				addValidationError(path, errors, "Invalid identifier attribute '%s'.", ident.attribute)
+			end
+
+		elseif nodeType == "vararg" then
+			-- void
+
+		elseif nodeType == "literal" then
+			local literal = node
+			local vType   = type(literal.value)
+			if not (vType == "number" or vType == "string" or vType == "boolean" or vType == "nil") then
+				addValidationError(path, errors, "Invalid literal value type '%s'.", vType)
+			end
+
+		elseif nodeType == "break" then
+			-- void
+
+		elseif nodeType == "label" then
+			local label = node
+			if not stringFind(label.name, "^[%a_][%w_]*$") then
+				addValidationError(path, errors, "Invalid label name: Bad format: %s", label.name)
+			elseif KEYWORDS[label.name] then
+				addValidationError(path, errors, "Invalid label name: Name is a keyword: %s", label.name)
+			end
+
+		elseif nodeType == "goto" then
+			local gotoNode = node
+			if not stringFind(gotoNode.name, "^[%a_][%w_]*$") then
+				addValidationError(path, errors, "Invalid label name: Bad format: %s", gotoNode.name)
+			elseif KEYWORDS[gotoNode.name] then
+				addValidationError(path, errors, "Invalid label name: Name is a keyword: %s", gotoNode.name)
+			end
+
+		elseif nodeType == "lookup" then
+			-- @Incomplete: Should we detect nil literal objects? :DetectRuntimeErrors
+			local lookup = node
+			if not lookup.object then
+				addValidationError(path, errors, "Missing 'object' field.")
+			elseif not EXPRESSION_NODES[lookup.object.type] then
+				addValidationError(path, errors, "The object is not an expression. (It is '%s'.)", lookup.object.type)
+			else
+				validateNode(lookup.object, path, errors, "object")
+			end
+			if not lookup.member then
+				addValidationError(path, errors, "Missing 'member' field.")
+			elseif not EXPRESSION_NODES[lookup.member.type] then
+				addValidationError(path, errors, "The member is not an expression. (It is '%s'.)", lookup.member.type)
+			else
+				validateNode(lookup.member, path, errors, "member")
+			end
+
+		elseif nodeType == "unary" then
+			local unary = node
+			if not OPERATORS_UNARY[unary.operator] then
+				addValidationError(path, errors, "Invalid unary operator '%s'.", unary.operator)
+			end
+			if not unary.expression then
+				addValidationError(path, errors, "Missing 'expression' field.")
+			elseif not EXPRESSION_NODES[unary.expression.type] then
+				addValidationError(path, errors, "The 'expression' field does not contain an expression. (It is '%s'.)", unary.expression.type)
+			else
+				validateNode(unary.expression, path, errors, nil)
+			end
+
+		elseif nodeType == "binary" then
+			local binary = node
+			if not OPERATORS_BINARY[binary.operator] then
+				addValidationError(path, errors, "Invalid binary operator '%s'.", binary.operator)
+			end
+			if not binary.left then
+				addValidationError(path, errors, "Missing 'left' field.")
+			elseif not EXPRESSION_NODES[binary.left.type] then
+				addValidationError(path, errors, "The left side is not an expression. (It is '%s'.)", binary.left.type)
+			else
+				validateNode(binary.left, path, errors, "left")
+			end
+			if not binary.right then
+				addValidationError(path, errors, "Missing 'right' field.")
+			elseif not EXPRESSION_NODES[binary.right.type] then
+				addValidationError(path, errors, "The right side is not an expression. (It is '%s'.)", binary.right.type)
+			else
+				validateNode(binary.right, path, errors, "right")
+			end
+
+		elseif nodeType == "call" then
+			local call = node
+			if not call.callee then
+				addValidationError(path, errors, "Missing 'callee' field.")
+			elseif not EXPRESSION_NODES[call.callee.type] then
+				addValidationError(path, errors, "Callee is not an expression. (It is '%s'.)", call.callee.type)
+			-- elseif call.callee.type == "literal" or call.callee.type == "table" then -- @Incomplete: Do this kind of check? Or maybe we should stick to strictly validating the AST even if the resulting Lua code would raise a runtime error. :DetectRuntimeErrors
+			-- 	addValidationError(path, errors, "Callee is uncallable.")
+			elseif call.method and not (
+				call.callee.type == "lookup"
+				and call.callee.member
+				and call.callee.member.type == "literal"
+				and type(call.callee.member.value) == "string"
+				and stringFind(call.callee.member.value, "^[%a_][%w_]*$")
+				and not KEYWORDS[call.callee.member.value]
+			) then
+				addValidationError(path, errors, "Callee is unsuitable for method call.")
+			else
+				validateNode(call.callee, path, errors, "callee")
+			end
+			for i, expr in ipairs(call.arguments) do
+				if not EXPRESSION_NODES[expr.type] then
+					addValidationError(path, errors, "Argument %d is not an expression. (It is '%s')", i, expr.type)
+				else
+					validateNode(expr, path, errors, "arg"..i)
+				end
+			end
+
+		elseif nodeType == "function" then
+			local func = node
+			for i, ident in ipairs(func.parameters) do
+				if not (ident.type == "identifier" or (ident.type == "vararg" and i == #func.parameters)) then
+					addValidationError(path, errors, "Parameter %d is not an identifier%s. (It is '%s')", i, (i == #func.parameters and " or vararg" or ""), ident.type)
+				else
+					validateNode(ident, path, errors, "param"..i)
+				end
+			end
+			if not func.body then
+				addValidationError(path, errors, "Missing 'body' field.")
+			elseif func.body.type ~= "block" then
+				addValidationError(path, errors, "Body is not a block.")
+			else
+				validateNode(func.body, path, errors, "body")
+			end
+
+		elseif nodeType == "return" then
+			local returnNode = node
+			for i, expr in ipairs(returnNode.values) do
+				if not EXPRESSION_NODES[expr.type] then
+					addValidationError(path, errors, "Value %d is not an expression. (It is '%s')", i, expr.type)
+				else
+					validateNode(expr, path, errors, i)
+				end
+			end
+
+		elseif nodeType == "block" then
+			local block = node
+			for i, statement in ipairs(block.statements) do
+				if not STATEMENT_NODES[statement.type] then
+					addValidationError(path, errors, "Child node %d is not a statement. (It is '%s'.)", i, statement.type)
+				else
+					validateNode(statement, path, errors, i)
+				end
+			end
+
+		elseif nodeType == "declaration" then
+			local decl = node
+			for i, ident in ipairs(decl.names) do
+				if ident.type ~= "identifier" then
+					addValidationError(path, errors, "Name %d is not an identifier. (It is '%s')", i, ident.type)
+				else
+					validateNode(ident, path, errors, "name"..i)
+				end
+			end
+			for i, expr in ipairs(decl.values) do
+				if not EXPRESSION_NODES[expr.type] then
+					addValidationError(path, errors, "Value %d is not an expression. (It is '%s')", i, expr.type)
+				else
+					validateNode(expr, path, errors, "value"..i)
+				end
+			end
+
+		elseif nodeType == "assignment" then
+			local assignment = node
+			for i, expr in ipairs(assignment.targets) do
+				if not (expr.type == "identifier" or expr.type == "lookup") then
+					addValidationError(path, errors, "Target %d is not an identifier or lookup. (It is '%s')", i, expr.type)
+				else
+					validateNode(expr, path, errors, "target"..i)
+				end
+			end
+			for i, expr in ipairs(assignment.values) do
+				if not EXPRESSION_NODES[expr.type] then
+					addValidationError(path, errors, "Value %d is not an expression. (It is '%s')", i, expr.type)
+				else
+					validateNode(expr, path, errors, "value"..i)
+				end
+			end
+
+		elseif nodeType == "if" then
+			local ifNode = node
+			if not ifNode.condition then
+				addValidationError(path, errors, "Missing 'condition' field.")
+			elseif not EXPRESSION_NODES[ifNode.condition.type] then
+				addValidationError(path, errors, "The condition is not an expression. (It is '%s'.)", ifNode.condition.type)
+			else
+				validateNode(ifNode.condition, path, errors, "condition")
+			end
+			if not ifNode.bodyTrue then
+				addValidationError(path, errors, "Missing 'bodyTrue' field.")
+			elseif ifNode.bodyTrue.type ~= "block" then
+				addValidationError(path, errors, "Body for true branch is not a block.")
+			else
+				validateNode(ifNode.bodyTrue, path, errors, "true")
+			end
+			if not ifNode.bodyFalse then
+				-- void
+			elseif ifNode.bodyFalse.type ~= "block" then
+				addValidationError(path, errors, "Body for false branch is not a block.")
+			else
+				validateNode(ifNode.bodyFalse, path, errors, "false")
+			end
+
+		elseif nodeType == "while" then
+			local whileLoop = node
+			if not whileLoop.condition then
+				addValidationError(path, errors, "Missing 'condition' field.")
+			elseif not EXPRESSION_NODES[whileLoop.condition.type] then
+				addValidationError(path, errors, "The condition is not an expression. (It is '%s'.)", whileLoop.condition.type)
+			else
+				validateNode(whileLoop.condition, path, errors, "condition")
+			end
+			if not whileLoop.body then
+				addValidationError(path, errors, "Missing 'body' field.")
+			elseif whileLoop.body.type ~= "block" then
+				addValidationError(path, errors, "Body is not a block.")
+			else
+				validateNode(whileLoop.body, path, errors, "true")
+			end
+
+		elseif nodeType == "repeat" then
+			local repeatLoop = node
+			if not repeatLoop.body then
+				addValidationError(path, errors, "Missing 'body' field.")
+			elseif repeatLoop.body.type ~= "block" then
+				addValidationError(path, errors, "Body is not a block.")
+			else
+				validateNode(repeatLoop.body, path, errors, "true")
+			end
+			if not repeatLoop.condition then
+				addValidationError(path, errors, "Missing 'condition' field.")
+			elseif not EXPRESSION_NODES[repeatLoop.condition.type] then
+				addValidationError(path, errors, "The condition is not an expression. (It is '%s'.)", repeatLoop.condition.type)
+			else
+				validateNode(repeatLoop.condition, path, errors, "condition")
+			end
+
+		elseif nodeType == "for" then
+			local forLoop = node
+			if not (forLoop.kind == "numeric" or forLoop.kind == "generic") then
+				addValidationError(path, errors, "Invalid for loop kind '%s'.", forLoop.kind)
+			end
+			if not forLoop.names[1] then
+				addValidationError(path, errors, "Missing name(s).")
+			elseif forLoop.kind == "numeric" and forLoop.names[2] then
+				addValidationError(path, errors, "Too many names for numeric loop. (Got %d)", #forLoop.names)
+			end
+			for i, ident in ipairs(forLoop.names) do
+				if ident.type ~= "identifier" then
+					addValidationError(path, errors, "Name %d is not an identifier. (It is '%s')", i, ident.type)
+				else
+					validateNode(ident, path, errors, "name"..i)
+				end
+			end
+			if not forLoop.values[1] then
+				addValidationError(path, errors, "Missing value(s).")
+			elseif forLoop.kind == "numeric" and not forLoop.values[2] then
+				addValidationError(path, errors, "Too few values for numeric loop. (Got %d)", #forLoop.values)
+			elseif forLoop.kind == "numeric" and forLoop.values[4] then
+				addValidationError(path, errors, "Too many values for numeric loop. (Got %d)", #forLoop.values)
+			end
+			for i, expr in ipairs(forLoop.values) do
+				if not EXPRESSION_NODES[expr.type] then
+					addValidationError(path, errors, "Value %d is not an expression. (It is '%s')", i, expr.type)
+				else
+					validateNode(expr, path, errors, "value"..i)
+				end
+			end
+			if not forLoop.body then
+				addValidationError(path, errors, "Missing 'body' field.")
+			elseif forLoop.body.type ~= "block" then
+				addValidationError(path, errors, "Body is not a block.")
+			else
+				validateNode(forLoop.body, path, errors, "body")
+			end
+
+		elseif nodeType == "table" then
+			local tableNode = node
+			for i, tableField in ipairs(tableNode.fields) do
+				-- @Incomplete: Should we detect nil literal keys? :DetectRuntimeErrors
+				if not tableField.key then
+					addValidationError(path, errors, "Missing 'key' field for table field %d.", i)
+				elseif not EXPRESSION_NODES[tableField.key.type] then
+					addValidationError(path, errors, "The key for table field %d is not an expression. (It is '%s'.)", i, tableField.key.type)
+				elseif tableField.generatedKey and tableField.key.type ~= "literal" then
+					addValidationError(path, errors, "The generated key for table field %d is not a numeral. (It is '%s'.)", i, tableField.key.type)
+				elseif tableField.generatedKey and type(tableField.key.value) ~= "number" then
+					addValidationError(path, errors, "The generated key for table field %d is not a number. (It's a '%s' literal.)", i, type(tableField.key.value))
+				else
+					validateNode(tableField.key, path, errors, "key")
+				end
+				if not tableField.value then
+					addValidationError(path, errors, "Missing 'value' field for table field %d.", i)
+				elseif not EXPRESSION_NODES[tableField.value.type] then
+					addValidationError(path, errors, "The value for table field %d is not an expression. (It is '%s'.)", i, tableField.value.type)
+				else
+					validateNode(tableField.value, path, errors, "value")
+				end
+			end
+
+		else
+			errorf("Invalid node type '%s'.", tostring(nodeType)) -- We don't call addValidationError() for this - it's just an assertion.
+		end
+	end
+
+	-- isValid, errors = validateTree( astNode )
+	function validateTree(node)
+		local path   = {}
+		local errors = {}
+
+		validateNode(node, path, errors, nil)
+
+		if errors[1] then
+			return false, tableConcat(errors, "\n")
+		else
+			return true
+		end
+	end
+end
+
+
+
 parser = {
 	-- Constants.
 	VERSION             = PARSER_VERSION,
@@ -5868,7 +6217,7 @@ parser = {
 	concatTokens        = concatTokens,
 
 	parse               = parse,
-	parseExpression     = parseExpression,
+	parseExpression     = parseExpression, -- @Doc
 	parseFile           = parseFile,
 
 	newNode             = newNode,
@@ -5879,6 +6228,8 @@ parser = {
 	setChild            = setChild,
 	addChild            = addChild,
 	removeChild         = removeChild,
+
+	validateTree        = validateTree, -- @Doc
 
 	traverseTree        = traverseTree,
 	traverseTreeReverse = traverseTreeReverse,
