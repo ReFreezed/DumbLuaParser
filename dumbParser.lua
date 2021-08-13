@@ -64,11 +64,12 @@ formatMessage
 
 tokenize()
 	tokens = parser.tokenize( luaString [, pathForErrorMessages="?" ] )
+	tokens = parser.tokenize( luaString [, keepWhitespaceTokens=false, pathForErrorMessages="?" ] )
 	Convert a Lua string into an array of tokens. (See below for more info.)
 	Returns nil and a message on error.
 
 tokenizeFile()
-	tokens = parser.tokenizeFile( path )
+	tokens = parser.tokenizeFile( path [, keepWhitespaceTokens=false ] )
 	Convert the contents of a file into an array of tokens. (See below for more info.) Uses io.open().
 	Returns nil and a message on error.
 
@@ -322,6 +323,7 @@ Token types:
 	"number"      -- Number literal.
 	"punctuation" -- Any punctuation, e.g. ".." or "(".
 	"string"      -- String value.
+	"whitespace"  -- Sequence of whitespace characters.
 
 
 4 - AST
@@ -1108,10 +1110,17 @@ do
 		return tableConcat(buffer)
 	end
 
-	-- tokens, error = tokenize( luaString [, pathForErrorMessages="?" ] )
-	function tokenize(s, path)
-		assertArg1("tokenize", 1, s,    "string")
-		assertArg2("tokenize", 2, path, "string","nil")
+	-- tokens, error = tokenize( luaString [, keepWhitespaceTokens=false ] [, pathForErrorMessages="?" ] )  -- @Doc: keepWhitespaceTokens
+	function tokenize(s, keepWhitespaceTokens, path)
+		assertArg1("tokenize", 1, s, "string")
+
+		if type(keepWhitespaceTokens) == "string" then
+			keepWhitespaceTokens = false
+			path                 = keepWhitespaceTokens
+		else
+			assertArg2("tokenize", 2, keepWhitespaceTokens, "boolean","nil")
+			assertArg2("tokenize", 3, path,                 "string","nil")
+		end
 
 		if stringFind(s, "\r", 1, true) then
 			s = stringGsub(s, "\r\n?", "\n")
@@ -1144,9 +1153,33 @@ do
 		local NUM_DEC               = NUMERAL_PATTERNS.DEC
 
 		while true do
-			local i1, i2 = stringFind(s, "^%s+", ptr)
+			local i1, i2 = stringFind(s, "^[ \t\n]+", ptr)
+
 			if i1 then
-				ln  = ln + countSubString(s, i1, i2, "\n", true)
+				if keepWhitespaceTokens then
+					local lnStart = ln
+					local tokRepr = stringSub(s, i1, i2)
+					ln            = ln + countString(tokRepr, "\n", true)
+					count         = count + 1
+
+					tokens[count] = {
+						type           = "whitespace",
+						value          = tokRepr,
+						representation = tokRepr,
+
+						sourceString   = s,
+						sourcePath     = path,
+
+						lineStart      = lnStart,
+						lineEnd        = ln,
+						positionStart  = i1,
+						positionEnd    = i2,
+					}
+
+				else
+					ln = ln + countSubString(s, i1, i2, "\n", true)
+				end
+
 				ptr = i2 + 1
 			end
 
@@ -1411,9 +1444,10 @@ do
 	end
 end
 
--- tokens, error = tokenizeFile( path )
-function tokenizeFile(path)
-	assertArg1("tokenizeFile", 1, path, "string")
+-- tokens, error = tokenizeFile( path [, keepWhitespaceTokens=false ] )  -- @Doc: keepWhitespaceTokens
+function tokenizeFile(path, keepWhitespaceTokens)
+	assertArg1("tokenizeFile", 1, path,                 "string")
+	assertArg2("tokenizeFile", 2, keepWhitespaceTokens, "boolean","nil")
 
 	local file, err = ioOpen(path, "r")
 	if not file then  return nil, err  end
@@ -1421,7 +1455,7 @@ function tokenizeFile(path)
 	local s = file:read("*a")
 	file:close()
 
-	return tokenize(s, path)
+	return tokenize(s, (keepWhitespaceTokens or false), path)
 end
 
 --
@@ -1433,6 +1467,7 @@ end
 -- token = newToken( "number",      number )
 -- token = newToken( "punctuation", punctuationString )
 -- token = newToken( "string",      stringValue )
+-- token = newToken( "whitespace",  contents )
 --
 local function newToken(tokType, tokValue)
 	local tokRepr
@@ -1484,6 +1519,12 @@ local function newToken(tokType, tokValue)
 		else
 			tokRepr = F("--%s\n", tokValue)
 		end
+
+	elseif tokType == "whitespace" then
+		if type(tokValue) ~= "string"       then  errorf(2, "Expected string value for 'whitespace' token. (Got %s)", type(tokValue))  end
+		if tokValue == ""                   then  errorf(2, "Value is empty.")  end -- Having a token that is zero characters long would be weird, so we disallow it.
+		if stringFind(tokValue, "[^ \t\n]") then  errorf(2, "Value has non-whitespace characters.")  end
+		tokRepr = tokValue
 
 	else
 		errorf(2, "Invalid token type '%s'.", tostring(tokType))
@@ -2551,8 +2592,11 @@ local function tokensToAst(tokens, asBlock)
 		}
 	end
 
+	-- Remove useless tokens.
 	for tok = 1, #tokens do
-		if tokens[tok].type ~= "comment" then
+		local tokType = tokens[tok].type
+
+		if not (tokType == "comment" or tokType == "whitespace") then
 			count               = count + 1
 			tokensPurged[count] = tokens[tok]
 		end

@@ -286,6 +286,7 @@ test("Tokens", function()
 		table.insert(tokens, parser.newToken("identifier",  "math"))
 		table.insert(tokens, parser.newToken("punctuation", "."))
 		table.insert(tokens, parser.newToken("identifier",  "abs"))
+		table.insert(tokens, parser.newToken("whitespace",  " "))
 		table.insert(tokens, parser.newToken("punctuation", "("))
 		table.insert(tokens, parser.newToken("punctuation", "-"))
 		table.insert(tokens, parser.newToken("number",      1.75))
@@ -304,6 +305,13 @@ test("Tokens", function()
 		local lua = assert(parser.toLua(ast))
 		-- print(lua)
 		assertLua(lua, [[ local n=math.abs(-1.75); ]])
+	end
+
+	do
+		-- Test keepWhitespaceTokens flag.
+		local tokens    = assert(parser.tokenize([[ local x --[=[ ]=] = foo ; ]], true))
+		local concatted = parser.concatTokens(tokens)
+		assert(concatted == [[ local x --[=[ ]=] = foo ; ]], concatted)
 	end
 end)
 
