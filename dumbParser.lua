@@ -405,10 +405,15 @@ Special number notation rules.
 
 local PARSER_VERSION = "2.0.1-dev"
 
-local NORMALIZE_MINUS_ZERO
+local NORMALIZE_MINUS_ZERO, HANDLE_ENV
 do
 	local n              = 0
 	NORMALIZE_MINUS_ZERO = tostring(-n) == "0"
+end
+do
+	local pcall = pcall
+	local _ENV  = nil
+	HANDLE_ENV  = not pcall(function() local x = _G end)
 end
 
 local assert       = assert
@@ -4672,9 +4677,14 @@ end
 
 local generateName
 do
-	local BANK_LETTERS  = "etaoinshrdlcumwfgypbvkxjqz_ETAOINSHRDLCUMWFGYPBVKXJQZ" -- http://en.wikipedia.org/wiki/Letter_frequencies
-	local BANK_ALPHANUM = "etaoinshrdlcumwfgypbvkxjqz_ETAOINSHRDLCUMWFGYPBVKXJQZ0123456789"
-	local cache         = {}
+	local BANK_LETTERS  = "etaoinshrdlcumwfgypbvkxjqzETAOINSHRDLCUMWFGYPBVKXJQZ" -- http://en.wikipedia.org/wiki/Letter_frequencies
+	local BANK_ALPHANUM = "etaoinshrdlcumwfgypbvkxjqzETAOINSHRDLCUMWFGYPBVKXJQZ0123456789"
+
+	local ILLEGAL_NAMES = {}
+	for name in pairs(KEYWORDS) do  ILLEGAL_NAMES[name] = true  end
+	if HANDLE_ENV             then  ILLEGAL_NAMES._ENV  = true  end
+
+	local cache = {}
 
 	function generateName(nameGeneration)
 		if not cache[nameGeneration] then
@@ -4691,7 +4701,12 @@ do
 				if nameGeneration == 0 then  break  end
 			end
 
-			cache[nameGeneration] = stringChar(tableUnpack(charBytes))
+			local name = stringChar(tableUnpack(charBytes))
+			if ILLEGAL_NAMES[name] then
+				-- We will probably realistically never get here, partially because of the limited amount of locals and upvalues Lua allows.
+				name = name.."_"
+			end
+			cache[nameGeneration] = name
 		end
 
 		return cache[nameGeneration]
@@ -4764,43 +4779,50 @@ local function minify(node, optimize)
 	for _, declIdent in ipairs(allDeclIdents) do
 		local newName
 
-		for nameGeneration = 1, 1/0 do
-			newName         = generateName(nameGeneration)
-			local collision = false
+		if declIdent.name == "_ENV" and HANDLE_ENV then
+			-- There are probably some cases where we can safely rename _ENV,
+			-- but it's likely not worth the effort to detect that.
+			newName = "_ENV"
 
-			for _, watcherIdent in ipairs(declIdentWatchers[declIdent]) do
-				local watcherDeclIdent = watcherIdent.declaration
+		else
+			for nameGeneration = 1, 1/0 do
+				newName         = generateName(nameGeneration)
+				local collision = false
 
-				-- Local watcher.
-				if watcherDeclIdent then
-					if renamed[watcherDeclIdent] and watcherDeclIdent.name == newName then
+				for _, watcherIdent in ipairs(declIdentWatchers[declIdent]) do
+					local watcherDeclIdent = watcherIdent.declaration
+
+					-- Local watcher.
+					if watcherDeclIdent then
+						if renamed[watcherDeclIdent] and watcherDeclIdent.name == newName then
+							collision = true
+							break
+						end
+
+					-- Global watcher.
+					elseif watcherIdent.name == newName then
 						collision = true
 						break
 					end
+				end--for declIdentWatchers
 
-				-- Global watcher.
-				elseif watcherIdent.name == newName then
-					collision = true
+				--[[ :SortBeforeRename
+				if not collision and remoteWatchers[declIdent] then
+					for _, watcherDeclIdent in ipairs(remoteWatchers[declIdent]) do
+						if watcherDeclIdent.name == newName then
+							collision = true
+							break
+						end
+					end
+				end
+				--]]
+
+				if not collision then
+					maxNameGeneration = mathMax(maxNameGeneration, nameGeneration)
 					break
 				end
-			end--for declIdentWatchers
-
-			--[[ :SortBeforeRename
-			if not collision and remoteWatchers[declIdent] then
-				for _, watcherDeclIdent in ipairs(remoteWatchers[declIdent]) do
-					if watcherDeclIdent.name == newName then
-						collision = true
-						break
-					end
-				end
-			end
-			--]]
-
-			if not collision then
-				maxNameGeneration = mathMax(maxNameGeneration, nameGeneration)
-				break
-			end
-		end--for nameGeneration
+			end--for nameGeneration
+		end
 
 		--[[ :SortBeforeRename
 		for _, watcherIdent in ipairs(declIdentWatchers[declIdent]) do

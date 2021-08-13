@@ -134,5 +134,12 @@ do
 			func(upvalue, arg1,arg2, assign1,assign2, decl, loop1,loop2)
 		end
 	end
+
+	-- [[ Lua 5.2+
+	local _ENV = _ENV
+	local function getEnv()
+		return _ENV
+	end
+	--]]
 end
 --]===]

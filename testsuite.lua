@@ -877,6 +877,18 @@ test("Minify", function()
 		]],
 		[[ for e,t in ipairs(global)do globalFunc1(t);for e=e,#global do globalFunc2(e);end end ]]
 	)
+
+	if _VERSION >= "Lua 5.2" then
+		testMinify(
+			[[
+				local _ENV = _ENV
+				local function getEnv()
+					return _ENV
+				end
+			]],
+			[[ local _ENV=_ENV;local function e()return _ENV;end ]]
+		)
+	end
 end)
 
 
