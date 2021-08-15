@@ -4,6 +4,7 @@
 --=
 --=    1 - Find globals
 --=    2 - Replace calls to a function
+--=    3 - Construct an AST (the painful way)
 --=
 --=-------------------------------------------------------------
 --=
@@ -23,10 +24,13 @@ io.stderr:setvbuf("no")
 -- 1 - Find globals
 --
 
-local ast = parser.parse[[
-local x = math.floor(1.5) -- 'math' is a global.
-y       = "foo"           -- 'y' is a global.
-]]
+local ast = parser.parse(
+	[[
+		local x = math.floor(1.5) -- 'math' is a global.
+		y       = "foo"           -- 'y' is a global.
+	]],
+	"abc.lua"
+)
 
 parser.updateReferences(ast)
 
@@ -57,14 +61,14 @@ print("\n\n")
 --
 
 local ast = parser.parse[[
-local function calculate(x)
-	assert(type(x) == "number")
-	-- ...
-end
-local function doThing(foo)
-	assert(foo ~= "bar")
-	-- ...
-end
+	local function calculate(x)
+		assert(type(x) == "number")
+		-- ...
+	end
+	local function doThing(foo)
+		assert(foo ~= "bar")
+		-- ...
+	end
 ]]
 
 parser.traverseTree(ast, function(node, parent, container, key)
@@ -98,7 +102,50 @@ parser.traverseTree(ast, function(node, parent, container, key)
 end)
 
 print(parser.toLua(ast, true))
+print("\n\n")
 
+
+
+--
+-- 3 - Construct an AST (the painful way)
+--
+
+--[[ This is the program we will create:
+function _G.double(n)
+	return 2 * n
+end
+local x = double(5)
+]]
+
+local new = parser.newNode
+
+local block = new("block")
+
+local assignment             = new("assignment")
+assignment.targets[1]        = new("lookup")
+assignment.targets[1].object = new("identifier", "_G")
+assignment.targets[1].member = new("literal", "double")
+table.insert(block.statements, assignment)
+
+local func           = new("function")
+func.parameters[1]   = new("identifier", "n")
+func.body            = new("block")
+assignment.values[1] = func
+
+local ret           = new("return")
+ret.values[1]       = new("binary", "*")
+ret.values[1].left  = new("literal", 2)
+ret.values[1].right = new("identifier", "n")
+table.insert(func.body.statements, ret)
+
+local decl                  = new("declaration")
+decl.names[1]               = new("identifier", "x")
+decl.values[1]              = new("call")
+decl.values[1].callee       = new("identifier", "double")
+decl.values[1].arguments[1] = new("literal", 5)
+table.insert(block.statements, decl)
+
+print(parser.toLua(block, true))
 print("\n\n")
 
 

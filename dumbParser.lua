@@ -1121,8 +1121,8 @@ do
 		assertArg1("tokenize", 1, s, "string")
 
 		if type(keepWhitespaceTokens) == "string" then
-			keepWhitespaceTokens = false
 			path                 = keepWhitespaceTokens
+			keepWhitespaceTokens = false
 		else
 			assertArg2("tokenize", 2, keepWhitespaceTokens, "boolean","nil")
 			assertArg2("tokenize", 3, path,                 "string","nil")
