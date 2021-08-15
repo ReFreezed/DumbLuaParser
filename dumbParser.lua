@@ -55,6 +55,7 @@ tokenize, tokenizeFile
 newToken, concatTokens
 parse, parseExpression, parseFile
 newNode, newNodeFast, cloneNode, cloneTree, getChild, setChild, addChild, removeChild
+validateTree
 traverseTree, traverseTreeReverse
 updateReferences
 simplify, optimize, minify
@@ -121,7 +122,7 @@ getChild()
 	tableFieldKey = "key"|"value"
 	Get a child node. (Search for 'NodeFields' for field names.)
 
-	The result is the same as doing this, but with more error checking:
+	The result is the same as doing the following, but with more error checking:
 	childNode = astNode[fieldName]
 	childNode = astNode[fieldName][index]
 	childNode = astNode[fieldName][index][tableFieldKey]
@@ -133,7 +134,7 @@ setChild()
 	tableFieldKey = "key"|"value"
 	Set a child node. (Search for 'NodeFields' for field names.)
 
-	The result is the same as doing this, but with more error checking:
+	The result is the same as doing the following, but with more error checking:
 	astNode[fieldName]                       = childNode
 	astNode[fieldName][index]                = childNode
 	astNode[fieldName][index][tableFieldKey] = childNode
@@ -143,7 +144,7 @@ addChild()
 	parser.addChild( astNode, fieldName, [ index=atEnd, ] keyNode, valueNode ) -- If the node field is a table field array.
 	Add a child node to an array field. (Search for 'NodeFields' for field names.)
 
-	The result is the same as doing this, but with more error checking:
+	The result is the same as doing the following, but with more error checking:
 	table.insert(astNode[fieldName], index, childNode)
 	table.insert(astNode[fieldName], index, {key=keyNode, value=valueNode, generatedKey=false})
 
@@ -151,8 +152,13 @@ removeChild()
 	parser.removeChild( astNode, fieldName [, index=last ] )
 	Remove a child node from an array field. (Search for 'NodeFields' for field names.)
 
-	The result is the same as doing this, but with more error checking:
+	The result is the same as doing the following, but with more error checking:
 	table.remove(astNode[fieldName], index)
+
+validateTree()
+	isValid, errorMessages = validateTree( astNode )
+	Check for errors in an AST (e.g. missing condition expressions for if statements).
+	errorMessages is a multi-line string if isValid is false.
 
 traverseTree()
 	didStop = parser.traverseTree( astNode, [ leavesFirst=false, ] callback [, topNodeParent=nil, topNodeContainer=nil, topNodeKey=nil ] )
@@ -1110,7 +1116,7 @@ do
 		return tableConcat(buffer)
 	end
 
-	-- tokens, error = tokenize( luaString [, keepWhitespaceTokens=false ] [, pathForErrorMessages="?" ] )  -- @Doc: keepWhitespaceTokens
+	-- tokens, error = tokenize( luaString [, keepWhitespaceTokens=false ] [, pathForErrorMessages="?" ] )
 	function tokenize(s, keepWhitespaceTokens, path)
 		assertArg1("tokenize", 1, s, "string")
 
@@ -1444,7 +1450,7 @@ do
 	end
 end
 
--- tokens, error = tokenizeFile( path [, keepWhitespaceTokens=false ] )  -- @Doc: keepWhitespaceTokens
+-- tokens, error = tokenizeFile( path [, keepWhitespaceTokens=false ] )
 function tokenizeFile(path, keepWhitespaceTokens)
 	assertArg1("tokenizeFile", 1, path,                 "string")
 	assertArg2("tokenizeFile", 2, keepWhitespaceTokens, "boolean","nil")
@@ -5923,7 +5929,7 @@ end
 
 do
 	local function addValidationError(path, errors, s, ...)
-		tableInsert(errors, F("%s: "..s, tableConcat(path, "/"), ...))
+		tableInsert(errors, F("%s: "..s, tableConcat(path, " > "), ...))
 	end
 
 	local function validateNode(node, path, errors, prefix)
@@ -6248,6 +6254,8 @@ do
 		else
 			errorf("Invalid node type '%s'.", tostring(nodeType)) -- We don't call addValidationError() for this - it's just an assertion.
 		end
+
+		path[#path] = nil
 	end
 
 	-- isValid, errors = validateTree( astNode )
@@ -6283,7 +6291,7 @@ parser = {
 	concatTokens        = concatTokens,
 
 	parse               = parse,
-	parseExpression     = parseExpression, -- @Doc
+	parseExpression     = parseExpression,
 	parseFile           = parseFile,
 
 	newNode             = newNode,
@@ -6295,7 +6303,7 @@ parser = {
 	addChild            = addChild,
 	removeChild         = removeChild,
 
-	validateTree        = validateTree, -- @Doc
+	validateTree        = validateTree,
 
 	traverseTree        = traverseTree,
 	traverseTreeReverse = traverseTreeReverse,

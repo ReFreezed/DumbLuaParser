@@ -914,7 +914,9 @@ test("Validate", function()
 		return statement
 	end
 	local function testInvalid(ast)
-		assert(not parser.validateTree(ast))
+		local isValid, err = parser.validateTree(ast)
+		assert(not isValid)
+		-- print(err)
 	end
 
 	local ident      = parseExpression[[ x ]] ; ident.name      = "%"   ; testInvalid(ident)
