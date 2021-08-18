@@ -72,6 +72,11 @@ do
 	local s1 = "\"''a''b''c''\""
 	local s2 = '\'""a""b""c""\''
 
+	local s = (""):rep(9)
+	local n = ({9})[1]
+	local v = (...)[1]
+	local b = (function(n) return n>1 end)(9)
+
 	;;;;
 
 	-- Special number notations.

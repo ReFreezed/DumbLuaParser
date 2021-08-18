@@ -5082,15 +5082,21 @@ do
 		return true, lastOutput
 	end
 
+	local function doesExpressionNeedParenthesisIfOnTheLeftSide(expr)
+		local nodeType = expr.type
+		-- Some things, like "binary" or "vararg", are not here because those expressions add their own parentheses.
+		return nodeType == "literal" or nodeType == "table" or nodeType == "function"
+	end
+
 	-- Returns nil and a message or error.
 	local function writeLookup(buffer, pretty, indent, lastOutput, lookup, forMethodCall, nodeCb)
-		local objIsLiteral = (lookup.object.type == "literal")
-		if objIsLiteral then  lastOutput = writeLua(buffer, "(", "")  end
+		local objNeedParens = doesExpressionNeedParenthesisIfOnTheLeftSide(lookup.object)
+		if objNeedParens then  lastOutput = writeLua(buffer, "(", "")  end
 
 		local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, lookup.object, false, nodeCb)
 		if not ok then  return nil, lastOutput  end
 
-		if objIsLiteral then  lastOutput = writeLua(buffer, ")", "")  end
+		if objNeedParens then  lastOutput = writeLua(buffer, ")", "")  end
 
 		if canNodeBeName(lookup.member) then
 			lastOutput = writeLua(buffer, (forMethodCall and ":" or "."), "")
@@ -5361,8 +5367,13 @@ do
 				if not ok then  return nil, lastOutput  end
 
 			else
+				local needParens = doesExpressionNeedParenthesisIfOnTheLeftSide(call.callee)
+				if needParens then  lastOutput = writeLua(buffer, "(", "")  end
+
 				local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, call.callee, false, nodeCb)
 				if not ok then  return nil, lastOutput  end
+
+				if needParens then  lastOutput = writeLua(buffer, ")", "")  end
 			end
 
 			lastOutput = writeLua(buffer, "(", "")
