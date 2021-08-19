@@ -629,7 +629,7 @@ local function AstLiteral (token,v)return populateCommonNodeFields(token,{
 })end
 local function AstTable (token)return populateCommonNodeFields(token,{
 	type        = "table",
-	fields      = {},    -- Array of {key=expression, value=expression, generatedKey=bool}. generatedKey is true for implicit keys (i.e. {x,y}) and false for explicit keys (i.e. {a=x,b=y}). Note that the state of generatedKey affects the output of toLua()!
+	fields      = {},    -- Array of {key=expression, value=expression, generatedKey=bool}. generatedKey is true for implicit keys (i.e. {x,y}) and false for explicit keys (i.e. {a=x,b=y}). Note that the state of generatedKey affects the output of toLua()! 'key' may be nil if generatedKey is true.
 })end
 local function AstLookup (token)return populateCommonNodeFields(token,{
 	type        = "lookup",
@@ -2471,7 +2471,11 @@ local function parseOneOrPossiblyMoreStatements(tokens, tokStart, statements) --
 		local returnNode = AstReturn(currentToken)
 		tok              = tok + 1 -- 'return'
 
-		if tokens[tok] and not ((isTokenType(tokens[tok], "keyword") and isTokenAnyValue(tokens[tok], BLOCK_END_TOKEN_TYPES)) or isToken(tokens[tok], "punctuation", ";")) then
+		if tokens[tok] and not (
+			(isTokenType(tokens[tok], "keyword") and isTokenAnyValue(tokens[tok], BLOCK_END_TOKEN_TYPES))
+			or isToken(tokens[tok], "punctuation", ";")
+			or isTokenType(tokens[tok], "end")
+		) then
 			local ok, tokNext, err = parseExpressionList(tokens, tok, returnNode.values)
 			if not ok then  return false, tok, err  end
 			tok = tokNext
@@ -3136,8 +3140,7 @@ do
 		indent = indent+1
 
 		if key ~= nil then
-			ioWrite(tostring(key))
-			ioWrite(" ")
+			ioWrite(tostring(key), " ")
 		end
 
 		_printNode(node)
@@ -3146,8 +3149,13 @@ do
 
 		if nodeType == "table" then
 			for i, tableField in ipairs(node.fields) do
-				if tableField.key   then  _printTree(tableField.key,   indent, i..(tableField.generatedKey and "KEYGEN" or "KEY   "))  end
-				if tableField.value then  _printTree(tableField.value, indent, i..(                                        "VALUE "))  end
+				if tableField.key then
+					_printTree(tableField.key, indent, i..(tableField.generatedKey and "KEYGEN" or "KEY   "))
+				elseif tableField.generatedKey then
+					for i = 1, indent do  ioWrite(parser.indentation)  end
+					ioWrite(i, "KEYGEN -\n")
+				end
+				if tableField.value then  _printTree(tableField.value, indent, i.."VALUE ")  end
 			end
 
 		elseif nodeType == "lookup" then
@@ -5210,6 +5218,7 @@ do
 				lastOutput = writeNumber(buffer, pretty, literal.value, lastOutput)
 
 			elseif type(literal.value) == "string" then
+				-- @Speed: Cache!
 				local R           = isNumberInRange
 				local s           = literal.value
 				local doubleCount = countString(s, '"', true)
@@ -5272,7 +5281,7 @@ do
 				end
 
 				if tableField.generatedKey then
-					if nodeCb then  nodeCb(tableField.key, buffer)  end
+					if nodeCb and tableField.key then  nodeCb(tableField.key, buffer)  end
 
 				else
 					if canNodeBeName(tableField.key) then
@@ -5724,6 +5733,8 @@ end
 
 
 function formatNumber(n)
+	-- @Speed: Cache!
+
 	-- 64-bit int in LuaJIT (is what we assume, anyway).
 	if jit and type(n) == "cdata" then
 		local nStr = tostring(n)
@@ -6243,7 +6254,9 @@ do
 			for i, tableField in ipairs(tableNode.fields) do
 				-- @Incomplete: Should we detect nil literal keys? :DetectRuntimeErrors
 				if not tableField.key then
+					if not tableField.generatedKey then
 					addValidationError(path, errors, "Missing 'key' field for table field %d.", i)
+					end
 				elseif not EXPRESSION_NODES[tableField.key.type] then
 					addValidationError(path, errors, "The key for table field %d is not an expression. (It is '%s'.)", i, tableField.key.type)
 				elseif tableField.generatedKey and tableField.key.type ~= "literal" then
