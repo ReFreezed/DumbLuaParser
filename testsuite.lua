@@ -976,6 +976,8 @@ test("Validate", function()
 	local decl       = parseStatement[[ local x = 1 ]] ; decl.names[1]  = parser.newNode("vararg") ; testInvalid(decl)
 	local decl       = parseStatement[[ local x = 1 ]] ; decl.values[1] = parser.newNode("block")  ; testInvalid(decl)
 
+	local assignment = parseStatement[[ x      = 1     ]] ; assignment.targets[1] = nil                      ; testInvalid(assignment)
+	local assignment = parseStatement[[ x      = 1     ]] ; assignment.values[1]  = nil                      ; testInvalid(assignment)
 	local assignment = parseStatement[[ x, t.k = 1, "" ]] ; assignment.targets[1] = parser.newNode("vararg") ; testInvalid(assignment)
 	local assignment = parseStatement[[ x, t.k = 1, "" ]] ; assignment.values[1]  = parser.newNode("block")  ; testInvalid(assignment)
 

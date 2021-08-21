@@ -6120,6 +6120,9 @@ do
 
 		elseif nodeType == "declaration" then
 			local decl = node
+			if not decl.names[1] then
+				addValidationError(path, errors, "Missing name(s).")
+			end
 			for i, ident in ipairs(decl.names) do
 				if ident.type ~= "identifier" then
 					addValidationError(path, errors, "Name %d is not an identifier. (It is '%s')", i, ident.type)
@@ -6137,12 +6140,18 @@ do
 
 		elseif nodeType == "assignment" then
 			local assignment = node
+			if not assignment.targets[1] then
+				addValidationError(path, errors, "Missing target expression(s).")
+			end
 			for i, expr in ipairs(assignment.targets) do
 				if not (expr.type == "identifier" or expr.type == "lookup") then
 					addValidationError(path, errors, "Target %d is not an identifier or lookup. (It is '%s')", i, expr.type)
 				else
 					validateNode(expr, path, errors, "target"..i)
 				end
+			end
+			if not assignment.values[1] then
+				addValidationError(path, errors, "Missing value(s).")
 			end
 			for i, expr in ipairs(assignment.values) do
 				if not EXPRESSION_NODES[expr.type] then
