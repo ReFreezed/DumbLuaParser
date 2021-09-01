@@ -34,6 +34,7 @@ local function assertLua(lua, expectedLua, expectedLuaAlt, level)
 		expectedLuaAlt, level = nil, expectedLuaAlt
 	end
 
+	lua            =                    lua           :gsub("^%s+", ""):gsub("%s+$", "")
 	expectedLua    =                    expectedLua   :gsub("^%s+", ""):gsub("%s+$", "")
 	expectedLuaAlt = expectedLuaAlt and expectedLuaAlt:gsub("^%s+", ""):gsub("%s+$", "")
 
@@ -1014,6 +1015,27 @@ test("Validate", function()
 	local forLoop    = parseStatement[[ for x, y, z in a, b, c, d do end ]] ; forLoop.values[1] = parser.newNode("block")  ; testInvalid(forLoop)
 	local forLoop    = parseStatement[[ for x, y, z in a, b, c, d do end ]] ; forLoop.body      = nil                      ; testInvalid(forLoop)
 	local forLoop    = parseStatement[[ for x, y, z in a, b, c, d do end ]] ; forLoop.body      = parser.newNode("vararg") ; testInvalid(forLoop)
+end)
+
+
+
+test("Selective pretty", function()
+	local ast = assert(parser.parse[[
+		local function foo(a, ...)
+			print(a .. ...)
+		end
+		local x = 7 + foo("a", "\0322")
+	]])
+
+	ast.pretty                              = true
+	ast.statements[2].values[1].body.pretty = false
+
+	local lua = parser.toLua(ast, false)
+	print(lua)
+	assertLua(lua, [[
+local function foo(a, ...)print(a.. ...);end
+local x = 7 + foo("a", " 2");
+	]])
 end)
 
 

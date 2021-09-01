@@ -1456,7 +1456,7 @@ function tokenizeFile(path, keepWhitespaceTokens)
 	assertArg2("tokenizeFile", 2, keepWhitespaceTokens, "boolean","nil")
 
 	local file, err = ioOpen(path, "r")
-	if not file then  return nil, err  end
+	if not file then  return nil, F("Could not open file '%s'. (%s)", ensurePrintable(path), ensurePrintable(err))  end
 
 	local s = file:read("*a")
 	file:close()
@@ -4958,6 +4958,11 @@ do
 		end
 	end
 
+	local function choosePretty(node, prettyFallback)
+		if node.pretty ~= nil then  return node.pretty  end
+		return prettyFallback
+	end
+
 	local function writeLua(buffer, lua, lastOutput)
 		tableInsert(buffer, lua)
 		return lastOutput
@@ -5027,6 +5032,7 @@ do
 
 		lastOutput = writeLua(buffer, ")", "")
 		if nodeCb then  nodeCb(func.body, buffer)  end
+		pretty = choosePretty(func.body, pretty)
 		if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
 
 		local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, func.body.statements, nodeCb)
@@ -5054,6 +5060,7 @@ do
 					local decl       = statement
 					local assignment = statementNext
 					local func       = assignment.values[1]
+					local pretty     = choosePretty(assignment, pretty)
 
 					if nodeCb then
 						nodeCb(decl,       buffer)
@@ -5069,7 +5076,7 @@ do
 					local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, assignment.targets[1], true, nodeCb)
 					if not ok then  return nil, lastOutput  end
 
-					local ok;ok, lastOutput = writeFunctionParametersAndBody(buffer, pretty, indent, lastOutput, func, func.parameters, nil, nodeCb)
+					local ok;ok, lastOutput = writeFunctionParametersAndBody(buffer, choosePretty(func, pretty), indent, lastOutput, func, func.parameters, nil, nodeCb)
 					if not ok then  return nil, lastOutput  end
 
 					skipNext = true
@@ -5108,8 +5115,10 @@ do
 
 		if canNodeBeName(lookup.member) then
 			lastOutput = writeLua(buffer, (forMethodCall and ":" or "."), "")
-			if nodeCb then  nodeCb(lookup.member, buffer)  end
+			if nodeCb               then  nodeCb(lookup.member, buffer)              end
+			if lookup.member.prefix then  tableInsert(buffer, lookup.member.prefix)  end
 			lastOutput = writeAlphanum(buffer, pretty, lookup.member.value, lastOutput)
+			if lookup.member.suffix then  tableInsert(buffer, lookup.member.suffix)  end
 
 		elseif forMethodCall then
 			return nil, "Error: AST: Callee for method call is not a lookup."
@@ -5149,7 +5158,7 @@ do
 
 		if l.type == "binary" and l.operator == binary.operator then
 			if nodeCb then  nodeCb(l, buffer)  end
-			local ok;ok, lastOutput = writeBinaryOperatorChain(buffer, pretty, indent, lastOutput, l, nodeCb)
+			local ok;ok, lastOutput = writeBinaryOperatorChain(buffer, choosePretty(l, pretty), indent, lastOutput, l, nodeCb)
 			if not ok then  return nil, lastOutput  end
 		else
 			local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, l, false, nodeCb)
@@ -5173,7 +5182,7 @@ do
 
 		if r.type == "binary" and r.operator == binary.operator then
 			if nodeCb then  nodeCb(r, buffer)  end
-			local ok;ok, lastOutput = writeBinaryOperatorChain(buffer, pretty, indent, lastOutput, r, nodeCb)
+			local ok;ok, lastOutput = writeBinaryOperatorChain(buffer, choosePretty(r, pretty), indent, lastOutput, r, nodeCb)
 			if not ok then  return nil, lastOutput  end
 		else
 			local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, r, false, nodeCb)
@@ -5187,7 +5196,11 @@ do
 	-- Returns nil and a message or error.
 	function writeNode(buffer, pretty, indent, lastOutput, node, maySafelyOmitParens, nodeCb)
 		if nodeCb then  nodeCb(node, buffer)  end
+		pretty = choosePretty(node, pretty) -- @Doc: AstNode.pretty
+
 		local nodeType = node.type
+
+		if node.prefix then  tableInsert(buffer, node.prefix)  end -- @Doc: AstNode.prefix  @Incomplete: Do this everywhere.
 
 		-- Expressions:
 
@@ -5197,7 +5210,7 @@ do
 
 		elseif nodeType == "vararg" then
 			local vararg = node
-			if vararg.adjustToOne then  lastOutput = writeLua(buffer, "(", "")  end
+			if vararg.adjustToOne then  lastOutput = writeLua(buffer, "(", "")   end
 			if lastOutput == "."  then  lastOutput = writeLua(buffer, " ", ".")  end
 			lastOutput = writeLua(buffer, "...", ".")
 			if vararg.adjustToOne then  lastOutput = writeLua(buffer, ")", "")  end
@@ -5379,7 +5392,7 @@ do
 
 				if nodeCb then  nodeCb(lookup, buffer)  end
 
-				local ok;ok, lastOutput = writeLookup(buffer, pretty, indent, lastOutput, lookup, true, nodeCb)
+				local ok;ok, lastOutput = writeLookup(buffer, choosePretty(lookup, pretty), indent, lastOutput, lookup, true, nodeCb)
 				if not ok then  return nil, lastOutput  end
 
 			else
@@ -5544,21 +5557,23 @@ do
 			if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 			lastOutput = writeAlphanum(buffer, pretty, "then", lastOutput)
 			if nodeCb then  nodeCb(ifNode.bodyTrue, buffer)  end
-			if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
+			local prettyBody = choosePretty(ifNode.bodyTrue, pretty)
+			if prettyBody then  lastOutput = writeLua(buffer, "\n", "")  end
 
-			local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, ifNode.bodyTrue.statements, nodeCb)
+			local ok;ok, lastOutput = writeStatements(buffer, prettyBody, indent+1, lastOutput, ifNode.bodyTrue.statements, nodeCb)
 			if not ok then  return nil, lastOutput  end
 
 			while ifNode.bodyFalse do
+				lastOutput = writeIndentationIfPretty(buffer, prettyBody, indent, lastOutput)
+
 				-- Automatically detect what looks like 'elseif'.
 				if #ifNode.bodyFalse.statements == 1 and ifNode.bodyFalse.statements[1].type == "if" then
-					lastOutput = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
-
 					if nodeCb then  nodeCb(ifNode.bodyFalse, buffer)  end
 					ifNode = ifNode.bodyFalse.statements[1]
 					if nodeCb then  nodeCb(ifNode, buffer)  end
+					pretty = choosePretty(ifNode, pretty)
 
-					lastOutput = writeAlphanum(buffer, pretty, "elseif", lastOutput)
+					lastOutput = writeAlphanum(buffer, prettyBody, "elseif", lastOutput)
 					if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
 					local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, ifNode.condition, true, nodeCb)
@@ -5567,26 +5582,27 @@ do
 					if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 					lastOutput = writeAlphanum(buffer, pretty, "then", lastOutput)
 					if nodeCb then  nodeCb(ifNode.bodyTrue, buffer)  end
-					if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
+					prettyBody = choosePretty(ifNode.bodyTrue, pretty)
+					if prettyBody then  lastOutput = writeLua(buffer, "\n", "")  end
 
-					local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, ifNode.bodyTrue.statements, nodeCb)
+					local ok;ok, lastOutput = writeStatements(buffer, prettyBody, indent+1, lastOutput, ifNode.bodyTrue.statements, nodeCb)
 					if not ok then  return nil, lastOutput  end
 
 				else
-					lastOutput = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
-					lastOutput = writeAlphanum(buffer, pretty, "else", lastOutput)
+					lastOutput = writeAlphanum(buffer, prettyBody, "else", lastOutput)
 					if nodeCb then  nodeCb(ifNode.bodyFalse, buffer)  end
-					if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
+					prettyBody = choosePretty(ifNode.bodyFalse, pretty)
+					if prettyBody then  lastOutput = writeLua(buffer, "\n", "")  end
 
-					local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, ifNode.bodyFalse.statements, nodeCb)
+					local ok;ok, lastOutput = writeStatements(buffer, prettyBody, indent+1, lastOutput, ifNode.bodyFalse.statements, nodeCb)
 					if not ok then  return nil, lastOutput  end
 
 					break
 				end
 			end
 
-			lastOutput = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
-			lastOutput = writeAlphanum(buffer, pretty, "end", lastOutput)
+			lastOutput = writeIndentationIfPretty(buffer, prettyBody, indent, lastOutput)
+			lastOutput = writeAlphanum(buffer, prettyBody, "end", lastOutput)
 
 		elseif nodeType == "while" then
 			local whileLoop = node
@@ -5598,26 +5614,29 @@ do
 
 			if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 			lastOutput = writeAlphanum(buffer, pretty, "do", lastOutput)
-			if nodeCb then  nodeCb(whileLoop.body, buffer)  end
-			if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
 
-			local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, whileLoop.body.statements, nodeCb)
+			if nodeCb then  nodeCb(whileLoop.body, buffer)  end
+			local prettyBody = choosePretty(whileLoop.body, pretty)
+			if prettyBody then  lastOutput = writeLua(buffer, "\n", "")  end
+
+			local ok;ok, lastOutput = writeStatements(buffer, prettyBody, indent+1, lastOutput, whileLoop.body.statements, nodeCb)
 			if not ok then  return nil, lastOutput  end
 
-			lastOutput = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
-			lastOutput = writeAlphanum(buffer, pretty, "end", lastOutput)
+			lastOutput = writeIndentationIfPretty(buffer, prettyBody, indent, lastOutput)
+			lastOutput = writeAlphanum(buffer, prettyBody, "end", lastOutput)
 
 		elseif nodeType == "repeat" then
 			local repeatLoop = node
 			lastOutput       = writeAlphanum(buffer, pretty, "repeat", lastOutput)
 			if nodeCb then  nodeCb(repeatLoop.body, buffer)  end
-			if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
+			local prettyBody = choosePretty(repeatLoop.body, pretty)
+			if prettyBody then  lastOutput = writeLua(buffer, "\n", "")  end
 
-			local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, repeatLoop.body.statements, nodeCb)
+			local ok;ok, lastOutput = writeStatements(buffer, prettyBody, indent+1, lastOutput, repeatLoop.body.statements, nodeCb)
 			if not ok then  return nil, lastOutput  end
 
-			lastOutput = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
-			lastOutput = writeAlphanum(buffer, pretty, "until", lastOutput)
+			lastOutput = writeIndentationIfPretty(buffer, prettyBody, indent, lastOutput)
+			lastOutput = writeAlphanum(buffer, prettyBody, "until", lastOutput)
 			if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
 			local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, repeatLoop.condition, true, nodeCb)
@@ -5652,17 +5671,21 @@ do
 			if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 			lastOutput = writeAlphanum(buffer, pretty, "do", lastOutput)
 			if nodeCb then  nodeCb(forLoop.body, buffer)  end
-			if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
+			local prettyBody = choosePretty(forLoop.body, pretty)
+			if prettyBody then  lastOutput = writeLua(buffer, "\n", "")  end
 
-			local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, forLoop.body.statements, nodeCb)
+			local ok;ok, lastOutput = writeStatements(buffer, prettyBody, indent+1, lastOutput, forLoop.body.statements, nodeCb)
 			if not ok then  return nil, lastOutput  end
 
-			lastOutput = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
-			lastOutput = writeAlphanum(buffer, pretty, "end", lastOutput)
+			lastOutput = writeIndentationIfPretty(buffer, prettyBody, indent, lastOutput)
+			lastOutput = writeAlphanum(buffer, prettyBody, "end", lastOutput)
 
 		else
 			return false, F("Error: Unknown node type '%s'.", tostring(nodeType))
 		end
+
+		if node.suffix then  tableInsert(buffer, node.suffix)  end -- @Doc: AstNode.suffix  @Incomplete: Do this everywhere.
+
 		return true, lastOutput
 	end
 
@@ -5677,7 +5700,7 @@ do
 		local ok, err
 		if node.type == "block" then -- @Robustness: This exception isn't great. Should there be a file scope node?
 			if nodeCb then  nodeCb(node, buffer)  end
-			ok, err = writeStatements(buffer, pretty, 0, "", node.statements, nodeCb)
+			ok, err = writeStatements(buffer, choosePretty(node, pretty), 0, "", node.statements, nodeCb)
 		else
 			ok, err = writeNode(buffer, pretty, 0, "", node, true, nodeCb)
 		end
@@ -6271,7 +6294,7 @@ do
 				-- @Incomplete: Should we detect nil literal keys? :DetectRuntimeErrors
 				if not tableField.key then
 					if not tableField.generatedKey then
-					addValidationError(path, errors, "Missing 'key' field for table field %d.", i)
+						addValidationError(path, errors, "Missing 'key' field for table field %d.", i)
 					end
 				elseif not EXPRESSION_NODES[tableField.key.type] then
 					addValidationError(path, errors, "The key for table field %d is not an expression. (It is '%s'.)", i, tableField.key.type)

@@ -76,6 +76,8 @@ do
 	local s1 = "\"''a''b''c''\""
 	local s2 = '\'""a""b""c""\''
 
+	print(a .. ... .. 3.75 .. 400)
+
 	local s = (""):rep(9)
 	local n = ({9})[1]
 	local v = (...)[1]
