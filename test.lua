@@ -18,6 +18,10 @@ do
 
 	\xff\u{b4}"
 
+	local x = 1 + 2 + 3
+	local y = (1 - 2) - 3
+	local z = 1 - (2 - 3)
+
 	do foo() ; o:m() end
 
 	while false or true do

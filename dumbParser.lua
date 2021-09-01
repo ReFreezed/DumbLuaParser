@@ -4941,7 +4941,7 @@ do
 	local writeNode
 	local writeStatements
 
-	-- lastOutput = "" | "alphanum" | "number" | "-"
+	-- lastOutput = "" | "alphanum" | "number" | "-" | "."
 
 	local function isNumberInRange(n, min, max)
 		return n ~= nil and n >= min and n <= max
@@ -4970,7 +4970,7 @@ do
 	end
 	local function writeNumber(buffer, pretty, n, lastOutput)
 		local nStr = formatNumber(n)
-		if lastOutput == "-" and stringByte(nStr, 1) == 45--[[ "-" ]] then
+		if (lastOutput == "-" and stringByte(nStr, 1) == 45--[[ "-" ]]) or lastOutput == "." then
 			lastOutput = writeLua(buffer, " ", "")
 		else
 			ensureSpaceIfNotPretty(buffer, pretty, lastOutput, "alphanum","number")
@@ -5160,7 +5160,12 @@ do
 
 		if binary.operator == ".." then  ensureSpaceIfNotPretty(buffer, pretty, lastOutput, "number")  end
 
-		local nextOutput = ((binary.operator == "-" and "-") or (stringFind(binary.operator, "%w") and "alphanum") or (""))
+		local nextOutput = (
+			(binary.operator == "-"            and "-"       ) or
+			(binary.operator == ".."           and "."       ) or
+			(stringFind(binary.operator, "%w") and "alphanum") or
+			""
+		)
 		if nextOutput ~= "" then  ensureSpaceIfNotPretty(buffer, pretty, lastOutput, nextOutput)  end
 		lastOutput = writeLua(buffer, binary.operator, nextOutput)
 
@@ -5193,7 +5198,8 @@ do
 		elseif nodeType == "vararg" then
 			local vararg = node
 			if vararg.adjustToOne then  lastOutput = writeLua(buffer, "(", "")  end
-			lastOutput = writeLua(buffer, "...", "")
+			if lastOutput == "."  then  lastOutput = writeLua(buffer, " ", ".")  end
+			lastOutput = writeLua(buffer, "...", ".")
 			if vararg.adjustToOne then  lastOutput = writeLua(buffer, ")", "")  end
 
 		elseif nodeType == "literal" then
@@ -5332,10 +5338,11 @@ do
 
 		elseif nodeType == "binary" then
 			local binary = node
+			local op     = binary.operator
 
 			if not maySafelyOmitParens then  lastOutput = writeLua(buffer, "(", "")  end -- @Polish: Only output parentheses around child unaries/binaries if associativity requires it.
 
-			if binary.operator == ".." or binary.operator == "and" or binary.operator == "or" then
+			if op == ".." or op == "and" or op == "or" or op == "+" or op == "*" or op == "&" or op == "|" then
 				local ok;ok, lastOutput = writeBinaryOperatorChain(buffer, pretty, indent, lastOutput, binary, nodeCb)
 				if not ok then  return nil, lastOutput  end
 
@@ -5343,12 +5350,12 @@ do
 				local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, binary.left, false, nodeCb)
 				if not ok then  return nil, lastOutput  end
 
-				local operatorOutput = ((binary.operator == "-" and "-") or (stringFind(binary.operator, "%w") and "alphanum") or (""))
+				local operatorOutput = ((op == "-" and "-") or (stringFind(op, "%w") and "alphanum") or (""))
 
 				if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
 				if operatorOutput ~= "" then  ensureSpaceIfNotPretty(buffer, pretty, lastOutput, operatorOutput)  end
-				lastOutput = writeLua(buffer, binary.operator, operatorOutput)
+				lastOutput = writeLua(buffer, op, operatorOutput)
 
 				if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
