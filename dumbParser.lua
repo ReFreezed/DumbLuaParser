@@ -1,4 +1,4 @@
---[[============================================================
+--[=[===========================================================
 --=
 --=  Dumb Lua Parser - Lua parsing library
 --=  by Marcus 'ReFreezed' Thunström
@@ -54,7 +54,7 @@ print(lua)
 tokenize, tokenizeFile
 newToken, concatTokens
 parse, parseExpression, parseFile
-newNode, newNodeFast, cloneNode, cloneTree, getChild, setChild, addChild, removeChild
+newNode, newNodeFast, valueToAst, cloneNode, cloneTree, getChild, setChild, addChild, removeChild
 validateTree
 traverseTree, traverseTreeReverse
 updateReferences
@@ -107,6 +107,10 @@ newNodeFast()
 	astNode = parser.newNodeFast( nodeType, arguments... )
 	Same as newNode() but without any validation. (Search for 'NodeCreation' for more info.)
 
+valueToAst()
+	astNode = parser.valueToAst( value [, sortTableKeys=false ] )
+	Convert a Lua value (number, string, boolean, nil or table) to an AST.
+
 cloneNode()
 	astNode = parser.cloneNode( astNode )
 	Clone an existing AST node (but not any children).
@@ -154,6 +158,10 @@ removeChild()
 
 	The result is the same as doing the following, but with more error checking:
 	table.remove(astNode[fieldName], index)
+
+isExpression()
+	bool = parser.isExpression( astNode )
+	Returns true for expression nodes and false for statements.
 
 validateTree()
 	isValid, errorMessages = validateTree( astNode )
@@ -206,6 +214,8 @@ toLua()
 	luaString    = parser.toLua( astNode [, prettyOuput=false, nodeCallback ] )
 	nodeCallback = function( node, outputBuffer )
 	Convert an AST to Lua, optionally call a function on each node before they are turned into Lua.
+	Any node in the tree with a .pretty attribute will override the 'prettyOuput' flag for itself and its children.
+	Nodes can also have a .prefix and/or .suffix attribute with Lua code to output before/after the node (e.g. declaration.names[1].suffix="--[[foo]]").
 	Returns nil and a message on error.
 
 printTokens()
@@ -409,7 +419,7 @@ Special number notation rules.
 	NaN.
 
 
---============================================================]]
+-============================================================]=]
 
 local PARSER_VERSION = "2.0.1-dev"
 
@@ -5217,9 +5227,9 @@ do
 	-- Returns nil and a message or error.
 	function writeNode(buffer, pretty, indent, lastOutput, node, maySafelyOmitParens, nodeCb)
 		if nodeCb then  nodeCb(node, buffer)  end
-		pretty = choosePretty(node, pretty) -- @Doc: AstNode.pretty
+		pretty = choosePretty(node, pretty)
 
-		tableInsert(buffer, node.prefix) -- @Doc: AstNode.prefix
+		tableInsert(buffer, node.prefix)
 
 		local nodeType = node.type
 
@@ -5745,7 +5755,7 @@ do
 			return false, F("Error: Unknown node type '%s'.", tostring(nodeType))
 		end
 
-		tableInsert(buffer, node.suffix) -- @Doc: AstNode.suffix
+		tableInsert(buffer, node.suffix)
 
 		return true, lastOutput
 	end
@@ -6490,7 +6500,7 @@ parser = {
 
 	newNode             = newNode,
 	newNodeFast         = newNodeFast,
-	valueToAst          = valueToAst, -- @Doc
+	valueToAst          = valueToAst,
 	cloneNode           = cloneNode,
 	cloneTree           = cloneTree,
 	getChild            = getChild,
@@ -6498,7 +6508,7 @@ parser = {
 	addChild            = addChild,
 	removeChild         = removeChild,
 
-	isExpression        = isExpression, -- @Doc
+	isExpression        = isExpression,
 	validateTree        = validateTree,
 
 	traverseTree        = traverseTree,
@@ -6517,7 +6527,7 @@ parser = {
 
 	formatMessage       = formatMessage,
 
-	resetNextId         = resetNextId, -- @Doc
+	resetNextId         = resetNextId, -- @Undocumented
 
 	-- Settings.
 	printIds            = false,
