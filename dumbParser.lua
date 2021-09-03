@@ -429,6 +429,7 @@ local error        = error
 local ipairs       = ipairs
 local loadstring   = loadstring or load
 local pairs        = pairs
+local print        = print
 local select       = select
 local tonumber     = tonumber
 local tostring     = tostring
@@ -5025,7 +5026,11 @@ do
 	local function writeFunctionParametersAndBody(buffer, pretty, indent, lastOutput, func, explicitParams, selfParam, nodeCb)
 		lastOutput = writeLua(buffer, "(", "")
 
-		if selfParam and nodeCb then  nodeCb(selfParam, buffer)  end
+		if selfParam then
+			if nodeCb then  nodeCb(selfParam, buffer)  end
+			tableInsert(buffer, selfParam.prefix)
+			tableInsert(buffer, selfParam.suffix)
+		end
 
 		local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, explicitParams, false, nodeCb)
 		if not ok then  return nil, lastOutput  end
@@ -5033,12 +5038,14 @@ do
 		lastOutput = writeLua(buffer, ")", "")
 		if nodeCb then  nodeCb(func.body, buffer)  end
 		pretty = choosePretty(func.body, pretty)
+		tableInsert(buffer, func.body.prefix)
 		if pretty then  lastOutput = writeLua(buffer, "\n", "")  end
 
 		local ok;ok, lastOutput = writeStatements(buffer, pretty, indent+1, lastOutput, func.body.statements, nodeCb)
 		if not ok then  return nil, lastOutput  end
 
 		lastOutput = writeIndentationIfPretty(buffer, pretty, indent, lastOutput)
+		tableInsert(buffer, func.body.suffix)
 		lastOutput = writeAlphanum(buffer, pretty, "end", lastOutput)
 
 		return true, lastOutput
@@ -5068,16 +5075,26 @@ do
 						nodeCb(func,       buffer)
 					end
 
+					tableInsert(buffer, decl.prefix)
+					tableInsert(buffer, assignment.prefix)
+					tableInsert(buffer, func.prefix)
+
 					lastOutput = writeAlphanum(buffer, pretty, "local function", lastOutput)
 					lastOutput = writeLua(buffer, " ", "")
 
 					if nodeCb then  nodeCb(decl.names[1], buffer)  end
 
+					tableInsert(buffer, decl.names[1].prefix)
 					local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, assignment.targets[1], true, nodeCb)
 					if not ok then  return nil, lastOutput  end
+					tableInsert(buffer, decl.names[1].suffix)
 
 					local ok;ok, lastOutput = writeFunctionParametersAndBody(buffer, choosePretty(func, pretty), indent, lastOutput, func, func.parameters, nil, nodeCb)
 					if not ok then  return nil, lastOutput  end
+
+					tableInsert(buffer, func.suffix)
+					tableInsert(buffer, assignment.suffix)
+					tableInsert(buffer, decl.suffix)
 
 					skipNext = true
 
@@ -5115,10 +5132,10 @@ do
 
 		if canNodeBeName(lookup.member) then
 			lastOutput = writeLua(buffer, (forMethodCall and ":" or "."), "")
-			if nodeCb               then  nodeCb(lookup.member, buffer)              end
-			if lookup.member.prefix then  tableInsert(buffer, lookup.member.prefix)  end
+			if nodeCb then  nodeCb(lookup.member, buffer)  end
+			tableInsert(buffer, lookup.member.prefix)
 			lastOutput = writeAlphanum(buffer, pretty, lookup.member.value, lastOutput)
-			if lookup.member.suffix then  tableInsert(buffer, lookup.member.suffix)  end
+			tableInsert(buffer, lookup.member.suffix)
 
 		elseif forMethodCall then
 			return nil, "Error: AST: Callee for method call is not a lookup."
@@ -5158,8 +5175,10 @@ do
 
 		if l.type == "binary" and l.operator == binary.operator then
 			if nodeCb then  nodeCb(l, buffer)  end
+			tableInsert(buffer, l.prefix)
 			local ok;ok, lastOutput = writeBinaryOperatorChain(buffer, choosePretty(l, pretty), indent, lastOutput, l, nodeCb)
 			if not ok then  return nil, lastOutput  end
+			tableInsert(buffer, l.suffix)
 		else
 			local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, l, false, nodeCb)
 			if not ok then  return nil, lastOutput  end
@@ -5182,8 +5201,10 @@ do
 
 		if r.type == "binary" and r.operator == binary.operator then
 			if nodeCb then  nodeCb(r, buffer)  end
+			tableInsert(buffer, r.prefix)
 			local ok;ok, lastOutput = writeBinaryOperatorChain(buffer, choosePretty(r, pretty), indent, lastOutput, r, nodeCb)
 			if not ok then  return nil, lastOutput  end
+			tableInsert(buffer, r.suffix)
 		else
 			local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, r, false, nodeCb)
 			if not ok then  return nil, lastOutput  end
@@ -5198,9 +5219,9 @@ do
 		if nodeCb then  nodeCb(node, buffer)  end
 		pretty = choosePretty(node, pretty) -- @Doc: AstNode.pretty
 
-		local nodeType = node.type
+		tableInsert(buffer, node.prefix) -- @Doc: AstNode.prefix
 
-		if node.prefix then  tableInsert(buffer, node.prefix)  end -- @Doc: AstNode.prefix  @Incomplete: Do this everywhere.
+		local nodeType = node.type
 
 		-- Expressions:
 
@@ -5300,12 +5321,18 @@ do
 				end
 
 				if tableField.generatedKey then
-					if nodeCb and tableField.key then  nodeCb(tableField.key, buffer)  end
+					if tableField.key then
+						if nodeCb then  nodeCb(tableField.key, buffer)  end
+						tableInsert(buffer, tableField.key.prefix)
+						tableInsert(buffer, tableField.key.suffix)
+					end
 
 				else
 					if canNodeBeName(tableField.key) then
 						if nodeCb then  nodeCb(tableField.key, buffer)  end
+						tableInsert(buffer, tableField.key.prefix)
 						lastOutput = writeLua(buffer, tableField.key.value, "alphanum")
+						tableInsert(buffer, tableField.key.suffix)
 
 					else
 						lastOutput = writeLua(buffer, "[", "")
@@ -5392,8 +5419,10 @@ do
 
 				if nodeCb then  nodeCb(lookup, buffer)  end
 
+				tableInsert(buffer, lookup.prefix)
 				local ok;ok, lastOutput = writeLookup(buffer, choosePretty(lookup, pretty), indent, lastOutput, lookup, true, nodeCb)
 				if not ok then  return nil, lastOutput  end
+				tableInsert(buffer, lookup.suffix)
 
 			else
 				local needParens = doesExpressionNeedParenthesisIfOnTheLeftSide(call.callee)
@@ -5502,6 +5531,8 @@ do
 				local func = assignment.values[1]
 				if nodeCb then  nodeCb(func, buffer)  end
 
+				tableInsert(buffer, func.prefix)
+
 				lastOutput = writeAlphanum(buffer, pretty, "function", lastOutput)
 				lastOutput = writeLua(buffer, " ", "")
 
@@ -5514,8 +5545,10 @@ do
 
 				if implicitSelfParam then
 					if nodeCb then  nodeCb(assignment.targets[1], buffer)  end
+					tableInsert(buffer, assignment.targets[1].prefix)
 					local ok;ok, lastOutput = writeLookup(buffer, pretty, indent, lastOutput, assignment.targets[1], true, nodeCb)
 					if not ok then  return nil, lastOutput  end
+					tableInsert(buffer, assignment.targets[1].suffix)
 				else
 					local ok;ok, lastOutput = writeNode(buffer, pretty, indent, lastOutput, assignment.targets[1], false, nodeCb)
 					if not ok then  return nil, lastOutput  end
@@ -5531,6 +5564,8 @@ do
 
 				local ok;ok, lastOutput = writeFunctionParametersAndBody(buffer, pretty, indent, lastOutput, func, explicitParams, selfParam, nodeCb)
 				if not ok then  return nil, lastOutput  end
+
+				tableInsert(buffer, func.suffix)
 
 			else
 				local ok;ok, lastOutput = writeCommaSeparatedList(buffer, pretty, indent, lastOutput, assignment.targets, false, nodeCb)
@@ -5558,21 +5593,31 @@ do
 			lastOutput = writeAlphanum(buffer, pretty, "then", lastOutput)
 			if nodeCb then  nodeCb(ifNode.bodyTrue, buffer)  end
 			local prettyBody = choosePretty(ifNode.bodyTrue, pretty)
+			tableInsert(buffer, ifNode.bodyTrue.prefix)
 			if prettyBody then  lastOutput = writeLua(buffer, "\n", "")  end
 
 			local ok;ok, lastOutput = writeStatements(buffer, prettyBody, indent+1, lastOutput, ifNode.bodyTrue.statements, nodeCb)
 			if not ok then  return nil, lastOutput  end
+
+			local lastTrueBody              = ifNode.bodyTrue
+			local suffixesForTrailingBodies = {}
 
 			while ifNode.bodyFalse do
 				lastOutput = writeIndentationIfPretty(buffer, prettyBody, indent, lastOutput)
 
 				-- Automatically detect what looks like 'elseif'.
 				if #ifNode.bodyFalse.statements == 1 and ifNode.bodyFalse.statements[1].type == "if" then
-					if nodeCb then  nodeCb(ifNode.bodyFalse, buffer)  end
-					ifNode = ifNode.bodyFalse.statements[1]
+					tableInsert(buffer, lastTrueBody.suffix)
+					local body = ifNode.bodyFalse
+
+					if nodeCb then  nodeCb(body, buffer)  end
+					tableInsert(suffixesForTrailingBodies, body.suffix)
+					ifNode = body.statements[1]
 					if nodeCb then  nodeCb(ifNode, buffer)  end
 					pretty = choosePretty(ifNode, pretty)
 
+					tableInsert(buffer, body.prefix)
+					tableInsert(buffer, ifNode.prefix)
 					lastOutput = writeAlphanum(buffer, prettyBody, "elseif", lastOutput)
 					if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
@@ -5585,23 +5630,33 @@ do
 					prettyBody = choosePretty(ifNode.bodyTrue, pretty)
 					if prettyBody then  lastOutput = writeLua(buffer, "\n", "")  end
 
+					tableInsert(buffer, ifNode.bodyTrue.prefix)
 					local ok;ok, lastOutput = writeStatements(buffer, prettyBody, indent+1, lastOutput, ifNode.bodyTrue.statements, nodeCb)
 					if not ok then  return nil, lastOutput  end
+					tableInsert(buffer, ifNode.bodyTrue.suffix)
+
+					lastTrueBody = ifNode
 
 				else
 					lastOutput = writeAlphanum(buffer, prettyBody, "else", lastOutput)
 					if nodeCb then  nodeCb(ifNode.bodyFalse, buffer)  end
 					prettyBody = choosePretty(ifNode.bodyFalse, pretty)
+					tableInsert(buffer, ifNode.bodyFalse.prefix)
 					if prettyBody then  lastOutput = writeLua(buffer, "\n", "")  end
 
 					local ok;ok, lastOutput = writeStatements(buffer, prettyBody, indent+1, lastOutput, ifNode.bodyFalse.statements, nodeCb)
 					if not ok then  return nil, lastOutput  end
 
+					tableInsert(suffixesForTrailingBodies, ifNode.bodyFalse.suffix)
 					break
 				end
 			end
 
 			lastOutput = writeIndentationIfPretty(buffer, prettyBody, indent, lastOutput)
+			tableInsert(buffer, lastTrueBody.suffix)
+			for i = #suffixesForTrailingBodies, 1, -1 do
+				tableInsert(buffer, suffixesForTrailingBodies[i])
+			end
 			lastOutput = writeAlphanum(buffer, prettyBody, "end", lastOutput)
 
 		elseif nodeType == "while" then
@@ -5617,12 +5672,14 @@ do
 
 			if nodeCb then  nodeCb(whileLoop.body, buffer)  end
 			local prettyBody = choosePretty(whileLoop.body, pretty)
+			tableInsert(buffer, whileLoop.body.prefix)
 			if prettyBody then  lastOutput = writeLua(buffer, "\n", "")  end
 
 			local ok;ok, lastOutput = writeStatements(buffer, prettyBody, indent+1, lastOutput, whileLoop.body.statements, nodeCb)
 			if not ok then  return nil, lastOutput  end
 
 			lastOutput = writeIndentationIfPretty(buffer, prettyBody, indent, lastOutput)
+			tableInsert(buffer, whileLoop.body.suffix)
 			lastOutput = writeAlphanum(buffer, prettyBody, "end", lastOutput)
 
 		elseif nodeType == "repeat" then
@@ -5630,12 +5687,14 @@ do
 			lastOutput       = writeAlphanum(buffer, pretty, "repeat", lastOutput)
 			if nodeCb then  nodeCb(repeatLoop.body, buffer)  end
 			local prettyBody = choosePretty(repeatLoop.body, pretty)
+			tableInsert(buffer, repeatLoop.body.prefix)
 			if prettyBody then  lastOutput = writeLua(buffer, "\n", "")  end
 
 			local ok;ok, lastOutput = writeStatements(buffer, prettyBody, indent+1, lastOutput, repeatLoop.body.statements, nodeCb)
 			if not ok then  return nil, lastOutput  end
 
 			lastOutput = writeIndentationIfPretty(buffer, prettyBody, indent, lastOutput)
+			tableInsert(buffer, repeatLoop.body.suffix)
 			lastOutput = writeAlphanum(buffer, prettyBody, "until", lastOutput)
 			if pretty then  lastOutput = writeLua(buffer, " ", "")  end
 
@@ -5672,19 +5731,21 @@ do
 			lastOutput = writeAlphanum(buffer, pretty, "do", lastOutput)
 			if nodeCb then  nodeCb(forLoop.body, buffer)  end
 			local prettyBody = choosePretty(forLoop.body, pretty)
+			tableInsert(buffer, forLoop.body.prefix)
 			if prettyBody then  lastOutput = writeLua(buffer, "\n", "")  end
 
 			local ok;ok, lastOutput = writeStatements(buffer, prettyBody, indent+1, lastOutput, forLoop.body.statements, nodeCb)
 			if not ok then  return nil, lastOutput  end
 
 			lastOutput = writeIndentationIfPretty(buffer, prettyBody, indent, lastOutput)
+			tableInsert(buffer, forLoop.body.suffix)
 			lastOutput = writeAlphanum(buffer, prettyBody, "end", lastOutput)
 
 		else
 			return false, F("Error: Unknown node type '%s'.", tostring(nodeType))
 		end
 
-		if node.suffix then  tableInsert(buffer, node.suffix)  end -- @Doc: AstNode.suffix  @Incomplete: Do this everywhere.
+		tableInsert(buffer, node.suffix) -- @Doc: AstNode.suffix
 
 		return true, lastOutput
 	end
@@ -5700,7 +5761,9 @@ do
 		local ok, err
 		if node.type == "block" then -- @Robustness: This exception isn't great. Should there be a file scope node?
 			if nodeCb then  nodeCb(node, buffer)  end
+			tableInsert(buffer, node.prefix)
 			ok, err = writeStatements(buffer, choosePretty(node, pretty), 0, "", node.statements, nodeCb)
+			tableInsert(buffer, node.suffix)
 		else
 			ok, err = writeNode(buffer, pretty, 0, "", node, true, nodeCb)
 		end
@@ -6338,6 +6401,74 @@ end
 
 
 
+local EXPRESSION_TYPES = newSet{"binary","call","function","identifier","literal","lookup","table","unary","vararg"}
+
+local function isExpression(node)
+	return EXPRESSION_TYPES[node.type] == true
+end
+
+
+
+local function resetNextId()
+	nextSerialNumber = 1
+end
+
+
+
+-- astNode = valueToAst( value [, sortTableKeys=false ] )
+local function valueToAst(v, sortTableKeys)
+	local vType = type(v)
+
+	if vType == "number" or vType == "string" or vType == "boolean" or vType == "nil" then
+		return AstLiteral(nil, v)
+
+	elseif vType == "table" then
+		local t         = v
+		local tableNode = AstTable(nil)
+		local keys      = {}
+		local indices   = {}
+
+		for k, v in pairs(t) do
+			tableInsert(keys, k)
+		end
+
+		if sortTableKeys then
+			local keyStringRepresentations = {}
+
+			for _, k in ipairs(keys) do
+				keyStringRepresentations[k] = keyStringRepresentations[k] or tostring(k)
+			end
+
+			tableSort(keys, function(a, b)
+				return keyStringRepresentations[a] < keyStringRepresentations[b]
+			end)
+		end
+
+		for i = 1, #t do
+			indices[i] = true
+		end
+
+		for _, k in ipairs(keys) do
+			if not indices[k] then
+				local tableField = {key=valueToAst(k,sortTableKeys), value=valueToAst(t[k],sortTableKeys), generatedKey=false}
+				tableInsert(tableNode.fields, tableField)
+			end
+		end
+
+		for i = 1, #t do
+			local tableField = {key=valueToAst(i,sortTableKeys), value=valueToAst(t[i],sortTableKeys), generatedKey=true}
+			tableInsert(tableNode.fields, tableField)
+		end
+
+		return tableNode
+
+	else
+		error("Invalid value type '"..vType.."'.", 2)
+	end
+end
+
+
+
 parser = {
 	-- Constants.
 	VERSION             = PARSER_VERSION,
@@ -6359,6 +6490,7 @@ parser = {
 
 	newNode             = newNode,
 	newNodeFast         = newNodeFast,
+	valueToAst          = valueToAst, -- @Doc
 	cloneNode           = cloneNode,
 	cloneTree           = cloneTree,
 	getChild            = getChild,
@@ -6366,6 +6498,7 @@ parser = {
 	addChild            = addChild,
 	removeChild         = removeChild,
 
+	isExpression        = isExpression, -- @Doc
 	validateTree        = validateTree,
 
 	traverseTree        = traverseTree,
@@ -6383,6 +6516,8 @@ parser = {
 	printTree           = printTree,
 
 	formatMessage       = formatMessage,
+
+	resetNextId         = resetNextId, -- @Doc
 
 	-- Settings.
 	printIds            = false,

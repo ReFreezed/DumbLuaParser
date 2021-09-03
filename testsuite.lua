@@ -335,6 +335,9 @@ test("AST manipulation", function()
 		assert(block.statements[1].values[1].type  == "literal")
 		assert(block.statements[1].values[1].value == 49)
 
+		assert(not parser.isExpression(block))
+		assert(    parser.isExpression(block.statements[1].names[1]))
+
 		block.statements[1].names[1]  = parser.newNode("identifier", "foo")
 		block.statements[1].values[1] = parser.newNode("literal", 8.125)
 
@@ -428,6 +431,24 @@ test("AST manipulation", function()
 
 		local lua2 = assert(parser.toLua(clone))
 		assertLua(lua1, lua2)
+	end
+
+	-- Value to AST.
+	do
+		local expr = parser.valueToAst({
+			foo = "bar",
+			[3] = {"Abc.", left="right"},
+			{123, {x=-8}},
+		}, true)
+
+		-- parser.printLocations = false
+		parser.printTree(expr)
+
+		local lua = parser.toLua(expr)
+		-- print(lua)
+
+		assertLua(lua, [[ {[3]={left="right","Abc."},foo="bar",{123,{x=-8}}} ]])
+		-- debugExit()
 	end
 end)
 
@@ -1036,6 +1057,53 @@ test("Selective pretty", function()
 local function foo(a, ...)print(a.. ...);end
 local x = 7 + foo("a", " 2");
 	]])
+end)
+
+
+
+test("Prefix/suffix", function()
+	local ast = assert(parser.parseFile("test.lua"))
+	-- local ast = assert(parser.parseFile("dumbParser.lua")) -- Very slow test!
+
+	parser.traverseTree(ast, function(node)
+		node.prefix = " --[[@" .. node.id .. "]]"
+		node.suffix = " --[[/@" .. node.id .. "]]"
+	end)
+
+	local lua      = parser.toLua(ast, true)
+	local errCount = 0
+
+	-- print(lua)
+	-- debugExit()
+
+	parser.traverseTree(ast, function(node)
+		local i1, i2 = lua:find(node.prefix, 1, true)
+
+		if not i1 then
+			errCount = errCount + 1
+			print(parser.formatMessage(node, "Missing prefix for @%d (%s).", node.id, node.type))
+		elseif lua:find(node.prefix, i2+1, true) then
+			errCount = errCount + 1
+			print(parser.formatMessage(node, "Too many prefixes for @%d (%s).", node.id, node.type))
+		end
+
+		i1, i2 = lua:find(node.suffix, i2+1, true)
+
+		if not i1 then
+			errCount = errCount + 1
+			print(parser.formatMessage(node, "Missing suffix for @%d (%s).", node.id, node.type))
+		elseif lua:find(node.suffix, i2+1, true) then
+			errCount = errCount + 1
+			print(parser.formatMessage(node, "Too many suffixes for @%d (%s).", node.id, node.type))
+		end
+
+		assert(errCount < 10)
+	end)
+
+	if errCount > 0 then
+		print(lua)
+		error("Got errors!")
+	end
 end)
 
 
