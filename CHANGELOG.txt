@@ -1,6 +1,18 @@
 Changelog
 Dumb Lua Parser
 
+v2.1 (2021-09-03)
+- Added functions: parseExpression(), valueToAst(), validateTree(), isExpression(), newNodeFast().
+- Added AST node fields: AstNode.pretty, AstNode.prefix, AstNode.suffix .
+- tokenize(): Added option to keep whitespace tokens (which is a new token type).
+- toLua(): Added nodeCallback argument.
+- toLua(): Outputting less parentheses around some binary expressions.
+- toLua(): Fixed invalid output of immediately invoked function expressions and similar expressions.
+- toLua(): Fixed "." not always being always being considered when inserting spaces (e.g. for `x .. ...`).
+- TableField.key is now optional if TableField.generatedKey is true.
+- Fixed "_ENV" getting minified in Lua 5.2+.
+- Fixed parsing error for chunks ending in return statements without values.
+
 v2.0 (2021-06-19)
 Major changes:
 - Added support for Lua 5.4 and LuaJIT.
@@ -17,7 +29,7 @@ Added:
 - Added AST functions: cloneNode(), cloneTree(), traverseTreeReverse(), getChild(), setChild(), addChild(), removeChild().
 - Added token functions: concatTokens(), newToken().
 - Added function formatMessage().
-- Added AST node fields: AstVararg.declaration, AstGoto.label, AstIdentifier.attribute.
+- Added AST node fields: AstVararg.declaration, AstGoto.label, AstIdentifier.attribute .
 - Added more common fields to AST nodes.
 - Added argument 'leavesFirst' to traverseTree().
 - Added argument 'attributeName' to newNode("identifier").

@@ -6,7 +6,7 @@
 --=  Tokenize Lua code or create ASTs (Abstract Syntax Trees)
 --=  and convert the data back to Lua.
 --=
---=  Version: 2.0.1-dev
+--=  Version: 2.1 (2021-09-03)
 --=
 --=  License: MIT (see the bottom of this file)
 --=  Website: http://luaparser.refreezed.com/
@@ -216,6 +216,7 @@ toLua()
 	Convert an AST to Lua, optionally call a function on each node before they are turned into Lua.
 	Any node in the tree with a .pretty attribute will override the 'prettyOuput' flag for itself and its children.
 	Nodes can also have a .prefix and/or .suffix attribute with Lua code to output before/after the node (e.g. declaration.names[1].suffix="--[[foo]]").
+	outputBuffer is an array of Lua code that has been output so far.
 	Returns nil and a message on error.
 
 printTokens()
@@ -421,7 +422,7 @@ Special number notation rules.
 
 -============================================================]=]
 
-local PARSER_VERSION = "2.0.1-dev"
+local PARSER_VERSION = "2.1.0"
 
 local NORMALIZE_MINUS_ZERO, HANDLE_ENV
 do
@@ -618,6 +619,11 @@ local function populateCommonNodeFields(token, node)
 	-- node.parent    = nil -- Refers to the node's parent in the tree.
 	-- node.container = nil -- Refers to the specific table that the node is in, which could be the parent itself or a field in the parent.
 	-- node.key       = nil -- Refers to the specific field in the container that the node is in (which is either a string or an integer).
+
+	-- toLua() uses these fields if present:
+	-- node.pretty = bool
+	-- node.prefix = luaString
+	-- node.suffix = luaString
 
 	return node
 end
@@ -3039,6 +3045,11 @@ local function cloneNodeAndMaybeChildren(node, cloneChildren)
 	else
 		errorf("Invalid node type '%s'.", tostring(nodeType))
 	end
+
+	clone.pretty = node.pretty
+	clone.prefix = node.prefix
+	clone.suffix = node.suffix
+	-- Should we set node.token etc. too? @Incomplete
 
 	return clone
 end
