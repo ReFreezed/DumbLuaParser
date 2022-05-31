@@ -6,7 +6,7 @@
 --=  Tokenize Lua code or create ASTs (Abstract Syntax Trees)
 --=  and convert the data back to Lua.
 --=
---=  Version: 2.1 (2021-09-03)
+--=  Version: 2.1-dev
 --=
 --=  License: MIT (see the bottom of this file)
 --=  Website: http://luaparser.refreezed.com/
@@ -422,7 +422,7 @@ Special number notation rules.
 
 -============================================================]=]
 
-local PARSER_VERSION = "2.1.0"
+local PARSER_VERSION = "2.1.0-dev"
 
 local NORMALIZE_MINUS_ZERO, HANDLE_ENV
 do
@@ -481,7 +481,7 @@ local maybeWrapInt = (
 		-- have to use mod again. Gah!
 		return tonumber(n % 0x100000000) % 0x100000000 -- 0x100000000 == 2^32
 	end)
-	or (_VERSION == "Lua 5.2" and bit32.band)
+	or (_VERSION == "Lua 5.2" and require"bit32".band)
 	or function(n)  return n  end
 )
 
@@ -567,7 +567,7 @@ local TOKEN_BYTES = {
 	NAME_START      = newCharSet"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_",
 	DASH            = newCharSet"-",
 	NUM             = newCharSet"0123456789",
-	NUM_OR_DOT      = newCharSet"0123456789.",
+	-- NUM_OR_DOT   = newCharSet"0123456789.",
 	QUOTE           = newCharSet"\"'",
 	SQUARE          = newCharSet"[",
 	DOT             = newCharSet".",
@@ -1158,7 +1158,7 @@ do
 		local BYTES_NAME_START      = TOKEN_BYTES.NAME_START
 		local BYTES_DASH            = TOKEN_BYTES.DASH
 		local BYTES_NUM             = TOKEN_BYTES.NUM
-		local BYTES_NUM_OR_DOT      = TOKEN_BYTES.NUM_OR_DOT
+		-- local BYTES_NUM_OR_DOT   = TOKEN_BYTES.NUM_OR_DOT
 		local BYTES_QUOTE           = TOKEN_BYTES.QUOTE
 		local BYTES_SQUARE          = TOKEN_BYTES.SQUARE
 		local BYTES_DOT             = TOKEN_BYTES.DOT
@@ -6449,7 +6449,7 @@ local function valueToAst(v, sortTableKeys)
 		local keys      = {}
 		local indices   = {}
 
-		for k, v in pairs(t) do
+		for k in pairs(t) do
 			tableInsert(keys, k)
 		end
 
