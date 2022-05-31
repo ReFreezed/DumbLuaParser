@@ -427,12 +427,12 @@ local PARSER_VERSION = "2.1.0-dev"
 local NORMALIZE_MINUS_ZERO, HANDLE_ENV
 do
 	local n              = 0
-	NORMALIZE_MINUS_ZERO = tostring(-n) == "0"
+	NORMALIZE_MINUS_ZERO = tostring(-n) == "0" -- Lua 5.3+ normalizes -0 to 0.
 end
 do
 	local pcall = pcall
 	local _ENV  = nil
-	HANDLE_ENV  = not pcall(function() local x = _G end)
+	HANDLE_ENV  = not pcall(function() return _G end) -- Looking up the global _G will raise an error if _ENV is supported (Lua 5.2+).
 end
 
 local assert       = assert
@@ -4797,10 +4797,10 @@ do
 end
 
 -- stats = minify( node [, optimize=false ] )
-local function minify(node, optimize)
+local function minify(node, doOptimize)
 	local stats = Stats()
 
-	if optimize then
+	if doOptimize then
 		_optimize(node, stats)
 	end
 
