@@ -6093,7 +6093,7 @@ do
 		elseif nodeType == "literal" then
 			local literal = node
 			local vType   = type(literal.value)
-			if not (vType == "number" or vType == "string" or vType == "boolean" or vType == "nil") then
+			if not (vType == "number" or vType == "string" or vType == "boolean" or vType == "nil" or (jit and vType == "cdata" and tonumber(literal.value))) then
 				addValidationError(path, errors, "Invalid literal value type '%s'.", vType)
 			end
 
