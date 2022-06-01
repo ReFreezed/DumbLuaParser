@@ -162,6 +162,12 @@ removeChild()
 isExpression()
 	bool = parser.isExpression( astNode )
 	Returns true for expression nodes and false for statements.
+	Note that call nodes count as expressions for this function, i.e. return true.
+
+isStatement()
+	bool = parser.isStatement( astNode )
+	Returns true for statements and false for expression nodes.
+	Note that call nodes count as statements for this function, i.e. return true.
 
 validateTree()
 	isValid, errorMessages = validateTree( astNode )
@@ -186,7 +192,7 @@ updateReferences()
 	parser.updateReferences( astNode [, updateTopNodePositionInfo=true ] )
 	Update references between nodes in the tree.
 	This function sets 'parent'+'container'+'key' for all nodes, 'declaration' for identifiers and vararg nodes, and 'label' for goto nodes.
-	If 'updateTopNodePositionInfo' is false then 'parent', 'container' and 'key' will remain as-it for 'astNode' specifically.
+	If 'updateTopNodePositionInfo' is false then 'parent', 'container' and 'key' will remain as-is for 'astNode' specifically.
 
 simplify()
 	stats = simplify( astNode )
@@ -6428,6 +6434,10 @@ local function isExpression(node)
 	return EXPRESSION_TYPES[node.type] == true
 end
 
+local function isStatement(node)
+	return EXPRESSION_TYPES[node.type] == nil or node.type == "call"
+end
+
 
 
 local function resetNextId()
@@ -6520,6 +6530,7 @@ parser = {
 	removeChild         = removeChild,
 
 	isExpression        = isExpression,
+	isStatement         = isStatement,
 	validateTree        = validateTree,
 
 	traverseTree        = traverseTree,
@@ -6554,7 +6565,7 @@ return parser
 
 --[=[===========================================================
 
-Copyright © 2020-2021 Marcus 'ReFreezed' Thunström
+Copyright © 2020-2022 Marcus 'ReFreezed' Thunström
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

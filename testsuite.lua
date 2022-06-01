@@ -395,6 +395,13 @@ test("AST manipulation", function()
 		local repeatLoop   = parser.newNode("repeat")
 		local forLoop      = parser.newNode("for", "numeric")
 
+		assert(    parser.isExpression(identifier1))
+		assert(not parser.isStatement (identifier1))
+		assert(not parser.isExpression(block))
+		assert(    parser.isStatement (block))
+		assert(    parser.isExpression(call))
+		assert(    parser.isStatement (call))
+
 		parser.setChild(call,        "callee", identifier1)
 		parser.setChild(declaration, "names",  1, identifier2)
 
