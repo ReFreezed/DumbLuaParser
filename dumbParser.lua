@@ -5294,7 +5294,7 @@ do
 					local b1, b2, b3, b4 = stringByte(s, pos, pos+3)
 
 					-- Printable ASCII.
-					if R(b1,32,126) and b1 ~= 92 then
+					if R(b1,32,126) then
 						if     b1 == quoteByte then  tableInsert(buffer, "\\") ; tableInsert(buffer, quote) ; pos = pos + 1
 						elseif b1 == 92        then  tableInsert(buffer, [[\\]])                            ; pos = pos + 1
 						else                         tableInsert(buffer, stringSub(s, pos, pos))            ; pos = pos + 1
