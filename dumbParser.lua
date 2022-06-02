@@ -6,7 +6,7 @@
 --=  Tokenize Lua code or create ASTs (Abstract Syntax Trees)
 --=  and convert the data back to Lua.
 --=
---=  Version: 2.1-dev
+--=  Version: 2.2 (2022-06-02)
 --=
 --=  License: MIT (see the bottom of this file)
 --=  Website: http://luaparser.refreezed.com/
@@ -428,7 +428,7 @@ Special number notation rules.
 
 -============================================================]=]
 
-local PARSER_VERSION = "2.1.0-dev"
+local PARSER_VERSION = "2.2.0"
 
 local NORMALIZE_MINUS_ZERO, HANDLE_ENV
 do
