@@ -915,6 +915,32 @@ test("Minify", function()
 		[[ for e,t in ipairs(global)do globalFunc1(t);for e=e,#global do globalFunc2(e);end end ]]
 	)
 
+	-- Make sure we minify multi-name declaration-likes as much as possible without shadowing too much.
+	testMinify(
+		[[ local x, y = 1, 2 ; return x ]],
+		[[ local e,t=1,2;return e; ]]
+	)
+	testMinify(
+		[[ local x, y = 1, 2 ; return y ]],
+		[[ local e,e=1,2;return e; ]]
+	)
+	testMinify(
+		[[ for x, y in 1, 2 do return x end ]],
+		[[ for e,t in 1,2 do return e;end ]]
+	)
+	testMinify(
+		[[ for x, y in 1, 2 do return y end ]],
+		[[ for e,e in 1,2 do return e;end ]]
+	)
+	testMinify(
+		[[ function f(x, y) return x end ]],
+		[[ function f(e,t)return e;end ]]
+	)
+	testMinify(
+		[[ function f(x, y) return y end ]],
+		[[ function f(e,e)return e;end ]]
+	)
+
 	if _VERSION >= "Lua 5.2" then
 		testMinify(
 			[[
@@ -925,6 +951,39 @@ test("Minify", function()
 			]],
 			[[ local _ENV=_ENV;local function e()return _ENV;end ]]
 		)
+	end
+
+	-- Check that declaration references don't change.
+	for _, filename in ipairs{"test.lua","dumbParser.lua"} do
+		local ast   = assert(parser.parseFile(filename))
+		local names = {}
+		local decls = {}
+
+		parser.updateReferences(ast)
+
+		parser.traverseTree(ast, function(node)
+			if node.type == "identifier" then
+				names[node] = node.name
+				decls[node] = node.declaration
+			end
+		end)
+
+		parser.minify(ast)
+		parser.updateReferences(ast)
+		-- print("----------------------------------------------------------------") ; print(parser.toLua(ast, true))
+
+		local ok = true
+
+		parser.traverseTree(ast, function(node)
+			if node.type == "identifier" and node.declaration ~= decls[node] then
+				ok = false
+				print(parser.formatMessage(node, "Declaration changed for '%s' (is '%s').", names[node], node.name))
+				print(decls[node]      and parser.formatMessage(decls[node]     , "from..."):gsub("[^\n]+", "    %0") or "from... nil")
+				print(node.declaration and parser.formatMessage(node.declaration,   "to..."):gsub("[^\n]+", "    %0") or   "to... nil")
+			end
+		end)
+
+		assert(ok, "Declarations changed!")
 	end
 end)
 

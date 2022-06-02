@@ -3501,8 +3501,8 @@ end
 
 
 
--- declIdent|nil    = findIdentifierDeclaration( ident )
--- declIdent.parent = decl|func|forLoop
+-- declIdent | nil  = findIdentifierDeclaration( ident )
+-- declIdent.parent = decl | func | forLoop
 local function findIdentifierDeclaration(ident)
 	local name   = ident.name
 	local parent = ident
@@ -3516,20 +3516,30 @@ local function findIdentifierDeclaration(ident)
 		if parent.type == "declaration" then
 			local decl = parent
 
-			if lastChild.container ~= decl.values then
-				local declIdent = lastItemWith1(decl.names, "name", name)
-				if declIdent then  return declIdent  end
+			if lastChild.container == decl.names then
+				assert(lastChild == ident)
+				return ident -- ident is the declaration node.
 			end
 
 		elseif parent.type == "function" then
-			local func      = parent
-			local declIdent = lastItemWith1(func.parameters, "name", name) -- Note: This will ignore any vararg parameter.
-			if declIdent then  return declIdent  end
+			local func = parent
+
+			if lastChild.container == func.parameters then
+				assert(lastChild == ident)
+				return ident -- ident is the declaration node.
+			else
+				local func      = parent
+				local declIdent = lastItemWith1(func.parameters, "name", name) -- Note: This will ignore any vararg parameter.
+				if declIdent then  return declIdent  end
+			end
 
 		elseif parent.type == "for" then
 			local forLoop = parent
 
-			if lastChild.container ~= forLoop.values then
+			if lastChild.container == forLoop.names then
+				assert(lastChild == ident)
+				return ident -- ident is the declaration node.
+			elseif lastChild.container ~= forLoop.values then
 				local declIdent = lastItemWith1(forLoop.names, "name", name)
 				if declIdent then  return declIdent  end
 			end
@@ -4144,6 +4154,7 @@ local function getInformationAboutIdentifiersAndUpdateReferences(node)
 				statementOrInterest, block = findParentStatementAndBlockOrNodeOfInterest(block, currentDeclIdent)
 
 				if not statementOrInterest then
+					-- We should only get here for globals (i.e. there should be no declaration).
 					assert(not currentDeclIdent)
 					return
 				end
