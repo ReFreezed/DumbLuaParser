@@ -9,6 +9,7 @@ MIT license.
 
 Download the latest stable release [here](https://github.com/ReFreezed/DumbLuaParser/releases/latest)
 or, if you're cloning the repository, checkout the last commit with a version tag.
+Also available on [LuaRocks](https://luarocks.org/modules/refreezed/dumbluaparser).
 
 
 ## Basic usage
