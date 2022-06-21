@@ -32,5 +32,5 @@ Check out [examples.lua](examples.lua) for some examples.
 
 ## Documentation
 
-See the [website](http://luaparser.refreezed.com/docs/) or the top of the [source file](dumbParser.lua).
+See the [website](http://refreezed.com/luaparser/docs/) or the top of the [source file](dumbParser.lua).
 

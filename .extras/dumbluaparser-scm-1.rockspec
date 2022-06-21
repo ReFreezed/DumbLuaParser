@@ -13,7 +13,7 @@ description = {
 	]],
 
 	license    = "MIT",
-	homepage   = "http://luaparser.refreezed.com/",
+	homepage   = "http://refreezed.com/luaparser/",
 	issues_url = "https://github.com/ReFreezed/DumbLuaParser/issues",
 
 	labels = {
@@ -21,6 +21,7 @@ description = {
 		"minification",
 		"optimization",
 		"parsing",
+		"purelua",
 		"serialization",
 	},
 }

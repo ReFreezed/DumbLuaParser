@@ -9,8 +9,8 @@
 --=  Version: 2.2 (2022-06-02)
 --=
 --=  License: MIT (see the bottom of this file)
---=  Website: http://luaparser.refreezed.com/
---=  Documentation: http://luaparser.refreezed.com/docs/
+--=  Website: http://refreezed.com/luaparser/
+--=  Documentation: http://refreezed.com/luaparser/docs/
 --=
 --=  Supported Lua versions: 5.1, 5.2, 5.3, 5.4, LuaJIT
 --=
@@ -170,7 +170,7 @@ isStatement()
 	Note that call nodes count as statements for this function, i.e. return true.
 
 validateTree()
-	isValid, errorMessages = validateTree( astNode )
+	isValid, errorMessages = parser.validateTree( astNode )
 	Check for errors in an AST (e.g. missing condition expressions for if statements).
 	errorMessages is a multi-line string if isValid is false.
 
@@ -195,13 +195,13 @@ updateReferences()
 	If 'updateTopNodePositionInfo' is false then 'parent', 'container' and 'key' will remain as-is for 'astNode' specifically.
 
 simplify()
-	stats = simplify( astNode )
+	stats = parser.simplify( astNode )
 	Simplify/fold expressions and statements involving constants ('1+2' becomes '3', 'false and func()' becomes 'false' etc.).
 	See the INT_SIZE constant for notes.
 	See below for more info about stats.
 
 optimize()
-	stats = optimize( astNode )
+	stats = parser.optimize( astNode )
 	Attempt to remove nodes that aren't useful, like unused variables, or variables that are essentially constants.
 	Calls simplify() internally.
 	This function can be quite slow!
@@ -238,9 +238,9 @@ printTree()
 	Print the structure of a whole AST to stdout.
 
 formatMessage()
-	message = formatMessage( [ prefix="Info", ] token,    formatString, ... )
-	message = formatMessage( [ prefix="Info", ] astNode,  formatString, ... )
-	message = formatMessage( [ prefix="Info", ] location, formatString, ... )
+	message = parser.formatMessage( [ prefix="Info", ] token,    formatString, ... )
+	message = parser.formatMessage( [ prefix="Info", ] astNode,  formatString, ... )
+	message = parser.formatMessage( [ prefix="Info", ] location, formatString, ... )
 	Format a message to contain a code preview window with an arrow pointing at the target token, node or location.
 	This is used internally for formatting error messages.
 
@@ -490,31 +490,6 @@ local maybeWrapInt = (
 	or (_VERSION == "Lua 5.2" and require"bit32".band)
 	or function(n)  return n  end
 )
-
-local assertArg1, assertArg2, errorf
-local countString, countSubString
-local ensurePrintable
-local formatErrorInFile, formatErrorAtToken, formatErrorAfterToken, formatErrorAtNode
-local formatMessageInFile, formatMessageAtToken, formatMessageAfterToken, formatMessageAtNode
-local formatNumber
-local getChild, setChild, addChild, removeChild
-local getLineNumber
-local getNameArrayOfDeclarationLike
-local getRelativeLocationText, getRelativeLocationTextForToken, getRelativeLocationTextForNode
-local indexOf, itemWith1, lastItemWith1
-local ipairsr
-local isToken, isTokenType, isTokenAnyValue
-local mayNodeBeInvolvedInJump, mayAnyNodeBeInvolvedInJump
-local parse, parseExpression, parseFile
-local printNode, printTree
-local printTokens
-local removeUnordered, removeItemUnordered
-local tokenize, tokenizeFile
-local toLua
-local traverseTree, traverseTreeReverse
-local updateReferences
-local validateTree
-local where
 
 local parser
 
@@ -799,7 +774,7 @@ end
 
 
 -- count = countString( haystack, needle [, plain=false ] )
-function countString(haystack, needle, plain)
+local function countString(haystack, needle, plain)
 	local count = 0
 	local pos   = 1
 
@@ -813,7 +788,7 @@ function countString(haystack, needle, plain)
 end
 
 -- count = countSubString( haystack, startPosition, endPosition, needle [, plain=false ] )
-function countSubString(haystack, pos, posEnd, needle, plain)
+local function countSubString(haystack, pos, posEnd, needle, plain)
 	local count = 0
 
 	while true do
@@ -827,12 +802,72 @@ end
 
 
 
-function getLineNumber(s, pos)
+-- errorf( [ level=1, ] format, ... )
+local function errorf(level, s, ...)
+	if type(level) == "number" then
+		error(F(s, ...), (level == 0 and 0 or (1+level)))
+	else
+		error(F(level, s, ...), 2)
+	end
+end
+
+-- assertArg1( functionName, argumentNumber, value, expectedType                 [, level=2 ] )
+-- assertArg2( functionName, argumentNumber, value, expectedType1, expectedType2 [, level=2 ] )
+local function assertArg1(funcName, argNum, v, expectedType, level)
+	if type(v) == expectedType then  return  end
+	errorf(1+(level or 2), "Bad argument #%d to '%s'. (Expected %s, got %s)", argNum, funcName, expectedType, type(v))
+end
+local function assertArg2(funcName, argNum, v, expectedType1, expectedType2, level)
+	if type(v) == expectedType1 or type(v) == expectedType2 then  return  end
+	errorf(1+(level or 2), "Bad argument #%d to '%s'. (Expected %s or %s, got %s)", argNum, funcName, expectedType1, expectedType2, type(v))
+end
+
+
+
+local ensurePrintable
+do
+	local CONTROL_TO_READABLE = {
+		["\0"] = "{NUL}",
+		["\n"] = "{NL}",
+		["\r"] = "{CR}",
+	}
+
+	function ensurePrintable(s)
+		return (stringGsub(s, "[%z\1-\31\127-\255]", function(c)
+			return CONTROL_TO_READABLE[c] or (stringByte(c) <= 31 or stringByte(c) >= 127) and F("{%d}", stringByte(c)) or nil
+		end))
+	end
+end
+
+
+
+local function removeUnordered(t, i)
+	local len = #t
+	if i > len or i < 1 then  return  end
+
+	-- Note: This does the correct thing if i==len too.
+	t[i]   = t[len]
+	t[len] = nil
+end
+
+local function removeItemUnordered(t, v)
+	for i = 1, #t do
+		if t[i] == v then
+			removeUnordered(t, i)
+			return
+		end
+	end
+end
+
+
+
+local function getLineNumber(s, pos)
 	return 1 + countSubString(s, 1, pos-1, "\n", true)
 end
 
 
 
+local formatMessageInFile
 do
 	local function findStartOfLine(s, pos, canBeEmpty)
 		while pos > 1 do
@@ -903,14 +938,14 @@ do
 	end
 end
 
-function formatMessageAtToken(prefix, token, agent, s, ...)
+local function formatMessageAtToken(prefix, token, agent, s, ...)
 	return (formatMessageInFile(prefix, (token and token.sourceString or ""), (token and token.sourcePath or "?"), (token and token.positionStart or 0), agent, s, ...))
 end
-function formatMessageAfterToken(prefix, token, agent, s, ...)
+local function formatMessageAfterToken(prefix, token, agent, s, ...)
 	return (formatMessageInFile(prefix, (token and token.sourceString or ""), (token and token.sourcePath or "?"), (token and token.positionEnd+1 or 0), agent, s, ...))
 end
 
-function formatMessageAtNode(prefix, node, agent, s, ...)
+local function formatMessageAtNode(prefix, node, agent, s, ...)
 	return (formatMessageInFile(prefix, node.sourceString, node.sourcePath, node.position, agent, s, ...))
 end
 
@@ -937,16 +972,66 @@ end
 
 
 
-function formatErrorInFile    (...)  return formatMessageInFile    ("Error", ...)  end
-function formatErrorAtToken   (...)  return formatMessageAtToken   ("Error", ...)  end
-function formatErrorAfterToken(...)  return formatMessageAfterToken("Error", ...)  end
-function formatErrorAtNode    (...)  return formatMessageAtNode    ("Error", ...)  end
+local function formatErrorInFile    (...)  return formatMessageInFile    ("Error", ...)  end
+local function formatErrorAtToken   (...)  return formatMessageAtToken   ("Error", ...)  end
+local function formatErrorAfterToken(...)  return formatMessageAfterToken("Error", ...)  end
+local function formatErrorAtNode    (...)  return formatMessageAtNode    ("Error", ...)  end
+
+
+
+local function where(node, s, ...)
+	if not node then
+		print("[Where] No node here!")
+	elseif s then
+		print(formatMessageAtNode("Info", node, "Where", s, ...))
+	else
+		print(formatMessageAtNode("Info", node, "Where", "Here!"))
+	end
+end
+
+
+
+local function iprev(t, i)
+	i       = i-1
+	local v = t[i]
+
+	if v ~= nil then  return i, v  end
+end
+
+local function ipairsr(t)
+	return iprev, t, #t+1
+end
+
+
+
+-- index = indexOf( array, value [, startIndex=1, endIndex=#array ] )
+local function indexOf(t, v, i1, i2)
+	for i = (i1 or 1), (i2 or #t) do
+		if t[i] == v then  return i  end
+	end
+	return nil
+end
+
+-- item, index = itemWith1    ( array, key, value )
+-- item, index = lastItemWith1( array, key, value )
+local function itemWith1(t, k, v)
+	for i, item in ipairs(t) do
+		if item[k] == v then  return item, i  end
+	end
+	return nil
+end
+local function lastItemWith1(t, k, v)
+	for i, item in ipairsr(t) do
+		if item[k] == v then  return item, i  end
+	end
+	return nil
+end
 
 
 
 -- text = getRelativeLocationText( sourcePathOfInterest, lineNumberOfInterest, otherSourcePath, otherLineNumber )
 -- text = getRelativeLocationText( lineNumberOfInterest, otherLineNumber )
-function getRelativeLocationText(sourcePath, ln, otherSourcePath, otherLn)
+local function getRelativeLocationText(sourcePath, ln, otherSourcePath, otherLn)
 	if type(sourcePath) ~= "string" then
 		sourcePath, ln, otherSourcePath, otherLn = "", sourcePath, "", ln
 	end
@@ -963,13 +1048,14 @@ function getRelativeLocationText(sourcePath, ln, otherSourcePath, otherLn)
 end
 
 -- text = getRelativeLocationTextForToken( tokens, tokenOfInterest, otherToken )
-function getRelativeLocationTextForToken(tokens, tokOfInterest, otherTok)
+local function getRelativeLocationTextForToken(tokens, tokOfInterest, otherTok)
 	return getRelativeLocationText((tokens[tokOfInterest] and tokens[tokOfInterest].lineStart or 0), (tokens[otherTok] and tokens[otherTok].lineStart or 0))
 end
 
+--[[
 -- text = getRelativeLocationTextForNode( nodeOfInterest, otherNode )
 -- text = getRelativeLocationTextForNode( nodeOfInterest, otherSourcePath, otherLineNumber )
-function getRelativeLocationTextForNode(nodeOfInterest, otherSourcePath, otherLn)
+local function getRelativeLocationTextForNode(nodeOfInterest, otherSourcePath, otherLn)
 	if type(otherSourcePath) == "table" then
 		return getRelativeLocationTextForNode(nodeOfInterest, otherSourcePath.sourcePath, otherSourcePath.line)
 	end
@@ -980,9 +1066,51 @@ function getRelativeLocationTextForNode(nodeOfInterest, otherSourcePath, otherLn
 
 	return getRelativeLocationText(nodeOfInterest.sourcePath, nodeOfInterest.line, otherSourcePath, otherLn)
 end
+]]
 
 
 
+local function formatNumber(n)
+	-- @Speed: Cache!
+
+	-- 64-bit int in LuaJIT (is what we assume, anyway).
+	if jit and type(n) == "cdata" then
+		local nStr = tostring(n)
+
+		if stringFind(nStr, "i$") then
+			if stringFind(nStr, "^0[-+]") then
+				nStr = stringGsub(nStr, "^0%+?", "")
+			else
+				--
+				-- LuaJIT doesn't seem to be able to parse nStr if we output it as-is.
+				-- What is even the notation for complex numbers with a non-zero real part?
+				-- Oh LuaJIT, you're so mysterious...
+				--
+				-- @Robustness: Make sure we don't choke when trying to simplify() complex numbers.
+				--
+				errorf(2, "Cannot output complex number '%s'.", nStr)
+			end
+		end
+
+		return nStr
+	end
+
+	-- Int (including 64-bit ints in Lua 5.3+, and excluding whole floats).
+	if n == mathFloor(n) and not (mathType and mathType(n) == "float") then
+		local nStr = F("%.0f", n)
+		if tonumber(nStr) == n then  return nStr  end
+	end
+
+	-- Anything else.
+	return (tostring(n)
+		:gsub("(e[-+])0+(%d+)$", "%1%2") -- Remove unnecessary zeroes after 'e'.
+		:gsub("e%+",             "e"   ) -- Remove plus after 'e'.
+	)
+end
+
+
+
+local tokenize
 do
 	local ERROR_UNFINISHED_VALUE = {}
 
@@ -1474,7 +1602,7 @@ do
 end
 
 -- tokens, error = tokenizeFile( path [, keepWhitespaceTokens=false ] )
-function tokenizeFile(path, keepWhitespaceTokens)
+local function tokenizeFile(path, keepWhitespaceTokens)
 	assertArg1("tokenizeFile", 1, path,                 "string")
 	assertArg2("tokenizeFile", 2, keepWhitespaceTokens, "boolean","nil")
 
@@ -1600,15 +1728,15 @@ end
 
 
 
-function isToken(token, tokType, tokValue)
+local function isToken(token, tokType, tokValue)
 	return token ~= nil and token.type == tokType and token.value == tokValue
 end
 
-function isTokenType(token, tokType)
+local function isTokenType(token, tokType)
 	return token ~= nil and token.type == tokType
 end
 
-function isTokenAnyValue(token, tokValueSet)
+local function isTokenAnyValue(token, tokValueSet)
 	return token ~= nil and tokValueSet[token.value] == true
 end
 
@@ -2672,7 +2800,7 @@ end
 
 -- ast, error = parse( tokens )
 -- ast, error = parse( luaString [, pathForErrorMessages="?" ] )
-function parse(luaOrTokens, path)
+local function parse(luaOrTokens, path)
 	assertArg2("parse", 1, luaOrTokens, "string","table")
 
 	-- ast, error = parse( tokens )
@@ -2698,7 +2826,7 @@ end
 
 -- ast, error = parseExpression( tokens )
 -- ast, error = parseExpression( luaString [, pathForErrorMessages="?" ] )
-function parseExpression(luaOrTokens, path)
+local function parseExpression(luaOrTokens, path)
 	assertArg2("parseExpression", 1, luaOrTokens, "string","table")
 
 	-- ast, error = parseExpression( tokens )
@@ -2723,7 +2851,7 @@ function parseExpression(luaOrTokens, path)
 end
 
 -- ast, error = parseFile( path )
-function parseFile(path)
+local function parseFile(path)
 	assertArg1("parseFile", 1, path, "string")
 
 	local tokens, err = tokenizeFile(path)
@@ -3076,22 +3204,64 @@ end
 
 
 
-do
-	local CONTROL_TO_READABLE = {
-		["\0"] = "{NUL}",
-		["\n"] = "{NL}",
-		["\r"] = "{CR}",
-	}
+local INVOLVED_NEVER  = newSet{ "function", "literal", "vararg" }
+local INVOLVED_ALWAYS = newSet{ "break", "call", "goto", "label", "lookup", "return" }
 
-	function ensurePrintable(s)
-		return (stringGsub(s, "[%z\1-\31\127-\255]", function(c)
-			return CONTROL_TO_READABLE[c] or (stringByte(c) <= 31 or stringByte(c) >= 127) and F("{%d}", stringByte(c)) or nil
-		end))
+local mayAnyNodeBeInvolvedInJump
+
+local function mayNodeBeInvolvedInJump(node)
+	if INVOLVED_NEVER[node.type] then
+		return false
+
+	elseif INVOLVED_ALWAYS[node.type] then
+		return true
+
+	elseif node.type == "identifier" then
+		return (node.declaration == nil) -- Globals may invoke a metamethod on the environment.
+
+	elseif node.type == "binary" then
+		return mayNodeBeInvolvedInJump(node.left) or mayNodeBeInvolvedInJump(node.right)
+	elseif node.type == "unary" then
+		return mayNodeBeInvolvedInJump(node.expression)
+
+	elseif node.type == "block" then
+		return mayAnyNodeBeInvolvedInJump(node.statements)
+
+	elseif node.type == "if" then
+		return mayNodeBeInvolvedInJump(node.condition) or mayNodeBeInvolvedInJump(node.bodyTrue) or (node.bodyFalse ~= nil and mayNodeBeInvolvedInJump(node.bodyFalse))
+
+	elseif node.type == "for" then
+		return mayAnyNodeBeInvolvedInJump(node.values) or mayNodeBeInvolvedInJump(node.body)
+	elseif node.type == "repeat" or node.type == "while" then
+		return mayNodeBeInvolvedInJump(node.condition) or mayNodeBeInvolvedInJump(node.body)
+
+	elseif node.type == "declaration" then
+		return mayAnyNodeBeInvolvedInJump(node.values)
+	elseif node.type == "assignment" then
+		return mayAnyNodeBeInvolvedInJump(node.targets) or mayAnyNodeBeInvolvedInJump(node.values) -- Targets may be identifiers or lookups.
+
+	elseif node.type == "table" then
+		for _, tableField in ipairs(node.fields) do
+			if mayNodeBeInvolvedInJump(tableField.key)   then  return true  end
+			if mayNodeBeInvolvedInJump(tableField.value) then  return true  end
+		end
+		return false
+
+	else
+		errorf("Invalid/unhandled node type '%s'.", tostring(node.type))
 	end
+end
+
+--[[local]] function mayAnyNodeBeInvolvedInJump(nodes)
+	for _, node in ipairs(nodes) do
+		if mayNodeBeInvolvedInJump(node) then  return true  end
+	end
+	return false
 end
 
 
 
+local printNode, printTree
 do
 	local function _printNode(node)
 		local nodeType = node.type
@@ -3270,7 +3440,7 @@ end
 -- didStop = traverseTree( astNode, [ leavesFirst=false, ] callback [, topNodeParent=nil, topNodeContainer=nil, topNodeKey=nil ] )
 -- action  = callback( astNode, parent, container, key )
 -- action  = "stop"|"ignorechildren"|nil  -- Returning nil (or nothing) means continue traversal.
-function traverseTree(node, leavesFirst, cb, parent, container, k)
+local function traverseTree(node, leavesFirst, cb, parent, container, k)
 	assertArg1("traverseTree", 1, node, "table")
 
 	if type(leavesFirst) == "boolean" then
@@ -3386,7 +3556,7 @@ end
 -- didStop = traverseTreeReverse( astNode, [ leavesFirst=false, ] callback [, topNodeParent=nil, topNodeContainer=nil, topNodeKey=nil ] )
 -- action  = callback( astNode, parent, container, key )
 -- action  = "stop"|"ignorechildren"|nil  -- Returning nil (or nothing) means continue traversal.
-function traverseTreeReverse(node, leavesFirst, cb, parent, container, k)
+local function traverseTreeReverse(node, leavesFirst, cb, parent, container, k)
 	assertArg1("traverseTreeReverse", 1, node, "table")
 
 	if type(leavesFirst) == "boolean" then
@@ -3623,7 +3793,7 @@ local function findLabel(gotoNode)
 	end
 end
 
-function updateReferences(node, updateTopNodePositionInfo)
+local function updateReferences(node, updateTopNodePositionInfo)
 	local topNodeParent    = nil
 	local topNodeContainer = nil
 	local topNodeKey       = nil
@@ -4071,6 +4241,16 @@ end
 
 
 
+local function isNodeDeclLike(node)
+	return node.type == "declaration" or node.type == "function" or node.type == "for"
+end
+
+local function getNameArrayOfDeclLike(declLike)
+	return declLike.names or declLike.parameters
+end
+
+
+
 -- (statement, block) | declIdent | repeatLoop | declLike = findParentStatementAndBlockOrNodeOfInterest( node, declIdent )
 local function findParentStatementAndBlockOrNodeOfInterest(node, declIdent)
 	while true do
@@ -4194,7 +4374,7 @@ local function getInformationAboutIdentifiersAndUpdateReferences(node)
 					local declLike = statementOrInterest
 					block          = declLike -- Start node for while loop.
 
-					for _, declIdent in ipairsr(getNameArrayOfDeclarationLike(declLike)) do
+					for _, declIdent in ipairsr(getNameArrayOfDeclLike(declLike)) do
 						-- :DeclarationIdentifiersWatchThemselves
 						declIdentWatchers[declIdent] = declIdentWatchers[declIdent] or {}
 						tableInsert(declIdentWatchers[declIdent], currentIdentOrVararg)
@@ -4211,61 +4391,6 @@ local function getInformationAboutIdentifiersAndUpdateReferences(node)
 	end)
 
 	return identInfos, declIdentWatchers
-end
-
-
-
-local INVOLVED_NEVER  = newSet{ "function", "literal", "vararg" }
-local INVOLVED_ALWAYS = newSet{ "break", "call", "goto", "label", "lookup", "return" }
-
-function mayNodeBeInvolvedInJump(node)
-	if INVOLVED_NEVER[node.type] then
-		return false
-
-	elseif INVOLVED_ALWAYS[node.type] then
-		return true
-
-	elseif node.type == "identifier" then
-		return (node.declaration == nil) -- Globals may invoke a metamethod on the environment.
-
-	elseif node.type == "binary" then
-		return mayNodeBeInvolvedInJump(node.left) or mayNodeBeInvolvedInJump(node.right)
-	elseif node.type == "unary" then
-		return mayNodeBeInvolvedInJump(node.expression)
-
-	elseif node.type == "block" then
-		return mayAnyNodeBeInvolvedInJump(node.statements)
-
-	elseif node.type == "if" then
-		return mayNodeBeInvolvedInJump(node.condition) or mayNodeBeInvolvedInJump(node.bodyTrue) or (node.bodyFalse ~= nil and mayNodeBeInvolvedInJump(node.bodyFalse))
-
-	elseif node.type == "for" then
-		return mayAnyNodeBeInvolvedInJump(node.values) or mayNodeBeInvolvedInJump(node.body)
-	elseif node.type == "repeat" or node.type == "while" then
-		return mayNodeBeInvolvedInJump(node.condition) or mayNodeBeInvolvedInJump(node.body)
-
-	elseif node.type == "declaration" then
-		return mayAnyNodeBeInvolvedInJump(node.values)
-	elseif node.type == "assignment" then
-		return mayAnyNodeBeInvolvedInJump(node.targets) or mayAnyNodeBeInvolvedInJump(node.values) -- Targets may be identifiers or lookups.
-
-	elseif node.type == "table" then
-		for _, tableField in ipairs(node.fields) do
-			if mayNodeBeInvolvedInJump(tableField.key)   then  return true  end
-			if mayNodeBeInvolvedInJump(tableField.value) then  return true  end
-		end
-		return false
-
-	else
-		errorf("Invalid/unhandled node type '%s'.", tostring(node.type))
-	end
-end
-
-function mayAnyNodeBeInvolvedInJump(nodes)
-	for _, node in ipairs(nodes) do
-		if mayNodeBeInvolvedInJump(node) then  return true  end
-	end
-	return false
 end
 
 
@@ -4341,7 +4466,7 @@ local function unregisterWatchersBeforeNodeRemoval(identInfos, declIdentWatchers
 		elseif node.type == "assignment" then
 			removeItemUnordered(currentFuncInfo.assignments, node)
 
-		elseif node.type == "declaration" or node.type == "function" or node.type == "for" then -- @Cleanup: Maybe define isValueDeclLike().
+		elseif isNodeDeclLike(node) then
 			removeItemUnordered(currentFuncInfo.declLikes, node)
 		end
 
@@ -4720,7 +4845,7 @@ local function _optimize(theNode, stats)
 			end
 
 		elseif isFunc or isForLoop then
-			local declIdents = getNameArrayOfDeclarationLike(statement)
+			local declIdents = getNameArrayOfDeclLike(statement)
 
 			for slot = #declIdents, (isForLoop and 2 or 1), -1 do
 				local declIdent = declIdents[slot]
@@ -4762,12 +4887,6 @@ local function optimize(theNode)
 	local stats = Stats()
 	_optimize(theNode, stats)
 	return stats
-end
-
-
-
-function getNameArrayOfDeclarationLike(declLike)
-	return declLike.names or declLike.parameters
 end
 
 
@@ -4962,7 +5081,7 @@ end
 
 
 
-function printTokens(tokens)
+local function printTokens(tokens)
 	local printLocs = parser.printLocations
 
 	for i, token in ipairs(tokens) do
@@ -4976,6 +5095,7 @@ end
 
 
 
+local toLua
 do
 	local writeNode
 	local writeStatements
@@ -5816,130 +5936,10 @@ end
 
 
 
--- index = indexOf( array, value [, startIndex=1, endIndex=#array ] )
-function indexOf(t, v, i1, i2)
-	for i = (i1 or 1), (i2 or #t) do
-		if t[i] == v then  return i  end
-	end
-	return nil
-end
-
--- item, index = itemWith1    ( array, key, value )
--- item, index = lastItemWith1( array, key, value )
-function itemWith1(t, k, v)
-	for i, item in ipairs(t) do
-		if item[k] == v then  return item, i  end
-	end
-	return nil
-end
-function lastItemWith1(t, k, v)
-	for i, item in ipairsr(t) do
-		if item[k] == v then  return item, i  end
-	end
-	return nil
-end
-
-
-
--- assertArg1( functionName, argumentNumber, value, expectedType                 [, level=2 ] )
--- assertArg2( functionName, argumentNumber, value, expectedType1, expectedType2 [, level=2 ] )
-function assertArg1(funcName, argNum, v, expectedType, level)
-	if type(v) == expectedType then  return  end
-	errorf(1+(level or 2), "Bad argument #%d to '%s'. (Expected %s, got %s)", argNum, funcName, expectedType, type(v))
-end
-function assertArg2(funcName, argNum, v, expectedType1, expectedType2, level)
-	if type(v) == expectedType1 or type(v) == expectedType2 then  return  end
-	errorf(1+(level or 2), "Bad argument #%d to '%s'. (Expected %s or %s, got %s)", argNum, funcName, expectedType1, expectedType2, type(v))
-end
-
--- errorf( [ level=1, ] format, ... )
-function errorf(level, s, ...)
-	if type(level) == "number" then
-		error(F(s, ...), (level == 0 and 0 or (1+level)))
-	else
-		error(F(level, s, ...), 2)
-	end
-end
-
-
-
-function formatNumber(n)
-	-- @Speed: Cache!
-
-	-- 64-bit int in LuaJIT (is what we assume, anyway).
-	if jit and type(n) == "cdata" then
-		local nStr = tostring(n)
-
-		if stringFind(nStr, "i$") then
-			if stringFind(nStr, "^0[-+]") then
-				nStr = stringGsub(nStr, "^0%+?", "")
-			else
-				--
-				-- LuaJIT doesn't seem to be able to parse nStr if we output it as-is.
-				-- What is even the notation for complex numbers with a non-zero real part?
-				-- Oh LuaJIT, you're so mysterious...
-				--
-				-- @Robustness: Make sure we don't choke when trying to simplify() complex numbers.
-				--
-				errorf(2, "Cannot output complex number '%s'.", nStr)
-			end
-		end
-
-		return nStr
-	end
-
-	-- Int (including 64-bit ints in Lua 5.3+, and excluding whole floats).
-	if n == mathFloor(n) and not (mathType and mathType(n) == "float") then
-		local nStr = F("%.0f", n)
-		if tonumber(nStr) == n then  return nStr  end
-	end
-
-	-- Anything else.
-	return (tostring(n)
-		:gsub("(e[-+])0+(%d+)$", "%1%2") -- Remove unnecessary zeroes after 'e'.
-		:gsub("e%+",             "e"   ) -- Remove plus after 'e'.
-	)
-end
-
-
-
-local function iprev(t, i)
-	i       = i-1
-	local v = t[i]
-
-	if v ~= nil then  return i, v  end
-end
-
-function ipairsr(t)
-	return iprev, t, #t+1
-end
-
-
-
-function removeUnordered(t, i)
-	local len = #t
-	if i > len or i < 1 then  return  end
-
-	-- Note: This does the correct thing if i==len too.
-	t[i]   = t[len]
-	t[len] = nil
-end
-
-function removeItemUnordered(t, v)
-	for i = 1, #t do
-		if t[i] == v then
-			removeUnordered(t, i)
-			return
-		end
-	end
-end
-
-
-
 -- node = getChild( node, fieldName )
 -- node = getChild( node, fieldName, index )                -- If the node field is an array.
 -- node = getChild( node, fieldName, index, tableFieldKey ) -- If the node field is a table field array.
-function getChild(node, fieldName, i, tableFieldKey)
+local function getChild(node, fieldName, i, tableFieldKey)
 	assertArg1("getChild", 1, node,      "table")
 	assertArg1("getChild", 2, fieldName, "string")
 
@@ -5974,7 +5974,7 @@ end
 -- setChild( node, fieldName, childNode )
 -- setChild( node, fieldName, index, childNode )                -- If the node field is an array.
 -- setChild( node, fieldName, index, tableFieldKey, childNode ) -- If the node field is a table field array.
-function setChild(node, fieldName, i, tableFieldKey, childNode)
+local function setChild(node, fieldName, i, tableFieldKey, childNode)
 	assertArg1("setChild", 1, node,      "table")
 	assertArg1("setChild", 2, fieldName, "string")
 
@@ -6016,7 +6016,7 @@ end
 
 -- addChild( node, fieldName, [ index=atEnd, ] childNode )
 -- addChild( node, fieldName, [ index=atEnd, ] keyNode, valueNode ) -- If the node field is a table field array.
-function addChild(node, fieldName, i, childNode, extraChildNode)
+local function addChild(node, fieldName, i, childNode, extraChildNode)
 	assertArg1("addChild", 1, node,      "table")
 	assertArg1("addChild", 2, fieldName, "string")
 
@@ -6050,7 +6050,7 @@ function addChild(node, fieldName, i, childNode, extraChildNode)
 end
 
 -- removeChild( node, fieldName [, index=last ] )
-function removeChild(node, fieldName, i)
+local function removeChild(node, fieldName, i)
 	assertArg1("removeChild", 1, node,      "table")
 	assertArg1("removeChild", 2, fieldName, "string")
 	assertArg2("removeChild", 3, i,         "number","nil")
@@ -6068,18 +6068,7 @@ end
 
 
 
-function where(node, s, ...)
-	if not node then
-		print("[Where] No node here!")
-	elseif s then
-		print(formatMessageAtNode("Info", node, "Where", s, ...))
-	else
-		print(formatMessageAtNode("Info", node, "Where", "Here!"))
-	end
-end
-
-
-
+local validateTree
 do
 	local function addValidationError(path, errors, s, ...)
 		tableInsert(errors, F("%s: "..s, tableConcat(path, " > "), ...))
@@ -6511,61 +6500,196 @@ end
 
 
 
+-- identifiers = findGlobalReferences( astNode )  @Doc
+local function findGlobalReferences(theNode)
+	local idents = {}
+
+	traverseTree(theNode, function(node)
+		if node.type == "identifier" and not node.declaration then
+			tableInsert(idents, node)
+		end
+	end)
+
+	return idents
+end
+
+
+
+-- identifiers = findDeclaredNames( astNode )  @Doc
+local function findDeclaredNames(theNode)
+	local declIdents = {}
+
+	traverseTree(theNode, function(node)
+		if node.type == "declaration" or node.type == "for" then
+			for _, declIdent in ipairs(node.names) do
+				tableInsert(declIdents, declIdent)
+			end
+
+		elseif node.type == "function" then
+			for _, declIdent in ipairs(node.parameters) do
+				if declIdent.type == "identifier" then -- There may be a vararg at the end.
+					tableInsert(declIdents, declIdent)
+				end
+			end
+		end
+	end)
+
+	return declIdents
+end
+
+
+
+-- shadows, foundPrevious = maybeRegisterShadow( shadowSequences, shadowSequenceByIdent, shadows|nil, currentDeclIdent, declIdent )
+local function maybeRegisterShadow(shadowSequences, shadowSequenceByIdent, shadows, currentDeclIdent, declIdent)
+	if declIdent.name ~= currentDeclIdent.name then
+		return shadows, false
+	end
+
+	if not shadows then
+		shadows = {currentDeclIdent}
+		shadowSequenceByIdent[currentDeclIdent] = shadows
+		tableInsert(shadowSequences, shadows)
+	end
+
+	if shadowSequenceByIdent[declIdent] then
+		-- Shortcut! declIdent is shadowing others, so just copy the existing data.
+		for _, prevDeclIdent in ipairs(shadowSequenceByIdent[declIdent]) do
+			tableInsert(shadows, prevDeclIdent)
+		end
+		return shadows, true
+
+	else
+		tableInsert(shadows, declIdent)
+		return shadows, false
+	end
+end
+
+-- shadowSequences = findShadows( theNode )  @Doc
+-- shadowSequences = { shadowSequence1, ... }
+-- shadowSequence  = { shadowingIdentifier, shadowedIdentifier1, ... }
+local function findShadows(theNode)
+	local shadowSequences       = {}
+	local shadowSequenceByIdent = {}
+
+	for _, currentDeclIdent in ipairs(findDeclaredNames(theNode)) do
+		local shadows       = nil
+		local child         = currentDeclIdent
+		local foundPrevious = false
+
+		while child.parent do
+			local parent = child.parent
+
+			if isNodeDeclLike(parent) then
+				local declIdents = getNameArrayOfDeclLike(parent)
+				local childIndex = indexOf(declIdents, child) or #declIdents+1
+
+				for i = childIndex-1, 1, -1 do
+					shadows, foundPrevious = maybeRegisterShadow(shadowSequences, shadowSequenceByIdent, shadows, currentDeclIdent, declIdents[i])
+					if foundPrevious then  break  end
+				end
+				if foundPrevious then  break  end
+
+			elseif parent.type == "block" then
+				local statements = parent.statements
+
+				for i = child.key-1, 1, -1 do
+					if statements[i].type == "declaration" then
+						for _, declIdent in ipairs(statements[i].names) do
+							shadows, foundPrevious = maybeRegisterShadow(shadowSequences, shadowSequenceByIdent, shadows, currentDeclIdent, declIdent)
+							if foundPrevious then  break  end
+						end
+						if foundPrevious then  break  end
+					end
+				end
+				if foundPrevious then  break  end
+			end
+
+			child = parent
+			if child == theNode then  break  end -- Stay within theNode (in case theNode has a parent).
+		end
+	end
+
+	return shadowSequences
+end
+
+
+
 parser = {
+	--
 	-- Constants.
-	VERSION             = PARSER_VERSION,
+	--
+	VERSION = PARSER_VERSION,
 
-	INT_SIZE            = INT_SIZE,
-	MAX_INT             = MAX_INT,
-	MIN_INT             = MIN_INT,
+	INT_SIZE = INT_SIZE,
+	MAX_INT  = MAX_INT,
+	MIN_INT  = MIN_INT,
 
+	--
 	-- Functions.
-	tokenize            = tokenize,
-	tokenizeFile        = tokenizeFile,
+	--
 
-	newToken            = newToken,
-	concatTokens        = concatTokens,
+	-- Tokenizing.
+	tokenize     = tokenize,
+	tokenizeFile = tokenizeFile,
 
-	parse               = parse,
-	parseExpression     = parseExpression,
-	parseFile           = parseFile,
+	-- Token actions.
+	newToken     = newToken,
+	concatTokens = concatTokens,
 
-	newNode             = newNode,
-	newNodeFast         = newNodeFast,
-	valueToAst          = valueToAst,
-	cloneNode           = cloneNode,
-	cloneTree           = cloneTree,
-	getChild            = getChild,
-	setChild            = setChild,
-	addChild            = addChild,
-	removeChild         = removeChild,
+	-- AST parsing.
+	parse           = parse,
+	parseExpression = parseExpression,
+	parseFile       = parseFile,
 
-	isExpression        = isExpression,
-	isStatement         = isStatement,
-	validateTree        = validateTree,
+	-- AST manipulation.
+	newNode     = newNode,
+	newNodeFast = newNodeFast,
+	valueToAst  = valueToAst,
+	cloneNode   = cloneNode,
+	cloneTree   = cloneTree,
+	getChild    = getChild,
+	setChild    = setChild,
+	addChild    = addChild,
+	removeChild = removeChild,
 
+	-- AST checking.
+	isExpression = isExpression,
+	isStatement  = isStatement,
+	validateTree = validateTree,
+
+	-- AST traversal.
 	traverseTree        = traverseTree,
 	traverseTreeReverse = traverseTreeReverse,
 	updateReferences    = updateReferences,
 
-	simplify            = simplify,
-	optimize            = optimize,
-	minify              = minify,
+	-- Big AST operations.
+	simplify = simplify,
+	optimize = optimize,
+	minify   = minify,
 
-	toLua               = toLua,
+	-- Conversion.
+	toLua = toLua,
 
-	printTokens         = printTokens,
-	printNode           = printNode,
-	printTree           = printTree,
+	-- Printing.
+	printTokens   = printTokens,
+	printNode     = printNode,
+	printTree     = printTree,
+	formatMessage = formatMessage,
 
-	formatMessage       = formatMessage,
+	-- Utilies.
+	findGlobalReferences = findGlobalReferences,
+	findDeclaredNames    = findDeclaredNames,
+	findShadows          = findShadows,
 
-	resetNextId         = resetNextId, -- @Undocumented
+	-- Misc.
+	resetNextId = resetNextId, -- @Undocumented
 
+	--
 	-- Settings.
-	printIds            = false,
-	printLocations      = false,
-	indentation         = "    ",
+	--
+	printIds       = false,
+	printLocations = false,
+	indentation    = "    ",
 
 	constantNameReplacementStringMaxLength = 200, -- @Cleanup: Maybe use a better name.
 }

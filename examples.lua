@@ -3,8 +3,9 @@
 --=  Examples for Dumb Lua Parser
 --=
 --=    1 - Find globals
---=    2 - Replace calls to a function
---=    3 - Construct an AST (the painful way)
+--=    2 - Detect variable shadowing
+--=    3 - Replace calls to a function
+--=    4 - Construct an AST (the painful way)
 --=
 --=-------------------------------------------------------------
 --=
@@ -29,14 +30,16 @@ local ast = parser.parse(
 		local x = math.floor(1.5) -- 'math' is a global.
 		y       = "foo"           -- 'y' is a global.
 	]],
-	"abc.lua"
+	"dummyFilePath.lua"
 )
 
 parser.updateReferences(ast)
+print("Globals:")
 
+-- Note that parser.findGlobalReferences() could be used instead of this.
 parser.traverseTree(ast, function(node)
 	if node.type == "identifier" and not node.declaration then
-		print(parser.formatMessage(node, "", "Found global '%s'.", node.name))
+		print(parser.formatMessage(node, "Found global '%s'.", node.name))
 	end
 end)
 
@@ -45,7 +48,36 @@ print("\n\n")
 
 
 --
--- 2 - Replace calls to a function
+-- 2 - Detect variable shadowing
+--
+
+local ast = parser.parse[[
+	local function foo(x, x)
+		for x = x-1, x+1 do
+			local x = "foo"
+		end
+		local x = x
+	end
+]]
+
+parser.updateReferences(ast)
+print("Shadows:")
+
+-- Note that findShadows() doesn't detect shadowing of globals.
+for _, shadows in ipairs(parser.findShadows(ast)) do
+	for i, ident in ipairs(shadows) do
+		-- The first item in 'shadows' is the identifier shadowing the rest.
+		local message = (i == 1) and "This identifier is shadowing others:" or "Shadowed #"..i-1
+		print(parser.formatMessage(ident, message))
+	end
+end
+
+print("\n\n")
+
+
+
+--
+-- 3 - Replace calls to a function
 --
 
 --
@@ -101,13 +133,14 @@ parser.traverseTree(ast, function(node, parent, container, key)
 	end
 end)
 
+print("Transformed code:")
 print(parser.toLua(ast, true))
 print("\n\n")
 
 
 
 --
--- 3 - Construct an AST (the painful way)
+-- 4 - Construct an AST (the painful way)
 --
 
 --[[ This is the program we will create:
@@ -145,6 +178,7 @@ decl.values[1].callee       = new("identifier", "double")
 decl.values[1].arguments[1] = new("literal", 5)
 table.insert(block.statements, decl)
 
+print("Constructed code:")
 print(parser.toLua(block, true))
 print("\n\n")
 
