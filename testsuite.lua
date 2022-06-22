@@ -541,16 +541,22 @@ test("Simplify", function()
 	testSimplify([[ x = 1+2   ]], [[ x=3; ]])
 	testSimplify([[ x = 1+2^3 ]], [[ x=9; ]], [[ x=9.0; ]]) -- In Lua 5.3+ the result of x^y is always a float.
 
-	testSimplify([[ x = 1 << 8     ]], [[ x=256;   ]])
-	testSimplify([[ x = 2^99999    ]], [[ x=(1/0); ]])
-	testSimplify([[ x = 5 - - - -5 ]], [[ x=10;    ]])
+	testSimplify([[ x = 1 << 8  ]], [[ x=256;   ]])
+	testSimplify([[ x = 2^99999 ]], [[ x=(1/0); ]])
 
+	-- Negative.
+	testSimplify([[ x = 5 - - - -5   ]], [[ x=10; ]])
+	testSimplify([[ x = 5 - - - -"5" ]], (_VERSION == "Lua 5.3" and [[ x=10.0; ]] or [[ x=10; ]])) -- Apparently -"5" and -tonumber"5" don't result in the same math type in Lua 5.3. Ugh...
+	testSimplify([[ x = 5 - -"a"     ]], [[ x=5- -"a"; ]]) -- Runtime error, but not an error for us.
+
+	-- Bitwise.
 	testSimplify([[ x = 2779          ]], [[ x=2779;  ]])
 	testSimplify([[ x = ~2779         ]], [[ x=-2780; ]])
 	testSimplify([[ x = 2779 & 0x1011 ]], [[ x=17;    ]])
 	testSimplify([[ x = 2779 ~ 0x1011 ]], [[ x=6858;  ]])
 	testSimplify([[ x = 2779 | 0x1011 ]], [[ x=6875;  ]])
 
+	-- >> / <<
 	testSimplify([[ x =  2       ]], [[ x=2;  ]])
 	testSimplify([[ x =  2 >>  1 ]], [[ x=1;  ]])
 	testSimplify([[ x =  2 <<  1 ]], [[ x=4;  ]])
@@ -562,14 +568,51 @@ test("Simplify", function()
 	testSimplify([[ x = -2 << -1 ]], (parser.INT_SIZE == 32 and [[ x=2147483647; ]] or [[ x=9223372036854775807; ]]))
 	testSimplify([[ x = -2 >> -1 ]], [[ x=-4; ]])
 
+	-- &
 	testSimplify([[ x = 1/0 & 2 ]], [[ x=(1/0)&2; ]])
 
+	-- Equality.
 	testSimplify([[ x = "yes" == "no" ]], [[ x=false; ]])
 	testSimplify([[ x = 5     ~= nil  ]], [[ x=true;  ]])
 	testSimplify([[ x = 80.6  >= 34   ]], [[ x=true;  ]])
 
+	-- Relativeness.
+	testSimplify([[ x = 1   <  1   ]], [[ x=false;  ]])
+	testSimplify([[ x = 1   <  99  ]], [[ x=true;   ]])
+	testSimplify([[ x = 99  <  1   ]], [[ x=false;  ]])
+	testSimplify([[ x = 1   >  1   ]], [[ x=false;  ]])
+	testSimplify([[ x = 1   >  99  ]], [[ x=false;  ]])
+	testSimplify([[ x = 99  >  1   ]], [[ x=true;   ]])
+	testSimplify([[ x = 1   <= 1   ]], [[ x=true;   ]])
+	testSimplify([[ x = 1   <= 99  ]], [[ x=true;   ]])
+	testSimplify([[ x = 99  <= 1   ]], [[ x=false;  ]])
+	testSimplify([[ x = 1   >= 1   ]], [[ x=true;   ]])
+	testSimplify([[ x = 1   >= 99  ]], [[ x=false;  ]])
+	testSimplify([[ x = 99  >= 1   ]], [[ x=true;   ]])
+	testSimplify([[ x = ""  <  ""  ]], [[ x=false;  ]])
+	testSimplify([[ x = ""  <  "a" ]], [[ x=true;   ]])
+	testSimplify([[ x = "a" <  ""  ]], [[ x=false;  ]])
+	testSimplify([[ x = ""  >  ""  ]], [[ x=false;  ]])
+	testSimplify([[ x = ""  >  "a" ]], [[ x=false;  ]])
+	testSimplify([[ x = "a" >  ""  ]], [[ x=true;   ]])
+	testSimplify([[ x = ""  <= ""  ]], [[ x=true;   ]])
+	testSimplify([[ x = ""  <= "a" ]], [[ x=true;   ]])
+	testSimplify([[ x = "a" <= ""  ]], [[ x=false;  ]])
+	testSimplify([[ x = ""  >= ""  ]], [[ x=true;   ]])
+	testSimplify([[ x = ""  >= "a" ]], [[ x=false;  ]])
+	testSimplify([[ x = "a" >= ""  ]], [[ x=true;   ]])
+	testSimplify([[ x = 1   <  "a" ]], [[ x=1<"a";  ]]) -- Runtime error, but not an error for us.
+	testSimplify([[ x = 1   >  "a" ]], [[ x=1>"a";  ]])
+	testSimplify([[ x = 1   <= "a" ]], [[ x=1<="a"; ]])
+	testSimplify([[ x = 1   >= "a" ]], [[ x=1>="a"; ]])
+
+	-- ..
 	testSimplify([[ x = "one" .. 2 .. "three" ]], [[ x="one2three"; ]])
 
+	-- #
+	testSimplify([[ x = #"föö" ]], [[ x=5; ]])
+
+	-- and / or
 	testSimplify([[ x = true  and always1() ]], [[ x=always1(); ]])
 	testSimplify([[ x = true  or  never1()  ]], [[ x=true;      ]])
 	testSimplify([[ x = 0     and always2() ]], [[ x=always2(); ]])
@@ -579,6 +622,16 @@ test("Simplify", function()
 	testSimplify([[ x = nil   and never4()  ]], [[ x=nil;       ]])
 	testSimplify([[ x = nil   or  always4() ]], [[ x=always4(); ]])
 
+	-- not
+	testSimplify([[ x = not true     ]], [[ x=false; ]])
+	testSimplify([[ x = not 0        ]], [[ x=false; ]])
+	testSimplify([[ x = not false    ]], [[ x=true;  ]])
+	testSimplify([[ x = not nil      ]], [[ x=true;  ]])
+	testSimplify([[ x = not y        ]], [[ x=not y; ]])
+	testSimplify([[ x = not (a == b) ]], [[ x=a~=b;  ]])
+	testSimplify([[ x = not (a ~= b) ]], [[ x=a==b;  ]])
+
+	-- Conditionals.
 	testSimplify(
 		[[
 		if 9 > 1 then

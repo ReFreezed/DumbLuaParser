@@ -4014,7 +4014,7 @@ end
 local function isValueNumberOrString(v)
 	return type(v) == "number" or type(v) == "string"
 end
-local function isValueFiniteNumber(v)
+local function isValueFiniteNumber(v) -- Should we actually use the logic of isValueNumberLike() where this function is used? @Incomplete
 	return type(v) == "number" and v == v and v ~= 1/0 and v ~= -1/0
 end
 local function isValueNumberLike(v)
@@ -4030,23 +4030,51 @@ local bits2 = {}
 
 local unaryFolders = {
 	["-"] = function(unary, expr)
+		-- -numberLike -> number
 		if expr.type == "literal" and isValueNumberLike(expr.value) then
-			return AstLiteral(unary.token, -expr.value)
+			return AstLiteral(unary.token, -expr.value) -- This may convert a string to a number.
 		end
+
 		return nil
 	end,
+
 	["not"] = function(unary, expr)
-		-- @Incomplete: Fold 'not (expr1 ~= expr2)' into 'expr1 == expr2'.
-		if expr.type == "literal" then
+		-- not literal -> boolean
+		if expr.type == "literal" then -- :SimplifyTruthfulValues
 			return AstLiteral(unary.token, (not expr.value))
+
+		-- not (x == y) -> x ~= y
+		-- not (x ~= y) -> x == y
+		elseif expr.type == "binary" then
+			if expr.operator == "==" then
+				local binary = AstBinary(unary.token, "~=")
+				binary.left  = expr.left
+				binary.right = expr.right
+				return binary
+			elseif expr.operator == "~=" then
+				local binary = AstBinary(unary.token, "==")
+				binary.left  = expr.left
+				binary.right = expr.right
+				return binary
+			end
 		end
+
 		return nil
 	end,
+
 	["#"] = function(unary, expr)
-		-- I don't think there's ever anything to do here.
+		-- #string -> number
+		if expr.type == "literal" and type(expr.value) == "string" then
+			return AstLiteral(unary.token, #expr.value)
+		end
+
+		-- We could get the length of tables containing only constants, but who in their right mind writes #{}?
+
 		return nil
 	end,
+
 	["~"] = function(unary, expr)
+		-- ~number -> number
 		if expr.type == "literal" and isValueFiniteNumber(expr.value) then
 			intToBits(expr.value, bits1)
 			for i = 1, INT_SIZE do
@@ -4054,54 +4082,77 @@ local unaryFolders = {
 			end
 			return AstLiteral(unary.token, bitsToInt(bits1))
 		end
+
 		return nil
 	end,
 }
 
 local binaryFolders = {
 	["+"] = function(binary, l, r)
+		-- numberLike + numberLike -> number
 		if l.type == "literal" and r.type == "literal" and isValueNumberLike(l.value) and isValueNumberLike(r.value) then
 			return AstLiteral(binary.token, l.value+r.value)
 		end
+
 		return nil
 	end,
+
 	["-"] = function(binary, l, r)
+		-- numberLike - numberLike -> number
 		if l.type == "literal" and r.type == "literal" and isValueNumberLike(l.value) and isValueNumberLike(r.value) then
 			return AstLiteral(binary.token, l.value-r.value)
 		end
+
 		return nil
 	end,
+
 	["*"] = function(binary, l, r)
+		-- numberLike * numberLike -> number
 		if l.type == "literal" and r.type == "literal" and isValueNumberLike(l.value) and isValueNumberLike(r.value) then
 			return AstLiteral(binary.token, l.value*r.value)
 		end
+
 		return nil
 	end,
+
 	["/"] = function(binary, l, r)
+		-- numberLike / numberLike -> number
 		if l.type == "literal" and r.type == "literal" and isValueNumberLike(l.value) and isValueNumberLike(r.value) then
 			return AstLiteral(binary.token, l.value/r.value)
 		end
+
 		return nil
 	end,
+
 	["//"] = function(binary, l, r)
+		-- numberLike // numberLike -> number
 		if l.type == "literal" and r.type == "literal" and isValueNumberLike(l.value) and isValueNumberLike(r.value) then
 			return AstLiteral(binary.token, mathFloor(l.value/r.value))
 		end
+
 		return nil
 	end,
+
 	["^"] = function(binary, l, r)
+		-- numberLike ^ numberLike -> number
 		if l.type == "literal" and r.type == "literal" and isValueNumberLike(l.value) and isValueNumberLike(r.value) then
 			return AstLiteral(binary.token, l.value^r.value)
 		end
+
 		return nil
 	end,
+
 	["%"] = function(binary, l, r)
+		-- numberLike % numberLike -> number
 		if l.type == "literal" and r.type == "literal" and isValueNumberLike(l.value) and isValueNumberLike(r.value) then
 			return AstLiteral(binary.token, l.value%r.value)
 		end
+
 		return nil
 	end,
+
 	["&"] = function(binary, l, r)
+		-- number & number -> number
 		if l.type == "literal" and r.type == "literal" and isValueFiniteNumber(l.value) and isValueFiniteNumber(r.value) then
 			intToBits(l.value, bits1)
 			intToBits(r.value, bits2)
@@ -4110,9 +4161,12 @@ local binaryFolders = {
 			end
 			return AstLiteral(binary.token, bitsToInt(bits1))
 		end
+
 		return nil
 	end,
+
 	["~"] = function(binary, l, r)
+		-- number ~ number -> number
 		if l.type == "literal" and r.type == "literal" and isValueFiniteNumber(l.value) and isValueFiniteNumber(r.value) then
 			intToBits(l.value, bits1)
 			intToBits(r.value, bits2)
@@ -4121,9 +4175,12 @@ local binaryFolders = {
 			end
 			return AstLiteral(binary.token, bitsToInt(bits1))
 		end
+
 		return nil
 	end,
+
 	["|"] = function(binary, l, r)
+		-- number | number -> number
 		if l.type == "literal" and r.type == "literal" and isValueFiniteNumber(l.value) and isValueFiniteNumber(r.value) then
 			intToBits(l.value, bits1)
 			intToBits(r.value, bits2)
@@ -4132,9 +4189,12 @@ local binaryFolders = {
 			end
 			return AstLiteral(binary.token, bitsToInt(bits1))
 		end
+
 		return nil
 	end,
+
 	[">>"] = function(binary, l, r)
+		-- number >> number -> number
 		if l.type == "literal" and r.type == "literal" and isValueFiniteNumber(l.value) and type(r.value) == "number" then
 			intToBits(l.value, bits1)
 
@@ -4157,7 +4217,9 @@ local binaryFolders = {
 
 		return nil
 	end,
+
 	["<<"] = function(binary, l, r)
+		-- number << number -> number
 		if l.type == "literal" and r.type == "literal" and isValueFiniteNumber(l.value) and type(r.value) == "number" then
 			intToBits(l.value, bits1)
 
@@ -4180,54 +4242,87 @@ local binaryFolders = {
 
 		return nil
 	end,
+
 	[".."] = function(binary, l, r)
+		-- numberOrString .. numberOrString -> string
 		if l.type == "literal" and r.type == "literal" and isValueNumberOrString(l.value) and isValueNumberOrString(r.value) then
 			return AstLiteral(binary.token, l.value..r.value)
 		end
+
 		return nil
 	end,
+
 	["<"] = function(binary, l, r)
+		-- number < number -> boolean
+		-- string < string -> boolean
 		if l.type == "literal" and r.type == "literal" and areValuesNumbersOrStringsAndOfSameType(l.value, r.value) then
 			return AstLiteral(binary.token, (l.value < r.value))
 		end
+
 		return nil
 	end,
+
 	["<="] = function(binary, l, r)
+		-- number <= number -> boolean
+		-- string <= string -> boolean
 		if l.type == "literal" and r.type == "literal" and areValuesNumbersOrStringsAndOfSameType(l.value, r.value) then
 			return AstLiteral(binary.token, (l.value <= r.value))
 		end
+
 		return nil
 	end,
+
 	[">"] = function(binary, l, r)
+		-- number > number -> boolean
+		-- string > string -> boolean
 		if l.type == "literal" and r.type == "literal" and areValuesNumbersOrStringsAndOfSameType(l.value, r.value) then
 			return AstLiteral(binary.token, (l.value > r.value))
 		end
+
 		return nil
 	end,
+
 	[">="] = function(binary, l, r)
+		-- number >= number -> boolean
+		-- string >= string -> boolean
 		if l.type == "literal" and r.type == "literal" and areValuesNumbersOrStringsAndOfSameType(l.value, r.value) then
 			return AstLiteral(binary.token, (l.value >= r.value))
 		end
+
 		return nil
 	end,
+
 	["=="] = function(binary, l, r)
+		-- literal == literal -> boolean
 		if l.type == "literal" and r.type == "literal" then
 			return AstLiteral(binary.token, (l.value == r.value))
 		end
+
 		return nil
 	end,
+
 	["~="] = function(binary, l, r)
+		-- literal ~= literal -> boolean
 		if l.type == "literal" and r.type == "literal" then
 			return AstLiteral(binary.token, (l.value ~= r.value))
 		end
+
 		return nil
 	end,
+
 	["and"] = function(binary, l, r)
+		-- truthfulLiteral   and x -> x
+		-- untruthfulLiteral and x -> untruthfulLiteral
 		if l.type == "literal" then  return l.value and r or l  end
+
 		return nil
 	end,
+
 	["or"] = function(binary, l, r)
+		-- truthfulLiteral   or x -> untruthfulLiteral
+		-- untruthfulLiteral or x -> x
 		if l.type == "literal" then  return l.value and l or r  end
+
 		return nil
 	end,
 }
@@ -4246,12 +4341,12 @@ local function simplifyNode(node, parent, container, key)
 		if replacement then  replace(node, replacement, parent, container, key, statsForSimplify)  end
 
 	elseif node.type == "binary" then
-		-- @Incomplete: Fold 'expr - -n' into 'expr + n' etc.
+		-- @Incomplete: Fold 'expr - -n' into 'expr + n' etc. (Actually, this will probably mess up metamethods.)
 		local replacement = binaryFolders[node.operator](node, node.left, node.right)
 		if replacement then  replace(node, replacement, parent, container, key, statsForSimplify)  end
 
 	elseif node.type == "if" then
-		-- @Incomplete: Fold 'if not not expr' into 'if expr'. (Also for 'while' and 'repeat'.)
+		-- @Incomplete: Fold 'if not not expr' into 'if expr'. (Also for 'while' and 'repeat' etc., i.e. all conditional expressions.)
 		local ifNode = node
 
 		if ifNode.condition.type == "literal" then -- @Incomplete: There are more values that make simplification possible (e.g. functions, but who would put that here anyway). :SimplifyTruthfulValues
@@ -4272,7 +4367,7 @@ local function simplifyNode(node, parent, container, key)
 
 		if whileLoop.condition.type == "literal" then -- :SimplifyTruthfulValues
 			if whileLoop.condition.value then
-				whileLoop.condition.value = true
+				whileLoop.condition.value = true -- Convert literal's value to boolean.
 			else
 				tableRemove(container, key)
 				tableInsert(statsForSimplify.nodeRemovals, Location(whileLoop))
@@ -4288,7 +4383,7 @@ local function simplifyNode(node, parent, container, key)
 				replace(repeatLoop, repeatLoop.body, parent, container, key, statsForSimplify)
 				return simplifyNode(repeatLoop.body, parent, container, key)
 			else
-				repeatLoop.condition.value = false
+				repeatLoop.condition.value = false -- Convert literal's value to boolean.
 			end
 		end
 
