@@ -284,28 +284,36 @@ test("Tokens", function()
 		local tokens = {}
 
 		-- Construct a call.
-		table.insert(tokens, parser.newToken("identifier",  "math"))
+		table.insert(tokens, parser.newToken("identifier",  "lib"))
 		table.insert(tokens, parser.newToken("punctuation", "."))
-		table.insert(tokens, parser.newToken("identifier",  "abs"))
+		table.insert(tokens, parser.newToken("identifier",  "doThing"))
 		table.insert(tokens, parser.newToken("whitespace",  " "))
 		table.insert(tokens, parser.newToken("punctuation", "("))
 		table.insert(tokens, parser.newToken("punctuation", "-"))
 		table.insert(tokens, parser.newToken("number",      1.75))
+		table.insert(tokens, parser.newToken("punctuation", ","))
+		table.insert(tokens, parser.newToken("string",      "foo"))
 		table.insert(tokens, parser.newToken("punctuation", ")"))
+		table.insert(tokens, parser.newToken("comment",     "Blah!"))
 
-		-- Add the call to a declaration with an error.
+		-- Add the call to a declaration, but with an error.
 		table.insert(tokens, 1, parser.newToken("keyword",     "local"))
-		table.insert(tokens, 2, parser.newToken("identifier",  "n"))
+		table.insert(tokens, 2, parser.newToken("identifier",  "x"))
 		table.insert(tokens, 3, parser.newToken("punctuation", "="))
 		table.insert(tokens, 4, parser.newToken("punctuation", "/")) -- Error!
 
 		-- Remove the error.
 		table.remove(tokens, 4)
 
+		-- Update all tokens (with no modifications).
+		for _, tok in ipairs(tokens) do
+			parser.updateToken(tok, tok.value)
+		end
+
 		local ast = assert(parser.parse(tokens))
 		local lua = assert(parser.toLua(ast))
 		-- print(lua)
-		assertLua(lua, [[ local n=math.abs(-1.75); ]])
+		assertLua(lua, [[ local x=lib.doThing(-1.75,"foo"); ]])
 	end
 
 	do

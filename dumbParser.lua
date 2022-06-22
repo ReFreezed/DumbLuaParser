@@ -52,7 +52,7 @@ print(lua)
 ----------------------------------------------------------------
 
 tokenize, tokenizeFile
-newToken, concatTokens
+newToken, updateToken, cloneToken, concatTokens
 parse, parseExpression, parseFile
 newNode, newNodeFast, valueToAst, cloneNode, cloneTree, getChild, setChild, addChild, removeChild
 validateTree
@@ -78,8 +78,16 @@ newToken()
 	token = parser.newToken( tokenType, tokenValue )
 	Create a new token. (See below or search for 'TokenCreation' for more info.)
 
+updateToken()
+	parser.updateToken( token, tokenValue )
+	Update the value and representation of an existing token. (Search for 'TokenModification' for more info.)
+
+cloneToken()
+	tokenClone = parser.cloneToken( token )
+	Clone an existing token.
+
 concatTokens()
-	parser.concatTokens( tokens )
+	luaString = parser.concatTokens( tokens )
 	Concatenate tokens. Whitespace is added between tokens when necessary.
 
 parse()
@@ -1618,13 +1626,13 @@ end
 --
 -- :TokenCreation
 --
--- token = newToken( "comment",     contents )
--- token = newToken( "identifier",  name )
--- token = newToken( "keyword",     name )
--- token = newToken( "number",      number )
--- token = newToken( "punctuation", punctuationString )
--- token = newToken( "string",      stringValue )
--- token = newToken( "whitespace",  contents )
+-- commentToken     = newToken( "comment",     contents )
+-- identifierToken  = newToken( "identifier",  name )
+-- keywordToken     = newToken( "keyword",     name )
+-- numberToken      = newToken( "number",      number )
+-- punctuationToken = newToken( "punctuation", punctuationString )
+-- stringToken      = newToken( "string",      stringValue )
+-- whitespaceToken  = newToken( "whitespace",  contents )
 --
 local function newToken(tokType, tokValue)
 	local tokRepr
@@ -1654,7 +1662,7 @@ local function newToken(tokType, tokValue)
 
 	elseif tokType == "string" then
 		if type(tokValue) ~= "string" then  errorf(2, "Expected string value for 'string' token. (Got %s)", type(tokValue))  end
-		tokRepr = stringGsub(F("%q", tokRepr), "\n", "n")
+		tokRepr = stringGsub(F("%q", tokValue), "\n", "n")
 
 	elseif tokType == "punctuation" then
 		if type(tokValue) ~= "string" then  errorf(2, "Expected string value for 'punctuation' token. (Got %s)", type(tokValue))  end
@@ -1699,6 +1707,95 @@ local function newToken(tokType, tokValue)
 		lineEnd        = 0,
 		positionStart  = 0,
 		positionEnd    = 0,
+	}
+end
+
+--
+-- :TokenModification
+--
+-- updateToken( commentToken,     contents )
+-- updateToken( identifierToken,  name )
+-- updateToken( keywordToken,     name )
+-- updateToken( numberToken,      number )
+-- updateToken( punctuationToken, punctuationString )
+-- updateToken( stringToken,      stringValue )
+-- updateToken( whitespaceToken,  contents )
+--
+local function updateToken(tok, tokValue)
+	if tok.type == "keyword" then
+		if type(tokValue) ~= "string" then  errorf(2, "Expected string value for 'keyword' token. (Got %s)", type(tokValue))  end
+		if not KEYWORDS[tokValue]     then  errorf(2, "Invalid keyword '%s'.", tokValue)  end
+		tok.representation = tokValue
+
+	elseif tok.type == "identifier" then
+		if type(tokValue) ~= "string"                then  errorf(2, "Expected string value for 'identifier' token. (Got %s)", type(tokValue))  end
+		if not stringFind(tokValue, "^[%a_][%w_]*$") then  errorf(2, "Invalid identifier '%s'.", tokValue)  end
+		if KEYWORDS[tokValue]                        then  errorf(2, "Invalid identifier '%s'.", tokValue)  end
+		tok.representation = tokValue
+
+	elseif tok.type == "number" then
+		if type(tokValue) ~= "number" then
+			errorf(2, "Expected number value for 'number' token. (Got %s)", type(tokValue))
+		end
+		tok.representation = (
+			tokValue == 0 and NORMALIZE_MINUS_ZERO and "0"      or -- Avoid '-0' sometimes.
+			tokValue == 1/0                        and "(1/0)"  or
+			tokValue == -1/0                       and "(-1/0)" or
+			tokValue ~= tokValue                   and "(0/0)"  or
+			formatNumber(tokValue)
+		)
+
+	elseif tok.type == "string" then
+		if type(tokValue) ~= "string" then  errorf(2, "Expected string value for 'string' token. (Got %s)", type(tokValue))  end
+		tok.representation = stringGsub(F("%q", tokValue), "\n", "n")
+
+	elseif tok.type == "punctuation" then
+		if type(tokValue) ~= "string" then  errorf(2, "Expected string value for 'punctuation' token. (Got %s)", type(tokValue))  end
+		if not PUNCTUATION[tokValue]  then  errorf(2, "Invalid punctuation '%s'.", tokValue)  end
+		tok.representation = tokValue
+
+	elseif tok.type == "comment" then
+		if type(tokValue) ~= "string" then  errorf(2, "Expected string value for 'comment' token. (Got %s)", type(tokValue))  end
+
+		if stringFind(tokValue, "\n") then
+			local equalSigns = stringFind(tokValue, "[[", 1, true) and "=" or ""
+
+			while stringFind(tokValue, "]"..equalSigns.."]", 1, true) do
+				equalSigns = equalSigns.."="
+			end
+
+			tok.representation = F("--[%s[%s]%s]", equalSigns, tokValue, equalSigns)
+
+		else
+			tok.representation = F("--%s\n", tokValue)
+		end
+
+	elseif tok.type == "whitespace" then
+		if type(tokValue) ~= "string"       then  errorf(2, "Expected string value for 'whitespace' token. (Got %s)", type(tokValue))  end
+		if tokValue == ""                   then  errorf(2, "Value is empty.")  end -- Having a token that is zero characters long would be weird, so we disallow it.
+		if stringFind(tokValue, "[^ \t\n]") then  errorf(2, "Value has non-whitespace characters.")  end
+		tok.representation = tokValue
+
+	else
+		errorf(2, "Internal error: Invalid token type '%s'.", tostring(tok.type))
+	end
+
+	tok.value = tokValue
+end
+
+local function cloneToken(tok)
+	return {
+		type           = tok.type,
+		value          = tok.value,
+		representation = tok.representation,
+
+		sourceString   = tok.sourceString,
+		sourcePath     = tok.sourcePath,
+
+		lineStart      = tok.lineStart,
+		lineEnd        = tok.lineEnd,
+		positionStart  = tok.positionStart,
+		positionEnd    = tok.positionEnd,
 	}
 end
 
@@ -6634,6 +6731,8 @@ parser = {
 
 	-- Token actions.
 	newToken     = newToken,
+	updateToken  = updateToken,
+	cloneToken   = cloneToken,
 	concatTokens = concatTokens,
 
 	-- AST parsing.
@@ -6698,7 +6797,7 @@ return parser
 
 
 
---[=[===========================================================
+--[[!===========================================================
 
 Copyright © 2020-2022 Marcus 'ReFreezed' Thunström
 
@@ -6720,4 +6819,4 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-=============================================================]=]
+==============================================================]]
