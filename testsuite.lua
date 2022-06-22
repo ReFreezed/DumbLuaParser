@@ -56,6 +56,10 @@ local function debugExit()
 	os.exit(2)
 end
 
+local function where(node, message)
+	print(parser.formatMessage(node, tostring(message or node.type)))
+end
+
 
 
 local function printStats(stats, locLevel)
@@ -726,7 +730,7 @@ test("Optimize", function()
 		[[ function globalFunc()end ]]
 	)
 
-	-- For loops (generic).
+	-- For-loops (generic).
 	testOptimize(
 		[[
 		for useless, keep, remove in iterator() do
@@ -1178,6 +1182,109 @@ test("Prefix/suffix", function()
 		print(lua)
 		error("Got errors!")
 	end
+end)
+
+
+
+test("Utilities", function()
+	--
+	-- Globals.
+	--
+	local ast = assert(parser.parse[[
+		local x = g1.foo(1.5)
+		g2      = "abc"
+	]])
+	parser.updateReferences(ast)
+
+	local declIdents = parser.findGlobalReferences(ast)
+	assert(#declIdents == 2, tostring(#declIdents))
+
+	assert(declIdents[1].name == "g1", declIdents[1].name)
+	assert(declIdents[2].name == "g2", declIdents[2].name)
+
+	assert(declIdents[1] == ast.statements[1].values[1].callee.object)
+	assert(declIdents[2] == ast.statements[2].targets[1])
+
+	--
+	-- Declarations.
+	--
+	local ast = assert(parser.parse[[
+		local function func(arg, ...)
+			for i = 1, 3 do
+				local x, y = foo, bar
+			end
+		end
+	]])
+	parser.updateReferences(ast)
+
+	local declIdents = parser.findDeclaredNames(ast)
+	assert(#declIdents == 5, tostring(#declIdents))
+
+	assert(declIdents[1].name == "func")
+	assert(declIdents[2].name == "arg")
+	assert(declIdents[3].name == "i")
+	assert(declIdents[4].name == "x")
+	assert(declIdents[5].name == "y")
+
+	local decl1   = ast.statements[1]
+	local func    = ast.statements[2].values[1]
+	local forLoop = func.body.statements[1]
+	local decl2   = forLoop.body.statements[1]
+
+	assert(declIdents[1] == decl1.names[1])
+	assert(declIdents[2] == func.parameters[1])
+	assert(declIdents[3] == forLoop.names[1])
+	assert(declIdents[4] == decl2.names[1])
+	assert(declIdents[5] == decl2.names[2])
+
+	--
+	-- Shadows.
+	--
+	local ast = assert(parser.parse[[
+		local function foo(x, x)
+			for x = x-1, x+1 do
+				local x = "foo"
+			end
+			local x = x
+		end
+	]])
+	parser.updateReferences(ast)
+
+	local xDeclIdents = parser.findDeclaredNames(ast)
+	local shadows     = parser.findShadows(ast)
+
+	for i = #xDeclIdents, 1, -1 do
+		if xDeclIdents[i].name ~= "x" then
+			table.remove(xDeclIdents, i)
+		end
+	end
+
+	assert(#xDeclIdents == 5, tostring(#xDeclIdents))
+	assert(#shadows     == 4, tostring(#shadows))
+
+	-- Function argument #2.
+	assert(#shadows[1] == 2, tostring(#shadows[1]))
+	assert(shadows[1][1] == xDeclIdents[2])
+	assert(shadows[1][2] == xDeclIdents[1])
+
+	-- For-loop name.
+	assert(#shadows[2] == 3, tostring(#shadows[2]))
+	assert(shadows[2][1] == xDeclIdents[3])
+	assert(shadows[2][2] == xDeclIdents[2])
+	assert(shadows[2][3] == xDeclIdents[1])
+
+	-- Declaration in for-loop.
+	assert(#shadows[3] == 4, tostring(#shadows[3]))
+	assert(shadows[3][1] == xDeclIdents[4])
+	assert(shadows[3][2] == xDeclIdents[3])
+	assert(shadows[3][3] == xDeclIdents[2])
+	assert(shadows[3][4] == xDeclIdents[1])
+
+	-- Declaration after for-loop.
+	assert(#shadows[4] == 3, tostring(#shadows[4]))
+	assert(shadows[4][1] == xDeclIdents[5])
+	assert(shadows[4][2] == xDeclIdents[2])
+	assert(shadows[4][3] == xDeclIdents[1])
 end)
 
 
