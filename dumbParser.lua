@@ -6,7 +6,7 @@
 --=  Tokenize Lua code or create ASTs (Abstract Syntax Trees)
 --=  and convert the data back to Lua.
 --=
---=  Version: 2.2 (2022-06-02)
+--=  Version: 2.2-dev
 --=
 --=  License: MIT (see the bottom of this file)
 --=  Website: http://refreezed.com/luaparser/
@@ -62,6 +62,7 @@ simplify, optimize, minify
 toLua
 printTokens, printNode, printTree
 formatMessage
+findDeclaredNames, findGlobalReferences, findShadows
 
 tokenize()
 	tokens = parser.tokenize( luaString [, pathForErrorMessages="?" ] )
@@ -258,6 +259,23 @@ formatMessage()
 		print(parser.formatMessage(currentStatement, "Current statement."))
 	end
 
+findDeclaredNames()
+	identifiers = parser.findDeclaredNames( astNode )
+	Find all declared names in the tree (i.e. identifiers from AstDeclaration, AstFunction and AstFor nodes).
+
+findGlobalReferences()
+	identifiers = parser.findGlobalReferences( astNode )
+	Find all identifiers not referring to local variables in the tree.
+	Note: updateReferences() must be called at some point before you call this - otherwise all variables will be seen as globals!
+
+findShadows()
+	shadowSequences = parser.findShadows( astNode )
+	shadowSequences = { shadowSequence1, ... }
+	shadowSequence  = { shadowingIdentifier, shadowedIdentifier1, ... }
+	Find local variable shadowing in the tree. Each shadowSequence is an array of declared identifiers where each identifier shadows the next one.
+	Note: updateReferences() must be called at some point before you call this - otherwise all variables will be seen as globals!
+	Note: Shadowing of globals cannot be detected by the function as that would require knowledge of all potential globals in your program. (See findGlobalReferences())
+
 
 2.2 - Constants
 ----------------------------------------------------------------
@@ -436,7 +454,7 @@ Special number notation rules.
 
 -============================================================]=]
 
-local PARSER_VERSION = "2.2.0"
+local PARSER_VERSION = "2.2.0-dev"
 
 local NORMALIZE_MINUS_ZERO, HANDLE_ENV
 do
@@ -5037,6 +5055,7 @@ local function minify(node, doOptimize)
 		_optimize(node, stats)
 	end
 
+	-- @Cleanup: Use findShadows()?
 	local identInfos, declIdentWatchers                   = getInformationAboutIdentifiersAndUpdateReferences(node)
 	-- local funcInfos                                    = getInformationAboutFunctions(node)
 	-- local declIdentReadCount, declIdentAssignmentCount = getAccessesOfDeclaredNames(funcInfos, identInfos, declIdentWatchers)
@@ -6597,7 +6616,7 @@ end
 
 
 
--- identifiers = findGlobalReferences( astNode )  @Doc
+-- identifiers = findGlobalReferences( astNode )
 local function findGlobalReferences(theNode)
 	local idents = {}
 
@@ -6612,11 +6631,14 @@ end
 
 
 
--- identifiers = findDeclaredNames( astNode )  @Doc
+-- identifiers = findDeclaredNames( astNode )
 local function findDeclaredNames(theNode)
 	local declIdents = {}
 
 	traverseTree(theNode, function(node)
+		-- Note: We don't now, but if we would require updateReferences() to be called first
+		-- we could just check the type and if node.declaration==node. Decisions...
+
 		if node.type == "declaration" or node.type == "for" then
 			for _, declIdent in ipairs(node.names) do
 				tableInsert(declIdents, declIdent)
@@ -6661,7 +6683,7 @@ local function maybeRegisterShadow(shadowSequences, shadowSequenceByIdent, shado
 	end
 end
 
--- shadowSequences = findShadows( theNode )  @Doc
+-- shadowSequences = findShadows( astNode )
 -- shadowSequences = { shadowSequence1, ... }
 -- shadowSequence  = { shadowingIdentifier, shadowedIdentifier1, ... }
 local function findShadows(theNode)
@@ -6775,9 +6797,9 @@ parser = {
 	printTree     = printTree,
 	formatMessage = formatMessage,
 
-	-- Utilies.
-	findGlobalReferences = findGlobalReferences,
+	-- Utilities.
 	findDeclaredNames    = findDeclaredNames,
+	findGlobalReferences = findGlobalReferences,
 	findShadows          = findShadows,
 
 	-- Misc.
