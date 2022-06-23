@@ -1,14 +1,20 @@
 Changelog
 Dumb Lua Parser
 
+v2.3 (2022-06-23)
+- Added utility functions: findDeclaredNames(), findGlobalReferences(), findShadows().
+- Added token functions: updateToken(), cloneToken().
+- simplify() handles some more cases.
+- Fixed newToken("string", ...) always raising an error.
+
 v2.2 (2022-06-02)
-- Added function isStatement().
+- Added function: isStatement().
 - Fixed updateReferences() not always updating all references properly (which sometimes broke minify()).
 - Fixed backslashes in string literals not being outputted as \\.
 - LuaJIT: Fixed validateTree() reporting 64-bit integers as invalid literal values.
 
 v2.1 (2021-09-03)
-- Added functions: parseExpression(), valueToAst(), validateTree(), isExpression(), newNodeFast().
+- Added AST functions: parseExpression(), valueToAst(), validateTree(), isExpression(), newNodeFast().
 - Added AST node fields: AstNode.pretty, AstNode.prefix, AstNode.suffix .
 - tokenize(): Added option to keep whitespace tokens (which is a new token type).
 - toLua(): Added nodeCallback argument.
@@ -34,7 +40,7 @@ Added:
 - Added special parsing rules for 'n/0'.
 - Added AST functions: cloneNode(), cloneTree(), traverseTreeReverse(), getChild(), setChild(), addChild(), removeChild().
 - Added token functions: concatTokens(), newToken().
-- Added function formatMessage().
+- Added function: formatMessage().
 - Added AST node fields: AstVararg.declaration, AstGoto.label, AstIdentifier.attribute .
 - Added more common fields to AST nodes.
 - Added argument 'leavesFirst' to traverseTree().

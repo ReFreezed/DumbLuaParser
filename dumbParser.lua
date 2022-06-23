@@ -6,7 +6,7 @@
 --=  Tokenize Lua code or create ASTs (Abstract Syntax Trees)
 --=  and convert the data back to Lua.
 --=
---=  Version: 2.2-dev
+--=  Version: 2.3
 --=
 --=  License: MIT (see the bottom of this file)
 --=  Website: http://refreezed.com/luaparser/
@@ -454,9 +454,9 @@ Special number notation rules.
 
 -============================================================]=]
 
-local PARSER_VERSION = "2.2.0-dev"
+local PARSER_VERSION = "2.3.0"
 
-local NORMALIZE_MINUS_ZERO, HANDLE_ENV
+local NORMALIZE_MINUS_ZERO, HANDLE_ENV -- Should HANDLE_ENV be a setting?
 do
 	local n              = 0
 	NORMALIZE_MINUS_ZERO = tostring(-n) == "0" -- Lua 5.3+ normalizes -0 to 0.
@@ -478,7 +478,6 @@ local tonumber     = tonumber
 local tostring     = tostring
 local type         = type
 
-local io           = io
 local ioOpen       = io.open
 local ioWrite      = io.write
 
@@ -574,7 +573,6 @@ local TOKEN_BYTES = {
 	NAME_START      = newCharSet"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_",
 	DASH            = newCharSet"-",
 	NUM             = newCharSet"0123456789",
-	-- NUM_OR_DOT   = newCharSet"0123456789.",
 	QUOTE           = newCharSet"\"'",
 	SQUARE          = newCharSet"[",
 	DOT             = newCharSet".",
@@ -601,8 +599,6 @@ do
 	MAX_INT   = math.maxinteger or tonumber(stringGsub(hex, "f", "7", 1), 16)
 	MIN_INT   = math.mininteger or -MAX_INT-1
 end
-
--- local EMPTY_TABLE = {}
 
 local nextSerialNumber = 1
 
@@ -858,7 +854,7 @@ do
 		["\r"] = "{CR}",
 	}
 
-	function ensurePrintable(s)
+	--[[local]] function ensurePrintable(s)
 		return (stringGsub(s, "[%z\1-\31\127-\255]", function(c)
 			return CONTROL_TO_READABLE[c] or (stringByte(c) <= 31 or stringByte(c) >= 127) and F("{%d}", stringByte(c)) or nil
 		end))
@@ -932,7 +928,7 @@ do
 		return len
 	end
 
-	function formatMessageInFile(prefix, contents, path, pos, agent, s, ...)
+	--[[local]] function formatMessageInFile(prefix, contents, path, pos, agent, s, ...)
 		if agent ~= "" then
 			agent = "["..agent.."] "
 		end
@@ -1294,7 +1290,7 @@ do
 	end
 
 	-- tokens, error = tokenize( luaString [, keepWhitespaceTokens=false ] [, pathForErrorMessages="?" ] )
-	function tokenize(s, keepWhitespaceTokens, path)
+	--[[local]] function tokenize(s, keepWhitespaceTokens, path)
 		assertArg1("tokenize", 1, s, "string")
 
 		if type(keepWhitespaceTokens) == "string" then
@@ -1318,7 +1314,6 @@ do
 		local BYTES_NAME_START      = TOKEN_BYTES.NAME_START
 		local BYTES_DASH            = TOKEN_BYTES.DASH
 		local BYTES_NUM             = TOKEN_BYTES.NUM
-		-- local BYTES_NUM_OR_DOT   = TOKEN_BYTES.NUM_OR_DOT
 		local BYTES_QUOTE           = TOKEN_BYTES.QUOTE
 		local BYTES_SQUARE          = TOKEN_BYTES.SQUARE
 		local BYTES_DOT             = TOKEN_BYTES.DOT
@@ -1740,6 +1735,8 @@ end
 -- updateToken( whitespaceToken,  contents )
 --
 local function updateToken(tok, tokValue)
+	-- @Copypaste from newToken().
+
 	if tok.type == "keyword" then
 		if type(tokValue) ~= "string" then  errorf(2, "Expected string value for 'keyword' token. (Got %s)", type(tokValue))  end
 		if not KEYWORDS[tokValue]     then  errorf(2, "Invalid keyword '%s'.", tokValue)  end
@@ -2009,7 +2006,7 @@ local function parseTable(tokens, tokStart) --> tableNode, token, error
 	return tableNode, tok
 end
 
-function parseExpressionInternal(tokens, tokStart, lastPrecedence) --> expression, token, error
+--[[local]] function parseExpressionInternal(tokens, tokStart, lastPrecedence) --> expression, token, error
 	local tok                  = tokStart
 	local canParseLookupOrCall = false
 	local currentToken         = tokens[tok]
@@ -2323,7 +2320,7 @@ function parseExpressionInternal(tokens, tokStart, lastPrecedence) --> expressio
 	return expr, tok
 end
 
-function parseExpressionList(tokens, tok, expressions) --> success, token, error
+--[[local]] function parseExpressionList(tokens, tok, expressions) --> success, token, error
 	while true do
 		local expr, tokNext, err = parseExpressionInternal(tokens, tok, 0)
 		if not expr then  return false, tok, err  end
@@ -2338,7 +2335,7 @@ function parseExpressionList(tokens, tok, expressions) --> success, token, error
 	end
 end
 
-function parseFunctionParametersAndBody(tokens, tokStart, funcTok) --> func, token, error
+--[[local]] function parseFunctionParametersAndBody(tokens, tokStart, funcTok) --> func, token, error
 	local tok  = tokStart
 	local func = AstFunction(tokens[funcTok])
 
@@ -2799,7 +2796,7 @@ end
 
 local statementErrorReported = false
 
-function parseBlock(tokens, tok, blockTok, stopAtEndKeyword) --> block, token, error
+--[[local]] function parseBlock(tokens, tok, blockTok, stopAtEndKeyword) --> block, token, error
 	local block      = AstBlock(tokens[blockTok])
 	local statements = block.statements
 
@@ -3303,7 +3300,7 @@ local function cloneNodeAndMaybeChildren(node, cloneChildren)
 	return clone
 end
 
-function cloneNodeArrayAndChildren(cloneArray, sourceArray)
+--[[local]] function cloneNodeArrayAndChildren(cloneArray, sourceArray)
 	for i, node in ipairs(sourceArray) do
 		cloneArray[i] = cloneNodeAndMaybeChildren(node, true)
 	end
@@ -3541,11 +3538,11 @@ do
 		end
 	end
 
-	function printNode(node)
+	--[[local]] function printNode(node)
 		_printNode(node)
 	end
 
-	function printTree(node)
+	--[[local]] function printTree(node)
 		_printTree(node, 0, nil)
 	end
 end
@@ -5112,7 +5109,7 @@ do
 
 	local cache = {}
 
-	function generateName(nameGeneration)
+	--[[local]] function generateName(nameGeneration)
 		if not cache[nameGeneration] then
 			-- @Cleanup: Output the most significant byte first. (We need to know the length beforehand then, probably, so we use the correct bank.)
 			local charBytes = {}
@@ -5421,7 +5418,7 @@ do
 	end
 
 	-- Returns nil and a message or error.
-	function writeStatements(buffer, pretty, indent, lastOutput, statements, nodeCb)
+	--[[local]] function writeStatements(buffer, pretty, indent, lastOutput, statements, nodeCb)
 		local skipNext = false
 
 		for i, statement in ipairs(statements) do
@@ -5584,7 +5581,7 @@ do
 
 	-- success, lastOutput = writeNode( buffer, pretty, indent, lastOutput, node, maySafelyOmitParens, nodeCallback )
 	-- Returns nil and a message or error.
-	function writeNode(buffer, pretty, indent, lastOutput, node, maySafelyOmitParens, nodeCb)
+	--[[local]] function writeNode(buffer, pretty, indent, lastOutput, node, maySafelyOmitParens, nodeCb)
 		if nodeCb then  nodeCb(node, buffer)  end
 		pretty = choosePretty(node, pretty)
 
@@ -6122,7 +6119,7 @@ do
 	-- luaString    = toLua( astNode [, prettyOuput=false, nodeCallback ] )
 	-- nodeCallback = function( node, outputBuffer )
 	-- Returns nil and a message on error.
-	function toLua(node, pretty, nodeCb)
+	--[[local]] function toLua(node, pretty, nodeCb)
 		assertArg1("toLua", 1, node, "table")
 
 		local buffer = {}
@@ -6623,7 +6620,7 @@ do
 	end
 
 	-- isValid, errors = validateTree( astNode )
-	function validateTree(node)
+	--[[local]] function validateTree(node)
 		local path   = {}
 		local errors = {}
 
@@ -6712,6 +6709,7 @@ end
 
 
 -- identifiers = findGlobalReferences( astNode )
+-- Note: updateReferences() must have been called first!
 local function findGlobalReferences(theNode)
 	local idents = {}
 
@@ -6781,6 +6779,7 @@ end
 -- shadowSequences = findShadows( astNode )
 -- shadowSequences = { shadowSequence1, ... }
 -- shadowSequence  = { shadowingIdentifier, shadowedIdentifier1, ... }
+-- Note: updateReferences() must have been called first!
 local function findShadows(theNode)
 	local shadowSequences       = {}
 	local shadowSequenceByIdent = {}
