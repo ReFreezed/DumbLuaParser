@@ -5,7 +5,7 @@ v2.3 (2022-06-23)
 - Added utility functions: findDeclaredNames(), findGlobalReferences(), findShadows().
 - Added token functions: updateToken(), cloneToken().
 - simplify() handles some more cases.
-- Fixed newToken("string", ...) always raising an error.
+- Fixed newToken("string") always raising an error.
 
 v2.2 (2022-06-02)
 - Added function: isStatement().

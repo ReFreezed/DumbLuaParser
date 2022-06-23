@@ -311,7 +311,7 @@ test("Tokens", function()
 
 		-- Update all tokens (with no modifications).
 		for _, tok in ipairs(tokens) do
-			parser.updateToken(tok, tok.value)
+			parser.updateToken(parser.cloneToken(tok), tok.value)
 		end
 
 		local ast = assert(parser.parse(tokens))
